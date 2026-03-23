@@ -325,8 +325,6 @@ Auto-deploys to `/Volumes/BOOT/plugins/GRID/` if SD card is mounted.
 
 **[JUCE](https://juce.com/)** — Cross-compiling from Mac to ARM with full GUI rendering. The framework underneath everything.
 
-**[Anthropic Claude](https://claude.ai/)** — AI-assisted development. Architecture, C++ implementation, build system debugging, UI iteration. Every line reviewed and tested on hardware by a human.
-
 ---
 
 ## License

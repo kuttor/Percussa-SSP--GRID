@@ -186,29 +186,29 @@ Individual mono buses per I/O channel. Direct buffer indices, shared channel spa
 ## Signal Flow
 
 ```
-                 ┌──────────────────────────────────┐
-  GATE 1-8 ──────┤  Rising edge detect (0.2V)       │
-                 │  Per-sample scan                 │
-                 └──────────────┬───────────────────┘
+                 ┌────────────────────────────────┐
+  GATE 1-8 ──────┤  Rising edge detect (0.2V)     │
+                 │  Per-sample scan               │
+                 └──────────────┬─────────────────┘
                                 │ trigger
-                 ┌──────────────┴───────────────────--┐
-  PITCH 1-8 ─────┤      SAMPLE SLOT (x8)              │
-                 │  ┌────────────────────────────-┐   │
-                 │  │ Read position               │   │
-                 │  │   += pitchRate              │   │
-                 │  │                             │   │
-                 │  │ if timeStretch != 1.0:      │   │
-                 │  │   Granular OLA (2 grains)   │   │
-                 │  │   2048 sample Hanning window│   │
-                 │  │   sourcePos += rate/stretch │   │
-                 │  │ else:                       │   │
-                 │  │   Direct buffer read        │   │
-                 │  │                             │   │
-                 │  │ Volume + Pan (equal power)  │   │
-                 │  └─────────────┬──────────────┘    │
-                 └────────────────┼──────────────────-┘
+                 ┌──────────────┴──────────────────--┐
+  PITCH 1-8 ─────┤      SAMPLE SLOT (x8)             │
+                 │  ┌────────────────────────────-┐  │
+                 │  │ Read position               │  │
+                 │  │   += pitchRate              │  │
+                 │  │                             │  │
+                 │  │ if timeStretch != 1.0:      │  │
+                 │  │   Granular OLA (2 grains)   │  │
+                 │  │   2048 sample Hanning window│  │
+                 │  │   sourcePos += rate/stretch │  │
+                 │  │ else:                       │  │
+                 │  │   Direct buffer read        │  │
+                 │  │                             │  │
+                 │  │ Volume + Pan (equal power)  │  │
+                 │  └─────────────┬──────────────-┘  │
+                 └────────────────┼──────────────────┘
                                   │ (x8 slots summed)
-                            ┌─────┴─────-[┐
+                            ┌─────┴─────--┐
                             │  GridEngine │
                             │   Stereo    │
                             │    Mix      │

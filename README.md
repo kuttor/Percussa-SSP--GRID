@@ -1,143 +1,95 @@
-# GRID — 8-Pad Sample Trigger for Percussa SSP
+<p align="center">
+  <h1 align="center">GRID</h1>
+  <p align="center"><strong>8-Pad Sample Trigger for Percussa SSP</strong></p>
+  <p align="center">v0.1.2-beta · AGPL-3.0 · ARM Cross-Compiled</p>
+</p>
 
-An 8-pad sample trigger module for the [Percussa SSP](http://www.percussa.com/) Eurorack platform. Load WAVs, hit buttons, hear sounds. Built with JUCE and the SSP SDK.
+An 8-channel sampler that's really fast to set up. Takes influences from BitBox Micro and Elektron devices. Built for the Percussa SSP Eurorack module.
+Load WAVs. Hit buttons. Hear sounds. Patch gates from a sequencer. Have a drum kit running in 30 seconds.
 
-## What It Does
+"The factory sampler makes me want to throw my rack out the window."
+— me, before building this
 
-8 sample slots, each independently triggerable via SSP's soft buttons or CV gate inputs. Per-pad volume, pan, pitch (resampling), start/end markers, and play mode. Stereo output.
+Install
+Download GRID.so from releases. Drop it on your SSP's SD card:
+/media/BOOT/plugins/GRID/GRID.so
+Eject. Insert. Power on. Done.
+What It Does
+8 pads. Each one independent.
+FeatureStatusOne-shot / Loop / Clocked modesDonePer-pad volume + panDonePer-pad pitch shift (+-24 semitones via resampling)DonePer-pad start/end markersDoneGranular time stretch (0.5x - 2.0x)Done8 gate CV inputs (trigger pads from sequencers)Done8 pitch CV inputs (1V/oct per pad)DoneStereo output (L/R)DoneFile browser with durationsDoneState save/recallComingMIDI note-to-pad mappingComingRecord to pad (live sampling)Coming
+The UI
+GRID always shows your 8 pads. Tabs change what the encoders do — you never lose sight of the grid.
 
-## Features
+VU-colored waveforms per pad (green / yellow / red by amplitude)
+Red progress fill sweeps across each pad during playback
+Start/end markers visible on waveforms — audio outside region is dimmed
+ContextBar at top shows selected pad specs in red (mode, volume, pitch)
+Split-panel file browser — stays open while you load samples across pads
+Pitch/stretch indicators show on pads when non-default
 
-**Playback**
-- 8 independent sample pads
-- One-shot, Loop, Clocked Loop, Clocked Bar modes
-- Per-pad volume and pan (equal-power pan law)
-- Per-pad pitch shifting via resampling (±24 semitones / 2 octaves)
-- Per-pad start/end region markers
-- Time stretch parameter stored (DSP coming)
+Tabs
+TabEncodersWhat You SeePADSPad selectThe grid, alwaysSAMPLEStart / EndDetail waveform with markersPLAYMode / Vol / PanMode name, volume/pan valuesWARPPitch / TimeBidirectional bars (center = default)
+Controls
+ControlActionButtons 1-8Trigger + select pad (select-only in browser)Shift L/RSwitch tabsEnc 0 turnNavigate pads (all tabs)Enc 0 pushToggle file browser
+File Browser:
+ControlActionEnc 1 turnBrowse filesEnc 1 pushLoad / enter folderEnc 2 turnSwitch target padEnc 2 pushGo back
+CV I/O
+17 inputs, 2 outputs. Patch a drum sequencer and go.
+INPUTS                          OUTPUTS
+Gate1  Gate2  Gate3  Gate4      Left
+Gate5  Gate6  Gate7  Gate8      Right
+Pitch1 Pitch2 Pitch3 Pitch4
+Pitch5 Pitch6 Pitch7 Pitch8
+Clock
+Gates use per-sample rising edge detection at 0.2V threshold. Only reads patched inputs — no garbage from unconnected channels.
+Building From Source
+Prerequisites
 
-**UI**
-- Always-visible 2×4 pad grid with VU-colored mini waveforms
-- Translucent red progress fill sweeps across each pad during playback
-- Start/end markers visible on waveforms (dimmed outside region)
-- ELAS-style tab bar with red accent, flowing into content
-- Split-panel file browser (remembers last folder)
-- Top bar shows selected pad specs in red
-- 4 tabs: PADS, SAMPLE, PLAY, WARP
+macOS (Apple Silicon or Intel)
+JUCE
+SSP Buildroot SDK
+Steinberg VST3 SDK
+CMake 3.15+
 
-**CV**
-- 8 gate inputs (Gate1-Gate8) — rising edge triggers corresponding pad
-- 8 pitch inputs (Pitch1-Pitch8) — 1V/oct, 0V = original pitch
-- 1 clock input
-- 2 outputs (Left, Right)
-- Only reads from patched inputs (inputEnabled tracking)
+Setup + Build
+bashgit clone --recursive https://github.com/kuttor/Percussa-SSP--GRID.git
+cd Percussa-SSP--GRID
+./configure.sh    # one time
+./build.sh        # builds + deploys to SD card if mounted
+Architecture
+PluginParameters    I/O enums, mono bus layout, constants
+SampleSlot (x8)    Buffer, playhead, mode, vol/pan/pitch/stretch
+GridEngine          Holds 8 slots, sums to stereo L/R
+PluginProcessor     Gate/pitch CV reads, audio output
+PluginEditor        Tab UI, pad grid, file browser, encoder dispatch
+SSPApi              Bridge between SYNTHOR host and JUCE
+Individual mono buses per I/O channel. Direct buffer indices, shared channel space. Follows the established SSP plugin architecture.
+Roadmap
 
-## Controls
+ Basic sample playback
+ 8-pad UI with VU waveforms
+ File browser with durations
+ Per-pad pitch shifting (resampling)
+ Granular time stretch
+ Gate/pitch CV inputs per pad
+ Mono bus architecture
+ State save/recall (APVTS)
+ MIDI tab (note-to-pad, CC learn)
+ REC tab (live sampling to pads)
+ Waveform zoom for long samples
+ Star/favorite samples
+ Reusable UI framework (SSPShell)
 
-| Control | Action |
-|---------|--------|
-| Soft buttons 1-8 | Trigger + select pad |
-| Shift L/R | Change tab |
-| Arrows | Navigate pad grid |
-| Encoder 0 turn | Select pad (all tabs) |
-| Encoder 0 push | Open file browser (all tabs) |
-| Enc 1/2 on SAMPLE | Start / End position |
-| Enc 1/2/3 on PLAY | Mode / Volume / Pan |
-| Enc 1/2 on WARP | Pitch (semitones) / Time stretch |
+Shoutouts
+TheTechnobear (Mark Harris) — The godfather of SSP third-party development. 30+ open source plugins, years of framework iteration, and generous enough to share all of it. GRID's I/O architecture, SSP API bridge, mono bus layout, and build patterns are directly informed by studying his code. His BaseProcessor and plugin framework set the standard. If you use the SSP, you owe this man a ko-fi.
+Bert Schiettecatte / Percussa — For building the SSP in the first place, and for publishing the SDK that makes all of this possible. The SSP screen is one of the best displays in Eurorack and deserves better software taking advantage of it.
+The Percussa Forum Community — wavejockey, and everyone testing early builds and giving feedback. This module exists because of that community.
+JUCE — The audio framework underneath. Cross-compiling from Mac to ARM with full GUI rendering. Magic.
+Anthropic Claude — AI-assisted development. Architecture, C++ implementation, build system debugging, UI iteration. Every line reviewed and tested on hardware by a human, but the velocity wouldn't be possible without it.
+License
+AGPL-3.0 — Required due to JUCE dependency under open source usage. Same license as TheTechnobear's SSP plugins.
+See LICENSE for full text.
 
-## Building
-
-### Prerequisites
-
-- macOS (Apple Silicon tested)
-- ARM cross-compiler: `arm-linux-gnueabihf-gcc` (via Homebrew)
-- CMake 3.15+
-- [JUCE](https://github.com/juce-framework/JUCE)
-- [SSP Buildroot SDK](https://sw13072022.s3.us-west-1.amazonaws.com/arm-rockchip-linux-gnueabihf_sdk-buildroot.tar.gz)
-- [Steinberg VST3 SDK](https://www.steinberg.net/developers/)
-- [Percussa SSP SDK](https://github.com/percussa/ssp-sdk) (included as submodule)
-
-### Setup
-
-```bash
-git clone --recursive https://github.com/YOUR_USER/ssp-grid.git
-cd ssp-grid
-```
-
-### Configure (one time)
-
-```bash
-cmake -DCMAKE_BUILD_TYPE=Release \
-      -DCMAKE_TOOLCHAIN_FILE=cmake/xcSSP.cmake \
-      -DJUCE_DIR=$HOME/Code/JUCE \
-      -DVSTSDK=$HOME/Code/VST_SDK \
-      -DBUILDROOT=$HOME/Code/buildroot/arm-rockchip-linux-gnueabihf_sdk-buildroot \
-      .
-echo '#!/bin/bash
-exit 0' > GRID_vst3_helper
-chmod +x GRID_vst3_helper
-```
-
-### Build
-
-```bash
-make -j$(sysctl -n hw.ncpu)
-```
-
-### Deploy
-
-```bash
-mkdir -p /Volumes/BOOT/plugins/GRID
-cp GRID_artefacts/Release/VST3/GRID.vst3/Contents/armv7l-linux/GRID.so /Volumes/BOOT/plugins/GRID/
-```
-
-Eject the SD card, insert into SSP, power on. GRID appears in the module picker.
-
-## Architecture
-
-```
-SampleSlot (×8)     Per-pad: buffer, playhead, mode, vol/pan/pitch, start/end
-GridEngine           Holds 8 slots, sums all to stereo L/R
-PluginProcessor      processBlock reads gate/pitch CVs, writes ch 0,1
-PluginEditor         UI: 4-tab layout, file browser, encoder/button dispatch
-SSPApi               Bridge between SYNTHOR host and JUCE plugin
-PluginParameters     Constants, I/O enums, path finder
-```
-
-## SSP Dev Notes
-
-Things we learned building this:
-
-- **Outputs are channels 0,1** — same indices as inputs (shared flat buffer)
-- **Unconnected inputs contain garbage** — use `inputEnabled()` callbacks to know what's patched
-- **processBlock only runs when outputs are patched** in the SSP grid
-- **Read inputs BEFORE `buffer.clear()`** — the SSP shares the buffer
-- **JUCE VST3 helper deletes .so on cross-compile** — fake it with `exit 0` wrapper
-- **`createPluginFilter()` must be in a PUBLIC source** — we put it in SSPApi.cpp
-- **Font rendering** — SSP can't render unicode (em dashes etc) or complex Font styles. Use `g.setFont(size)` and ASCII only
-- **Don't delete CMakeCache.txt** — it stores your toolchain config. If you do, you need the full cmake command again
-- **Never use `cmake --build .`** — it reconfigures and overwrites the vst3_helper. Use `make` directly
-- **Sample path**: `/media/BOOT/samples` (TheTechnobear firmware)
-
-## Roadmap
-
-- [x] Basic sample playback
-- [x] 8-pad UI with waveforms
-- [x] File browser
-- [x] Per-pad pitch shifting (resampling)
-- [x] Gate/pitch CV inputs per pad
-- [ ] Time stretch DSP (granular or phase vocoder)
-- [ ] Waveform zoom for long samples
-- [ ] State save/recall
-- [ ] Stereo file playback improvements
-
-## Credits
-
-Built on the shoulders of:
-- [Percussa SSP SDK](https://github.com/percussa/ssp-sdk)
-- [TheTechnobear's SSP plugins](https://github.com/TheTechnobear/SSP) — the reference implementation
-- [JUCE framework](https://juce.com/)
-
-## License
-
-GPL-3.0 — same as SSP SDK.
+<p align="center">
+  <em>Built in Los Angeles. Tested on hardware. Shipped with impatience.</em>
+</p>

@@ -188,12 +188,12 @@ Individual mono buses per I/O channel. Direct buffer indices, shared channel spa
 ```
                  ┌──────────────────────────────────┐
   GATE 1-8 ──────┤  Rising edge detect (0.2V)       │
-                 │  Per-sample scan                  │
+                 │  Per-sample scan                 │
                  └──────────────┬───────────────────┘
                                 │ trigger
-                 ┌──────────────┴───────────────────┐
-  PITCH 1-8 ─────┤      SAMPLE SLOT (x8)            │
-                 │  ┌────────────────────────────┐   │
+                 ┌──────────────┴───────────────────--┐
+  PITCH 1-8 ─────┤      SAMPLE SLOT (x8)              │
+                 │  ┌────────────────────────────-┐   │
                  │  │ Read position               │   │
                  │  │   += pitchRate              │   │
                  │  │                             │   │
@@ -205,14 +205,14 @@ Individual mono buses per I/O channel. Direct buffer indices, shared channel spa
                  │  │   Direct buffer read        │   │
                  │  │                             │   │
                  │  │ Volume + Pan (equal power)  │   │
-                 │  └─────────────┬──────────────┘   │
-                 └────────────────┼──────────────────┘
+                 │  └─────────────┬──────────────┘    │
+                 └────────────────┼──────────────────-┘
                                   │ (x8 slots summed)
-                            ┌─────┴─────┐
-                            │  GridEngine│
-                            │   Stereo   │
-                            │    Mix     │
-                            └─────┬─────┘
+                            ┌─────┴─────-[┐
+                            │  GridEngine │
+                            │   Stereo    │
+                            │    Mix      │
+                            └─────┬─────--┘
                                   │
                              OUTPUT L/R
 ```

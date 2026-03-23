@@ -1,4 +1,4 @@
-# GRID v0.1.2
+# GRID v0.1.2-Beta
 
 ### An 8-Channel Sample Trigger for Percussa SSP
 

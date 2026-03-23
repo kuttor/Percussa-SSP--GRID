@@ -91,5 +91,5 @@ AGPL-3.0 — Required due to JUCE dependency under open source usage. Same licen
 See LICENSE for full text.
 
 <p align="center">
-  <em>Built in Los Angeles. Tested on hardware. Shipped with impatience.</em>
+  <em>Built in Reno. Tested on hardware. Shipped with impatience.</em>
 </p>

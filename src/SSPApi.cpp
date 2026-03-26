@@ -132,12 +132,8 @@ public:
     }
 
     void prepare(double sampleRate, int samplesPerBlock) override {
-        int totalIn = 0, totalOut = 0;
-        for (int i = 0; i < processor_->getBusCount(true); ++i)
-            totalIn += processor_->getChannelCountOfBus(true, i);
-        for (int i = 0; i < processor_->getBusCount(false); ++i)
-            totalOut += processor_->getChannelCountOfBus(false, i);
-        processor_->setPlayConfigDetails(totalIn, totalOut, sampleRate, samplesPerBlock);
+        // Bear's pattern: setRateAndBufferSizeDetails, NOT setPlayConfigDetails
+        processor_->setRateAndBufferSizeDetails(sampleRate, samplesPerBlock);
         processor_->prepareToPlay(sampleRate, samplesPerBlock);
     }
 
@@ -163,10 +159,14 @@ Percussa::SSP::PluginDescriptor *createDescriptor() {
     desc->version = JucePlugin_VersionString;
     desc->uid = static_cast<int>(JucePlugin_VSTUniqueID);
 
-    for (int i = 0; i < kNumInputs; ++i)
-        desc->inputChannelNames.push_back(ChannelName::inputs[i]);
-    for (int i = 0; i < kNumOutputs; ++i)
-        desc->outputChannelNames.push_back(ChannelName::outputs[i]);
+    // Bear's pattern: read bus names from BusesProperties
+    auto busProps = PluginProcessor::getDefaultBusesProperties();
+    for (auto& layout : busProps.inputLayouts)
+        desc->inputChannelNames.push_back(layout.busName.toStdString());
+    for (auto& layout : busProps.outputLayouts)
+        desc->outputChannelNames.push_back(layout.busName.toStdString());
+
+    desc->colour = 0xFFE53935;  // ELAS red
 
     return desc;
 }

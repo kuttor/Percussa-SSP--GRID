@@ -1,47 +1,88 @@
 #pragma once
 #include <juce_core/juce_core.h>
-#include <string>
+#include <juce_audio_processors/juce_audio_processors.h>
 
 namespace grid {
 
-// ── SSP Display ──────────────────────────────────────────────────────────
+// -- SSP Display --
 static constexpr int kDisplayWidth  = 1600;
 static constexpr int kDisplayHeight = 480;
 static constexpr int kNumPads       = 8;
-static constexpr int kNumPages      = 4;
+static constexpr int kNumPages      = 5;
 static constexpr int kEncodersPerPage = 4;
 
-// ── I/O ──────────────────────────────────────────────────────────────────
-// Inputs: 8 gates, 8 pitch CVs, 1 clock = 17
-// Outputs: stereo = 2
-enum InputChannel {
-    IN_GATE_1 = 0, IN_GATE_2, IN_GATE_3, IN_GATE_4,
-    IN_GATE_5, IN_GATE_6, IN_GATE_7, IN_GATE_8,
-    IN_PITCH_1, IN_PITCH_2, IN_PITCH_3, IN_PITCH_4,
-    IN_PITCH_5, IN_PITCH_6, IN_PITCH_7, IN_PITCH_8,
-    IN_CLOCK,
-    kNumInputs
+// -- I/O Channel Indices --
+// Grouped by pad, 4 per pad:
+//   P1 Trig, P1 Pitch, P1 Start, P1 End, P2 Trig, ...
+//
+// For pad N (0-7): trig = N*4, pitch = N*4+1, start = N*4+2, end = N*4+3
+//
+enum {
+    I_P1_TRIG = 0, I_P1_PITCH, I_P1_START, I_P1_END,
+    I_P2_TRIG,     I_P2_PITCH, I_P2_START, I_P2_END,
+    I_P3_TRIG,     I_P3_PITCH, I_P3_START, I_P3_END,
+    I_P4_TRIG,     I_P4_PITCH, I_P4_START, I_P4_END,
+    I_P5_TRIG,     I_P5_PITCH, I_P5_START, I_P5_END,
+    I_P6_TRIG,     I_P6_PITCH, I_P6_START, I_P6_END,
+    I_P7_TRIG,     I_P7_PITCH, I_P7_START, I_P7_END,
+    I_P8_TRIG,     I_P8_PITCH, I_P8_START, I_P8_END,
+    I_CLOCK,
+    I_REC_GATE,
+    I_REC_L,
+    I_REC_R,
+    I_MAX
 };
-enum OutputChannel { OUT_LEFT = 0, OUT_RIGHT, kNumOutputs };
 
-namespace ChannelName {
-    static const char* inputs[] = {
-        "Gate1", "Gate2", "Gate3", "Gate4",
-        "Gate5", "Gate6", "Gate7", "Gate8",
-        "Pitch1", "Pitch2", "Pitch3", "Pitch4",
-        "Pitch5", "Pitch6", "Pitch7", "Pitch8",
-        "Clock"
+// Helper: get channel for pad index 0-7
+inline int trigChannel(int pad)  { return pad * 4; }
+inline int pitchChannel(int pad) { return pad * 4 + 1; }
+inline int startChannel(int pad) { return pad * 4 + 2; }
+inline int endChannel(int pad)   { return pad * 4 + 3; }
+
+enum {
+    O_LEFT = 0, O_RIGHT,
+    O_MAX
+};
+
+// -- Recording modes --
+enum class RecMode { Instant = 0, Threshold, NextBar };
+
+// -- Max record lengths (in seconds) --
+static constexpr float kRecLengths[] = { 1.0f, 2.0f, 5.0f, 10.0f, 30.0f, 60.0f };
+static constexpr int kNumRecLengths = 6;
+
+// -- Bus names (grouped by pad) --
+inline const char* inputBusName(int i) {
+    static const char* n[] = {
+        "P1 Trig", "P1 Pitch", "P1 Start", "P1 End",
+        "P2 Trig", "P2 Pitch", "P2 Start", "P2 End",
+        "P3 Trig", "P3 Pitch", "P3 Start", "P3 End",
+        "P4 Trig", "P4 Pitch", "P4 Start", "P4 End",
+        "P5 Trig", "P5 Pitch", "P5 Start", "P5 End",
+        "P6 Trig", "P6 Pitch", "P6 Start", "P6 End",
+        "P7 Trig", "P7 Pitch", "P7 Start", "P7 End",
+        "P8 Trig", "P8 Pitch", "P8 Start", "P8 End",
+        "Clock",
+        "Rec Gate", "Rec L", "Rec R"
     };
-    static const char* outputs[] = { "Left", "Right" };
+    return (i >= 0 && i < I_MAX) ? n[i] : "?";
 }
 
-// ── Pages ────────────────────────────────────────────────────────────────
-enum Page { PAGE_OVERVIEW = 0, PAGE_SAMPLE, PAGE_PLAY, PAGE_PITCH };
+inline const char* outputBusName(int i) {
+    static const char* n[] = { "Left", "Right" };
+    return (i >= 0 && i < O_MAX) ? n[i] : "?";
+}
 
-// ── Per-pad modes ────────────────────────────────────────────────────────
+// -- Trigger threshold (Bear uses 0.2f) --
+static constexpr float kTrigThreshold = 0.2f;
+
+// -- Pages --
+enum Page { PAGE_OVERVIEW = 0, PAGE_SAMPLE, PAGE_PLAY, PAGE_PITCH, PAGE_FADE };
+
+// -- Per-pad modes --
 enum class PadMode { OneShot = 0, Loop, ClockedLoop, ClockedBar };
 
-// ── Path finder ──────────────────────────────────────────────────────────
+// -- Path finder --
 inline juce::String findSSPSamplePath()
 {
     const char* candidates[] = {
@@ -59,7 +100,6 @@ inline juce::String findSSPSamplePath()
         "/data/samples",
         "/root/samples",
     };
-
     for (const auto* path : candidates)
     {
         juce::File dir(path);

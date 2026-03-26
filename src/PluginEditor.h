@@ -64,12 +64,15 @@ private:
     juce::File browseCurrentDir_;
     juce::Array<juce::File> browseItems_;
     juce::StringArray browseItemNames_;
+    juce::StringArray browseItemDurations_;
+    juce::AudioFormatManager browseFormatMgr_;
 
     void enterBrowseMode();
     void exitBrowseMode();
     void browseScanCurrentDir();
     void browseSelect();
     void browseGoUp();
+    void browseGoHome();
     void paintFileBrowser(juce::Graphics& g, juce::Rectangle<int> area);
 
     // ── Layout constants ─────────────────────────────────────────────────

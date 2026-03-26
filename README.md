@@ -1,359 +1,180 @@
-# GRID v0.1.2-Beta
+# GRID
 
-### An 8-Channel Sample Trigger for Percussa SSP
+**8-pad sampler for the Percussa SSP.**
 
----
-
-```
-     ██████╗ ██████╗ ██╗██████╗ 
-    ██╔════╝ ██╔══██╗██║██╔══██╗
-    ██║  ███╗██████╔╝██║██║  ██║
-    ██║   ██║██╔══██╗██║██║  ██║
-    ╚██████╔╝██║  ██║██║██████╔╝
-     ╚═════╝ ╚═╝  ╚═╝╚═╝╚═════╝ 
-
-        Load. Trigger. Done
-```
+Load. Trigger. Done.
 
 ---
 
-## Overview
+## What is GRID?
 
-**GRID** is an 8-channel sampler that's really fast to set up. Takes influences from BitBox Micro and Elektron devices. Built for the [Percussa SSP](http://www.percussa.com/) Eurorack module.
+GRID is an 8-channel sample player and recorder for the Percussa SSP Eurorack module. Load WAV or AIFF files onto 8 pads, trigger them with CV gates or the hardware buttons, shape them with pitch shifting, time stretching, fade curves, and start/end markers — all controllable via CV.
 
-Load WAVs. Hit buttons. Hear sounds. Patch gates from a sequencer. Have a drum kit running in 30 seconds.
-
-The factory sampler has 8 channels too. GRID has waveforms, visual feedback, a file browser that doesn't make you question your life choices, and a UI you can actually read from across the room.
-
----
+Think MPC meets Eurorack. No menu diving. Everything visible. Everything patchable.
 
 ## Features
 
-### 🥁 Four Play Modes
+**Sampling**
+- 8 independent pads, each with its own sample
+- WAV and AIFF support (any sample rate, mono or stereo)
+- One-shot, loop, clocked loop, and clocked bar modes
+- Per-pad volume, pan, pitch (+-48 semitones), time stretch (0.25x-4.0x)
+- Per-pad start/end markers with CV control
+- Per-pad fade in/out with linear or exponential curves
+- Anti-click crossfade on trigger and retrigger
+- Instant retrigger — no queuing, no delay
 
-| Mode | Behavior |
-|------|----------|
-| **One-Shot** | Plays once, stops at end marker |
-| **Loop** | Loops between start/end markers |
-| **Clocked Loop** | Loop synced to clock input |
-| **Clocked Bar** | One-shot synced to bar length |
+**Recording**
+- Stereo audio input (Rec L / Rec R buses)
+- Three record modes: Instant, Threshold, Next Bar
+- Configurable max length: 1s, 2s, 5s, 10s, 30s, 60s
+- Rec Gate input for hands-free operation (foot pedal, external trigger)
+- Auto-saves recordings as WAV to /recordings/ folder
+- Recorded audio loads directly onto the target pad
 
-### 🎚️ Per-Pad Control
+**Clock Sync**
+- Clock input with BPM detection (displayed on screen)
+- CLK LOOP mode: auto time-stretch to match one clock pulse
+- CLK BAR mode: auto time-stretch to match one bar (4 beats in 4/4)
 
-Every pad is independent. Every pad has its own:
+**CV Control (per pad)**
+- Trigger — gate input, rising edge fires the pad
+- Pitch — 1V/oct, 0V = original pitch
+- Start — 0-1V sets sample start position
+- End — 0-1V sets sample end position
 
-| Parameter | Range | Description |
-|-----------|-------|-------------|
-| **Volume** | 0-100% | Output level |
-| **Pan** | L-R | Equal-power pan law |
-| **Pitch** | +-24 semitones | Resampling-based, 4 octave range |
-| **Time Stretch** | 0.5x - 2.0x | Granular overlap-add with Hanning window |
-| **Start / End** | 0-100% | Region markers, visible on waveform |
+**Browser**
+- File browser with duration, sample rate, and stereo/mono info
+- Smart Home: quick access to Samples, Kits, Recordings folders
+- Clear Pad function to unassign samples
+- Audition: load and play highlighted file with one push
+- Browser stays open after loading — load 8 samples without closing
 
-### 📺 The UI
+**State**
+- Full preset save/load — samples, settings, fade curves all persist
+- File paths stored relative to samples root for portability
 
-GRID always shows your 8 pads. Tabs change what the encoders do — you never lose sight of the grid.
-
-- **VU-colored waveforms** per pad (green / yellow / red by amplitude)
-- **Red progress fill** sweeps across each pad during playback, respects start/end region
-- **Start/end markers** visible on waveforms — audio outside region is dimmed
-- **ContextBar** shows selected pad specs in red (mode, volume, pitch)
-- **Pitch/stretch indicators** on pads when non-default (blue text, top-right)
-- **White flash** on retrigger
-
-### 📂 File Browser
-
-The browser that stays open. Because loading 8 samples shouldn't take 8 trips.
-
-- Split-panel: browser on left, pads still visible on right
-- **Push enc 0** to toggle open/close
-- **Soft buttons 1-8** switch target pad without closing browser
-- Shows file **durations** next to each file (ms / s / m:ss)
-- **Remembers last folder** between opens
-- Strips file extensions — you see names, not `.wav`
-
-### 🔌 CV I/O (17 in, 2 out)
-
-Patch a drum sequencer and go.
+## I/O Layout
 
 ```
-INPUTS                          OUTPUTS
-Gate1  Gate2  Gate3  Gate4      Left
-Gate5  Gate6  Gate7  Gate8      Right
-Pitch1 Pitch2 Pitch3 Pitch4
-Pitch5 Pitch6 Pitch7 Pitch8
-Clock
+Inputs (36 total):
+  P1 Trig, P1 Pitch, P1 Start, P1 End
+  P2 Trig, P2 Pitch, P2 Start, P2 End
+  P3 Trig, P3 Pitch, P3 Start, P3 End
+  P4 Trig, P4 Pitch, P4 Start, P4 End
+  P5 Trig, P5 Pitch, P5 Start, P5 End
+  P6 Trig, P6 Pitch, P6 Start, P6 End
+  P7 Trig, P7 Pitch, P7 Start, P7 End
+  P8 Trig, P8 Pitch, P8 Start, P8 End
+  Clock
+  Rec Gate
+  Rec L, Rec R
+
+Outputs (2):
+  Left, Right (stereo mix)
 ```
-
-- **Gates**: Per-sample rising edge detection at 0.2V threshold
-- **Pitch**: 1V/oct per pad, 0V = original pitch
-- **Clock**: Reserved for clocked modes
-- Only reads patched inputs — no garbage from unconnected channels
-
----
 
 ## Tabs
 
-| Tab | Encoders | What You See |
-|-----|----------|-------------|
-| **PADS** | Pad select | The grid, always |
-| **SAMPLE** | Start / End | Detail waveform with markers and playhead |
-| **PLAY** | Mode / Vol / Pan | Mode name, volume/pan values |
-| **WARP** | Pitch / Time | Bidirectional bars centered on default |
+| Tab | Enc 0 | Enc 1 | Enc 2 | Enc 3 |
+|-----|-------|-------|-------|-------|
+| PADS | Pad select / Browser | REC arm/stop | Rec mode | Max length |
+| SAMPLE | Pad select / Browser | Start % | End % | --- |
+| PLAY | Pad select / Browser | Mode | Volume | Pan |
+| WARP | Pad select / Browser | Pitch (st) | Time stretch | --- |
+| FADE | Pad select / Browser | Fade In (ms) | Fade Out (ms) | --- |
 
-### Coming Soon
+Push encoder resets that parameter to default. On FADE tab, push enc 1 or 2 toggles linear/exponential curve for that fade.
 
-| Tab | Purpose |
-|-----|---------|
-| **REC** | Live sampling — arm a pad, select SSP input, record |
-| **MIDI** | Note-to-pad mapping, CC learn, device select |
-
----
-
-## Controls
-
-### All Tabs
-
-| Control | Action |
-|---------|--------|
-| **Buttons 1-8** | Trigger + select pad |
-| **Shift L / R** | Switch tabs |
-| **Enc 0 turn** | Navigate pads |
-| **Enc 0 push** | Toggle file browser |
-
-### File Browser
-
-| Control | Action |
-|---------|--------|
-| **Enc 1 turn** | Browse files |
-| **Enc 1 push** | Load file / enter folder |
-| **Enc 2 turn** | Switch target pad |
-| **Enc 2 push** | Go back (parent folder) |
-| **Buttons 1-8** | Select target pad (no trigger) |
-
-### SAMPLE Tab
-
-| Control | Action |
-|---------|--------|
-| **Enc 1** | Start position |
-| **Enc 2** | End position |
-
-### PLAY Tab
-
-| Control | Action |
-|---------|--------|
-| **Enc 1** | Mode (One-Shot / Loop / Clocked) |
-| **Enc 2** | Volume |
-| **Enc 3** | Pan |
-
-### WARP Tab
-
-| Control | Action |
-|---------|--------|
-| **Enc 1** | Pitch (+-24 semitones) |
-| **Enc 2** | Time stretch (0.5x - 2.0x) |
-
----
+Buttons 1-8 always trigger the corresponding pad. In loop mode, pressing a playing pad stops it.
 
 ## Installation
 
-1. Copy `GRID.so` to your SSP's SD card:
-   ```
-   /media/BOOT/plugins/GRID/GRID.so
-   ```
+1. Copy `GRID.so` to `/media/BOOT/plugins/GRID/` on the SSP's SD card
+2. Create a `/media/BOOT/samples/` folder for your samples
+3. Boot the SSP, add GRID to your network
 
-2. Eject. Insert. Power on.
+## Building from Source
 
-3. GRID appears in the module list.
-
----
-
-## Architecture
-
-```
-PluginParameters     I/O enums, mono bus layout, constants
-SampleSlot (x8)      Buffer, playhead, mode, vol/pan/pitch/stretch
-GridEngine           Holds 8 slots, sums to stereo L/R
-PluginProcessor      Gate/pitch CV reads, audio output
-PluginEditor         Tab UI, pad grid, file browser, encoder dispatch
-SSPApi               Bridge between SYNTHOR host and JUCE
-```
-
-Individual mono buses per I/O channel. Direct buffer indices, shared channel space. Follows TheTechnobear's established SSP plugin architecture.
-
----
-
-## Signal Flow
-
-```
-                 ┌────────────────────────────────┐
-  GATE 1-8 ──────┤  Rising edge detect (0.2V)     │
-                 │  Per-sample scan               │
-                 └──────────────┬─────────────────┘
-                                │ trigger
-                 ┌──────────────┴──────────────────--┐
-  PITCH 1-8 ─────┤      SAMPLE SLOT (x8)             │
-                 │  ┌────────────────────────────-┐  │
-                 │  │ Read position               │  │
-                 │  │   += pitchRate              │  │
-                 │  │                             │  │
-                 │  │ if timeStretch != 1.0:      │  │
-                 │  │   Granular OLA (2 grains)   │  │
-                 │  │   2048 sample Hanning window│  │
-                 │  │   sourcePos += rate/stretch │  │
-                 │  │ else:                       │  │
-                 │  │   Direct buffer read        │  │
-                 │  │                             │  │
-                 │  │ Volume + Pan (equal power)  │  │
-                 │  └─────────────┬──────────────-┘  │
-                 └────────────────┼──────────────────┘
-                                  │ (x8 slots summed)
-                            ┌─────┴─────--┐
-                            │  GridEngine │
-                            │   Stereo    │
-                            │    Mix      │
-                            └─────┬─────--┘
-                                  │
-                             OUTPUT L/R
-```
-
----
-
-## Building From Source
-
-### Prerequisites
-
-- macOS (Apple Silicon or Intel)
-- [JUCE](https://github.com/juce-framework/JUCE)
-- [SSP Buildroot SDK](https://sw13072022.s3.us-west-1.amazonaws.com/arm-rockchip-linux-gnueabihf_sdk-buildroot.tar.gz)
-- [Steinberg VST3 SDK](https://www.steinberg.net/developers/)
-- CMake 3.15+
-
-### First Time
+Requires:
+- ARM cross-compiler (buildroot toolchain for Rockchip RK3288)
+- JUCE framework
+- VST3 SDK
+- Percussa SSP SDK (included as submodule)
 
 ```bash
 git clone --recursive https://github.com/kuttor/Percussa-SSP--GRID.git
 cd Percussa-SSP--GRID
-./configure.sh
-./build.sh
+
+cmake -DCMAKE_BUILD_TYPE=Release \
+      -DCMAKE_TOOLCHAIN_FILE=cmake/xcSSP.cmake \
+      -DJUCE_DIR=/path/to/JUCE \
+      -DVSTSDK=/path/to/VST_SDK \
+      -DBUILDROOT=/path/to/buildroot/arm-rockchip-linux-gnueabihf_sdk-buildroot \
+      .
+
+# Build
+make -j$(nproc) GRID GRID_vst3_helper 2>/dev/null || true
+echo '#!/bin/bash
+exit 0' > GRID_vst3_helper
+chmod +x GRID_vst3_helper
+export PATH="$(pwd):$PATH"
+make -j$(nproc)
+
+# Strip and deploy
+arm-linux-gnueabihf-strip GRID_artefacts/Release/VST3/GRID.vst3/Contents/armv7l-linux/GRID.so
+cp GRID_artefacts/Release/VST3/GRID.vst3/Contents/armv7l-linux/GRID.so /path/to/BOOT/plugins/GRID/
 ```
 
-### Subsequent Builds
+## File Structure
 
-```bash
-./build.sh
 ```
-
-Auto-deploys to `/Volumes/BOOT/plugins/GRID/` if SD card is mounted.
-
----
-
-## Technical Specifications
-
-| Specification | Value |
-|---------------|-------|
-| Max Pads | 8 simultaneous |
-| Sample Rate | Follows system (48kHz typical) |
-| Bit Depth | 32-bit float internal |
-| Pitch Range | +-24 semitones (4 octaves total) |
-| Time Stretch | 0.5x - 2.0x (granular OLA) |
-| Grain Size | 2048 samples (~42ms at 48kHz) |
-| Gate Threshold | 0.2V, per-sample edge detection |
-| CV Inputs | 17 (8 gate, 8 pitch, 1 clock) |
-| Audio Outputs | 2 (stereo L/R) |
-| Latency | Zero (direct buffer read) |
-| Pan Law | Equal-power (cos/sin) |
-
----
+src/
+  PluginParameters.h    I/O enums, bus layout, constants
+  SampleSlot.h/cpp      Per-pad sample engine (load, trigger, DSP)
+  GridEngine.h/cpp      8 slots, stereo mix output
+  PluginProcessor.h/cpp Audio processing, CV reading, clock, recording, state
+  PluginEditor.h/cpp    UI (tabs, pads, browser, encoders)
+  SSPApi.cpp            Percussa SSP bridge
+cmake/
+  xcSSP.cmake           ARM cross-compilation toolchain
+libs/
+  ssp-sdk/              Percussa SSP SDK (submodule)
+```
 
 ## Roadmap
 
-- [x] Basic sample playback
-- [x] 8-pad UI with VU-colored waveforms
-- [x] File browser with durations
-- [x] Per-pad pitch shifting (resampling)
-- [x] Granular time stretch
-- [x] Gate/pitch CV inputs per pad
-- [x] Mono bus architecture
-- [ ] State save/recall (APVTS)
-- [ ] MIDI tab (note-to-pad, CC learn, visual mapping on pads)
-- [ ] REC tab (live sampling from SSP inputs)
-- [ ] Waveform zoom for long samples
-- [ ] Star/favorite samples
-- [ ] Reusable UI framework (`SSPShell`)
+- Clock division setting (1/beat, 24 PPQN, etc)
+- Reset input (phase-lock clocked pads)
+- Kit files (.kit) — save/load 8-pad configurations
+- Stack files (.stack) — round-robin / random sample cycling per pad
+- Multi-select in browser to create kits and stacks
+- Per-pad direct outputs
+- MIDI note-to-pad mapping
+- Options flyout menu
+- Editor refactor (SSPShell framework for reuse across plugins)
 
----
+## Ecosystem (planned)
 
-## Changelog
+GRID is the first in a family of SSP plugins:
 
-### v0.1.2-beta (March 2026)
-- 🔧 **Mono Bus Architecture** — Individual mono buses per I/O, matching TheTechnobear's proven pattern
-- 🔧 **Gate Fix** — Direct buffer indices, per-sample edge detection, 0.2V threshold
-- 🔧 **setRateAndBufferSizeDetails** — Correct SSP prepare() call (not setPlayConfigDetails)
-- 📝 **AGPL-3.0 License** — Required for JUCE open source usage
-- 🔴 **Module Color** — GRID shows red in SSP patching grid
+- **GRID** — 8-pad sampler (this plugin)
+- **gSEQ** — step sequencer (Elektron-style parameter locks)
+- **gMOD** — motion sequencer / CV recorder
+- **gMIX** — performance mixer
 
-### v0.1.1-beta (March 2026)
-- 🎵 **Granular Time Stretch** — 2-grain overlap-add with Hanning window
-- 🎹 **Pitch Shifting** — Resampling via pitchRate, +-24 semitones
-- 📂 **Browser Improvements** — Stays open, shows durations, remembers folder
-- 🎛️ **WARP Tab** — Bidirectional pitch/time bars
-- 🔴 **ELAS Red Theme** — All accents `0xFFE53935`, no more orange
-
-### v0.1.0-beta (March 2026)
-- 🎉 Initial build
-- 8-pad playback with VU waveforms
-- File browser on SSP
-- Start/end markers
-- Per-pad volume, pan, mode
-- Progress fill animation
-- Button triggers (1-8)
-
----
+All share the same 8-channel UI framework and auto-connect to each other.
 
 ## Credits
 
-**GRID** was developed for the [Percussa SSP](http://www.percussa.com/) Eurorack platform.
-
-### Standing on Shoulders
-
-**[TheTechnobear (Mark Harris)](https://github.com/TheTechnobear/SSP)** — The godfather of SSP third-party development. 30+ open source plugins and years of framework iteration. GRID's I/O architecture, SSP API bridge, mono bus layout, and build patterns are directly informed by studying his code. His work made third-party SSP development possible for everyone. If you use the SSP, consider supporting him on [ko-fi](https://ko-fi.com/thetechnobear).
-
-**[Bert Schiettecatte / Percussa](https://github.com/percussa/ssp-sdk)** — For building the SSP and publishing the SDK. The SSP has one of the best screens in Eurorack — it deserves software that takes advantage of it.
-
-**[Percussa Forum Community](https://forum.percussa.com/)** — wavejockey and everyone testing early builds. This module exists because of that community.
-
-**[JUCE](https://juce.com/)** — Cross-compiling from Mac to ARM with full GUI rendering. The framework underneath everything.
-
----
+- **TheTechnobear** — SSP plugin architecture patterns, mono bus convention, code inspiration. His open-source SSP modules are the reference implementation for this platform.
+- **wavejockey** — testing, bug reports, feature requests, patience
+- **Percussa** — the SSP hardware and SDK
 
 ## License
 
-**AGPL-3.0** — Required due to JUCE dependency under open source usage. Same license as TheTechnobear's SSP plugins.
-
-See [LICENSE](LICENSE) for full text.
+AGPL-3.0. See [LICENSE](LICENSE).
 
 ---
 
-## Support
-
-Bug reports, feature requests, or just want to say hi:
-
-**GitHub**: [github.com/kuttor/Percussa-SSP--GRID](https://github.com/kuttor/Percussa-SSP--GRID)
-**Forum**: [Percussa Forum — Project GRID](https://forum.percussa.com/t/project-grid-a-better-8-channel-sampler/1977)
-
----
-
-<div align="center">
-
-```
-    ┌───┬───┬───┬───┐
-    │ 1 │ 2 │ 3 │ 4 │
-    ├───┼───┼───┼───┤
-    │ 5 │ 6 │ 7 │ 8 │
-    └───┴───┴───┴───┘
-```
-
-**GRID** — *Built in Los Angeles. Tested on hardware. Shipped with impatience.*
-
-</div>
+Built in Los Angeles. Tested on hardware. Shipped with impatience.

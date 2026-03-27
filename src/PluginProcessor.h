@@ -92,6 +92,7 @@ private:
     // Clock / BPM tracking
     bool clockHigh_ = false;
     bool clockActive_ = false;
+    bool resetHigh_ = false;
     int samplesSinceClock_ = 0;
     float bpm_ = 0.0f;
 

@@ -40,7 +40,7 @@ void PluginEditor::resized()
     // 4 encoders across ~800px (200px each), with per-encoder nudge
     static constexpr int kEncZoneW = 800;
     const int encW = kEncZoneW / kEncodersPerPage;
-    static constexpr int nudge[] = { -46, -16, 36, 88 };
+    static constexpr int nudge[] = { -14, 0, 52, 60 };
 
     for (int i = 0; i < kEncodersPerPage; ++i)
     {
@@ -135,12 +135,22 @@ void PluginEditor::paint(juce::Graphics& g)
         }
     }
 
-    // BPM indicator (after tabs, always visible)
+    // BPM indicator (far right of top bar, pill style)
     if (processor_.hasClockInput()) {
+        juce::String bpmStr = juce::String((int)processor_.getBPM()) + " BPM";
+        int bpmW = 110;
+        int bpmH = 24;
+        int bpmX = w - bpmW - 12;
+        int bpmY = (kTabHeight - bpmH) / 2;
+        // Pill background
+        g.setColour(juce::Colour(0xFF1A1A1A));
+        g.fillRoundedRectangle((float)bpmX, (float)bpmY, (float)bpmW, (float)bpmH, 12.0f);
+        g.setColour(juce::Colour(kTabActive).withAlpha(0.3f));
+        g.drawRoundedRectangle((float)bpmX, (float)bpmY, (float)bpmW, (float)bpmH, 12.0f, 1.0f);
+        // Text
         g.setColour(juce::Colour(kTabActive));
-        g.setFont(15.0f);
-        g.drawText(juce::String((int)processor_.getBPM()) + " BPM",
-                   560, 10, 80, 18, juce::Justification::centredLeft);
+        g.setFont(18.0f);
+        g.drawText(bpmStr, bpmX, bpmY, bpmW, bpmH, juce::Justification::centred);
     }
 
     // ── Encoder bar background ───────────────────────────────────────────
@@ -869,6 +879,12 @@ void PluginEditor::paintFileBrowser(juce::Graphics& g, juce::Rectangle<int> area
                        juce::Justification::centredRight);
         }
     }
+
+    // Version (bottom of browser panel)
+    g.setColour(juce::Colour(0xFF444444));
+    g.setFont(11.0f);
+    g.drawText("v0.1.6-beta", panel.getX() + 8, panel.getBottom() - 16, panel.getWidth() - 16, 14,
+               juce::Justification::centredLeft);
 }
 
 void PluginEditor::enterBrowseMode()
@@ -1146,12 +1162,25 @@ void PluginEditor::onButton(int n, bool val)
     if (!val || n < 0 || n >= kNumPads) return;
     auto& slot = processor_.getEngine().getSlot(n);
 
-    // Loop toggle: stop if actively playing (not already fading out)
+    if (browseMode_) {
+        // Browse mode: load highlighted file to this pad + trigger (quick assign + audition)
+        if (browseIndex_ >= 0 && browseIndex_ < browseItems_.size()) {
+            auto sel = browseItems_[browseIndex_];
+            if (!sel.isDirectory() && browseItemNames_[browseIndex_] != ">> Clear Pad") {
+                slot.loadFile(sel);
+                processor_.getEngine().trigger(n);
+            }
+        }
+        selectedPad_ = n;
+        repaint();
+        return;
+    }
+
+    // Normal mode: loop toggle or retrigger
     bool isLoop = (slot.getMode() == PadMode::Loop || slot.getMode() == PadMode::ClockedLoop);
     if (isLoop && slot.isPlaying() && !slot.isStopping()) {
         slot.stop();
     } else {
-        // Always retrigger instantly — kills any fade-out in progress
         processor_.getEngine().trigger(n);
     }
     selectedPad_ = n;

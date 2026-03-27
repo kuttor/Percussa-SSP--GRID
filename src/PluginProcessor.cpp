@@ -51,45 +51,33 @@ void PluginProcessor::processBlock(juce::AudioBuffer<float>& buffer,
         if (ch >= numChannels) continue;
 
         float voct = buffer.getSample(ch, numSamples - 1);
-        if (std::abs(voct) > 0.01f)
+        if (std::isfinite(voct) && std::abs(voct) > 0.01f)
             engine_.getSlot(pad).setPitchSemitones(voct * 12.0f);
     }
 
-    // ── Read start/end CVs (0-1V = 0-100% position) ─────────────────────
-    for (int pad = 0; pad < kNumPads; ++pad)
-    {
-        int sCh = startChannel(pad);
-        int eCh = endChannel(pad);
-        auto& slot = engine_.getSlot(pad);
-
-        if (sCh < numChannels) {
-            float sv = buffer.getSample(sCh, numSamples - 1);
-            if (std::abs(sv) > 0.005f)
-                slot.setStartPos(juce::jlimit(0.0f, 1.0f, sv));
-        }
-        if (eCh < numChannels) {
-            float ev = buffer.getSample(eCh, numSamples - 1);
-            if (std::abs(ev) > 0.005f)
-                slot.setEndPos(juce::jlimit(0.0f, 1.0f, ev));
-        }
-    }
-
-    // ── Read clock input — track BPM ─────────────────────────────────────
+    // ── Read clock input — track BPM (bulletproofed) ─────────────────────
     if (I_CLOCK < numChannels)
     {
         for (int s = 0; s < numSamples; ++s)
         {
-            bool high = (buffer.getSample(I_CLOCK, s) > kTrigThreshold);
+            float clkSample = buffer.getSample(I_CLOCK, s);
+            // Guard: skip NaN/inf from uninitialized buffer
+            if (!std::isfinite(clkSample)) continue;
+
+            bool high = (clkSample > kTrigThreshold);
             if (high && !clockHigh_) {
                 // Rising edge — compute BPM from interval
-                if (clockActive_ && samplesSinceClock_ > 0) {
+                if (clockActive_ && samplesSinceClock_ > 64) {
+                    // Minimum 64 samples between edges (~750 BPM max at 48k)
                     float intervalSecs = (float)samplesSinceClock_ / (float)sampleRate_;
-                    float newBPM = 60.0f / intervalSecs;
-                    // Smooth to avoid jitter (simple IIR)
-                    if (bpm_ < 1.0f)
-                        bpm_ = newBPM;
-                    else
-                        bpm_ = bpm_ * 0.7f + newBPM * 0.3f;
+                    if (intervalSecs > 0.001f) {  // sanity: at least 1ms
+                        float newBPM = 60.0f / intervalSecs;
+                        newBPM = juce::jlimit(20.0f, 300.0f, newBPM);  // clamp to sane range
+                        if (bpm_ < 1.0f)
+                            bpm_ = newBPM;
+                        else
+                            bpm_ = bpm_ * 0.7f + newBPM * 0.3f;
+                    }
                 }
                 clockActive_ = true;
                 samplesSinceClock_ = 0;
@@ -102,8 +90,32 @@ void PluginProcessor::processBlock(juce::AudioBuffer<float>& buffer,
             clockActive_ = false;
     }
 
+    // ── Reset input: rising edge resets all clocked pads to start ────────
+    if (I_RESET < numChannels)
+    {
+        for (int s = 0; s < numSamples; ++s)
+        {
+            float rst = buffer.getSample(I_RESET, s);
+            if (!std::isfinite(rst)) continue;
+            bool high = (rst > kTrigThreshold);
+            if (high && !resetHigh_) {
+                // Rising edge — reset all playing clocked pads
+                for (int pad = 0; pad < kNumPads; ++pad) {
+                    auto& slot = engine_.getSlot(pad);
+                    if (slot.isPlaying() &&
+                        (slot.getMode() == PadMode::ClockedLoop || slot.getMode() == PadMode::ClockedBar)) {
+                        slot.trigger();  // retrigger = snap to start
+                    }
+                }
+                break;
+            }
+            resetHigh_ = high;
+        }
+        resetHigh_ = (buffer.getSample(I_RESET, numSamples - 1) > kTrigThreshold);
+    }
+
     // ── Clock sync: adjust time stretch for CLK LOOP / CLK BAR pads ─────
-    if (clockActive_ && bpm_ > 1.0f)
+    if (clockActive_ && bpm_ >= 20.0f)
     {
         float clockPeriodSecs = 60.0f / bpm_;
 
@@ -114,20 +126,17 @@ void PluginProcessor::processBlock(juce::AudioBuffer<float>& buffer,
             if (mode != PadMode::ClockedLoop && mode != PadMode::ClockedBar) continue;
             if (!slot.isLoaded()) continue;
 
-            // Region duration in seconds
             float regionFrac = slot.getEndPos() - slot.getStartPos();
-            if (regionFrac <= 0.0f) continue;
-            float regionSecs = regionFrac * (float)slot.getNumSamples() / (float)sampleRate_;
-            if (regionSecs <= 0.001f) continue;
+            if (regionFrac <= 0.01f) continue;
+            float regionSamples = regionFrac * (float)slot.getNumSamples();
+            if (regionSamples < 1.0f || sampleRate_ < 1.0) continue;
+            float regionSecs = regionSamples / (float)sampleRate_;
 
-            // CLK LOOP: one loop = one clock pulse
-            // CLK BAR: one loop = four clock pulses (one bar in 4/4)
             float targetSecs = (mode == PadMode::ClockedBar) ? clockPeriodSecs * 4.0f : clockPeriodSecs;
 
-            // stretch = how much to slow/speed the sample to fit the target
             float stretch = targetSecs / regionSecs;
-            stretch = juce::jlimit(0.25f, 4.0f, stretch);
-            slot.setTimeStretch(stretch);
+            if (std::isfinite(stretch))
+                slot.setTimeStretch(juce::jlimit(0.25f, 4.0f, stretch));
         }
     }
 

@@ -59,6 +59,8 @@ private:
 
     // ── File Browser ─────────────────────────────────────────────────────
     bool browseMode_ = false;
+    bool muteMode_ = false;  // held shift = mute toggle mode
+    bool muteToggled_ = false;  // track if any mute happened during hold
     int browseIndex_ = 0;
     int browseScrollOffset_ = 0;
     juce::File browseCurrentDir_;

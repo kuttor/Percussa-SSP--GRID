@@ -149,7 +149,8 @@ void SampleSlot::process(float* outL, float* outR, int numSamples)
     fadeInSamples = std::min(fadeInSamples, regionLen);
     fadeOutSamples = std::min(fadeOutSamples, regionLen);
 
-    const bool useGranular = (timeStretch_ < 0.99f || timeStretch_ > 1.01f);
+    const float effStretch = getEffectiveStretch();
+    const bool useGranular = (effStretch < 0.99f || effStretch > 1.01f);
 
     for (int i = 0; i < numSamples; ++i)
     {
@@ -205,7 +206,7 @@ void SampleSlot::process(float* outL, float* outR, int numSamples)
             grainPos_[0] += static_cast<double>(pitchRate_);
             grainPos_[1] += static_cast<double>(pitchRate_);
 
-            sourcePos_ += static_cast<double>(pitchRate_) / static_cast<double>(timeStretch_);
+            sourcePos_ += static_cast<double>(pitchRate_) / static_cast<double>(effStretch);
 
             grainCounter_++;
 

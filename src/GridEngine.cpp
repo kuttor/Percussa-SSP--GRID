@@ -9,19 +9,27 @@ void GridEngine::prepare(double sampleRate, int /*samplesPerBlock*/)
 
 void GridEngine::process(float* outL, float* outR, int numSamples)
 {
-    // Clear output
     std::memset(outL, 0, sizeof(float) * static_cast<size_t>(numSamples));
     std::memset(outR, 0, sizeof(float) * static_cast<size_t>(numSamples));
 
-    // Sum all playing slots
-    for (int i = 0; i < kNumPads; ++i)
-        slots_[i].process(outL, outR, numSamples);
+    for (int i = 0; i < kNumPads; ++i) {
+        if (!muted_[i])
+            slots_[i].process(outL, outR, numSamples);
+    }
 }
 
 void GridEngine::trigger(int slot)
 {
     if (slot >= 0 && slot < kNumPads)
         slots_[slot].trigger();
+}
+
+void GridEngine::forceTrigger(int slot)
+{
+    if (slot >= 0 && slot < kNumPads) {
+        // Kill any fade-out in progress, instant restart
+        slots_[slot].trigger();
+    }
 }
 
 void GridEngine::stop(int slot)

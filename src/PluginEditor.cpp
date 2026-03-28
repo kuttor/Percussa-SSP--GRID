@@ -127,6 +127,10 @@ void PluginEditor::paint(juce::Graphics& g)
             if (locks.isNotEmpty()) locks += " ";
             locks += "FADE";
         }
+        if (processor_.getEngine().isMuted(selectedPad_)) {
+            if (locks.isNotEmpty()) locks += " ";
+            locks += "MUTE";
+        }
 
         if (locks.isNotEmpty()) {
             g.setColour(juce::Colour(kTabActive));
@@ -175,6 +179,12 @@ void PluginEditor::paint(juce::Graphics& g)
         int sx = i * encSlotW;
         g.fillRect(sx, encY + kEncoderBarH / 2, 1, kEncoderBarH / 2);
     }
+
+    // Firmware version (bottom bar, far right)
+    g.setColour(juce::Colour(0xFF888888));
+    g.setFont(17.0f);
+    g.drawText("Firmware 0.1.7-beta", w - 280, encY, 270, kEncoderBarH,
+               juce::Justification::centredRight);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -432,6 +442,25 @@ void PluginEditor::paintPadBox(juce::Graphics& g, juce::Rectangle<int> box, int 
                        prog * (float)box.getWidth(), 3.0f);
         }
     }
+
+    // MUTE overlay (on top of everything)
+    if (processor_.getEngine().isMuted(padIndex)) {
+        g.saveState();
+        g.reduceClipRegion(box);
+        g.setColour(juce::Colour(0xCC0D0D0D));  // heavy dark overlay
+        g.fillRoundedRectangle(box.toFloat(), 6.0f);
+        g.restoreState();
+        g.setColour(juce::Colour(kTabActive).withAlpha(0.7f));
+        g.setFont(20.0f);
+        g.drawText("MUTE", box, juce::Justification::centred);
+    }
+
+    // Mute mode indicator: highlight border when shift held
+    if (muteMode_) {
+        bool muted = processor_.getEngine().isMuted(padIndex);
+        g.setColour(juce::Colour(muted ? kTabActive : 0xFF4CAF50).withAlpha(0.6f));
+        g.drawRoundedRectangle(box.toFloat().reduced(1.0f), 6.0f, 2.5f);
+    }
 }
 
 void PluginEditor::paintMiniWaveform(juce::Graphics& g, juce::Rectangle<int> area, const SampleSlot& slot)
@@ -444,13 +473,14 @@ void PluginEditor::paintMiniWaveform(juce::Graphics& g, juce::Rectangle<int> are
     const float amp = (float)area.getHeight() * 0.45f;
     const float startN = slot.getStartPos();
     const float endN = slot.getEndPos();
+    const float effStretch = slot.getEffectiveStretch();
 
-    // Time stretch tint
-    float tsVal = slot.getTimeStretch();
-    if (tsVal < 0.99f || tsVal > 1.01f) {
+    // Time stretch tint — stronger when further from 1.0
+    if (effStretch < 0.95f || effStretch > 1.05f) {
         int tsx = area.getX() + (int)(startN * area.getWidth());
         int tex = area.getX() + (int)(endN * area.getWidth());
-        g.setColour(juce::Colour(0x0D42A5F5));
+        float tintAlpha = std::min(std::abs(effStretch - 1.0f) * 0.15f, 0.12f);
+        g.setColour(juce::Colour(0xFF42A5F5).withAlpha(tintAlpha));
         g.fillRect(tsx, area.getY(), tex - tsx, area.getHeight());
     }
 
@@ -471,28 +501,52 @@ void PluginEditor::paintMiniWaveform(juce::Graphics& g, juce::Rectangle<int> are
         fadeOutN = std::min((float)fs / (float)regionSamples, 1.0f);
     }
 
-    // Draw waveform with fade contrast reduction
+    // Draw waveform with visual stretch + fade contrast reduction
+    int startSample = (int)(startN * total);
+    int endSample = (int)(endN * total);
+    int regionLen = endSample - startSample;
+
     for (int px = 0; px < area.getWidth(); ++px)
     {
-        int s0 = (px * total) / area.getWidth();
-        int s1 = ((px + 1) * total) / area.getWidth();
-        s1 = std::min(s1, total);
-        float mn = 0, mx = 0;
-        for (int s = s0; s < s1; ++s) { if (data[s] < mn) mn = data[s]; if (data[s] > mx) mx = data[s]; }
-
         float norm = (float)px / (float)area.getWidth();
         bool inside = (norm >= startN && norm <= endN);
+
+        // Sample lookup: outside = direct, inside = stretched
+        int s0, s1;
+        if (inside && regionLen > 0) {
+            // Map pixel position within region to sample, scaled by stretch
+            float posInRegion = (norm - startN) / (endN - startN);
+            float stretchedPos = posInRegion / effStretch;  // > 1 stretch = less data shown
+
+            // How many samples per pixel at this stretch
+            float samplesPerPx = (float)total / (float)area.getWidth();
+            float stretchedSamplesPerPx = samplesPerPx / effStretch;
+
+            float sampleF = (float)startSample + stretchedPos * (float)regionLen;
+            s0 = juce::jlimit(0, total - 1, (int)sampleF);
+            s1 = juce::jlimit(s0, total, s0 + std::max(1, (int)stretchedSamplesPerPx));
+
+            // If stretched position is past the actual data, show as empty
+            if (stretchedPos > 1.0f) inside = false;
+        } else {
+            s0 = (px * total) / area.getWidth();
+            s1 = ((px + 1) * total) / area.getWidth();
+            s1 = std::min(s1, total);
+        }
+
+        float mn = 0, mx = 0;
+        for (int s = s0; s < s1; ++s) { if (data[s] < mn) mn = data[s]; if (data[s] > mx) mx = data[s]; }
 
         float peak = std::max(std::abs(mx), std::abs(mn));
         juce::Colour col;
         if (!inside) {
-            col = juce::Colour(0xFF111111);  // nearly invisible
+            col = juce::Colour(0xFF111111);
         } else {
             col = juce::Colour(kWfGreen);
             if (peak > 0.55f) col = col.interpolatedWith(juce::Colour(kWfYellow), (peak - 0.55f) / 0.3f);
             if (peak > 0.85f) col = col.interpolatedWith(juce::Colour(kWfRed), (peak - 0.85f) / 0.15f);
 
-            // Fade contrast reduction — sharp falloff, only dims near the edges
+            // Fade contrast reduction
             float posInRegion = (norm - startN) / (endN - startN);
             float fadeKeep = 1.0f;
             if (fadeInN > 0.0f && posInRegion < fadeInN) {
@@ -504,7 +558,6 @@ void PluginEditor::paintMiniWaveform(juce::Graphics& g, juce::Rectangle<int> are
                 fadeKeep *= (outExp ? t * t : t);
             }
             if (fadeKeep < 0.95f) {
-                // Cube the dimming so it's concentrated at the far edges
                 float dim = (1.0f - fadeKeep);
                 col = col.interpolatedWith(juce::Colour(0xFF111111), dim * dim * 0.9f);
             }
@@ -822,17 +875,17 @@ void PluginEditor::paintFileBrowser(juce::Graphics& g, juce::Rectangle<int> area
     const int fileCount = browseItems_.size();
     auto content = panel.reduced(12, 8);
 
-    // Header: folder name
+    // Header: folder name + version
     g.setColour(juce::Colour(kTabActive));
-    g.setFont(18.0f);
+    g.setFont(22.0f);
     juce::String header = browseCurrentDir_.getFileName().isEmpty() ? "Smart Home" : browseCurrentDir_.getFileName();
-    g.drawText(header, content.removeFromTop(26), juce::Justification::centredLeft);
+    g.drawText(header, content.removeFromTop(30), juce::Justification::centredLeft);
 
-    // Target pad indicator
+    // Pad indicator
+    auto subLine = content.removeFromTop(20);
     g.setColour(juce::Colour(kEncLabel));
-    g.setFont(15.0f);
-    g.drawText("-> PAD " + juce::String(selectedPad_ + 1),
-               content.removeFromTop(20), juce::Justification::centredLeft);
+    g.setFont(14.0f);
+    g.drawText("-> PAD " + juce::String(selectedPad_ + 1), subLine, juce::Justification::centredLeft);
     content.removeFromTop(4);
 
     if (fileCount == 0) {
@@ -879,12 +932,6 @@ void PluginEditor::paintFileBrowser(juce::Graphics& g, juce::Rectangle<int> area
                        juce::Justification::centredRight);
         }
     }
-
-    // Version (bottom of browser panel)
-    g.setColour(juce::Colour(0xFF444444));
-    g.setFont(11.0f);
-    g.drawText("v0.1.6-beta", panel.getX() + 8, panel.getBottom() - 16, panel.getWidth() - 16, 14,
-               juce::Justification::centredLeft);
 }
 
 void PluginEditor::enterBrowseMode()
@@ -1113,14 +1160,25 @@ juce::String PluginEditor::getEncoderValue(int page, int enc) const
         case PAGE_PLAY: {
             const char* modes[] = { "ONE-SHOT", "LOOP", "CLK LOOP", "CLK BAR" };
             if (enc == 1) return modes[static_cast<int>(slot.getMode())];
-            if (enc == 2) return juce::String((int)(slot.getVolume() * 100)) + "%";
+            if (enc == 2) {
+                if (processor_.getEngine().isMuted(selectedPad_))
+                    return "MUTE";
+                return juce::String((int)(slot.getVolume() * 100)) + "%";
+            }
             if (enc == 3) return juce::String(slot.getPan(), 2);
             return "---";
         }
         case PAGE_PITCH: {
             float st = slot.getPitchSemitones();
             if (enc == 1) return (st >= 0 ? "+" : "") + juce::String(st, 1) + "st";
-            if (enc == 2) return juce::String(slot.getTimeStretch(), 2) + "x";
+            if (enc == 2) {
+                bool clocked = (slot.getMode() == PadMode::ClockedLoop || slot.getMode() == PadMode::ClockedBar);
+                if (clocked && processor_.hasClockInput()) {
+                    float eff = slot.getEffectiveStretch();
+                    return "CLK " + juce::String(eff, 2) + "x";
+                }
+                return juce::String(slot.getTimeStretch(), 2) + "x";
+            }
             return "---";
         }
         case PAGE_FADE: {
@@ -1162,8 +1220,16 @@ void PluginEditor::onButton(int n, bool val)
     if (!val || n < 0 || n >= kNumPads) return;
     auto& slot = processor_.getEngine().getSlot(n);
 
+    // Mute mode: shift held, buttons toggle mute
+    if (muteMode_) {
+        processor_.getEngine().toggleMute(n);
+        muteToggled_ = true;
+        repaint();
+        return;
+    }
+
     if (browseMode_) {
-        // Browse mode: load highlighted file to this pad + trigger (quick assign + audition)
+        // Browse mode: load highlighted file to this pad + trigger
         if (browseIndex_ >= 0 && browseIndex_ < browseItems_.size()) {
             auto sel = browseItems_[browseIndex_];
             if (!sel.isDirectory() && browseItemNames_[browseIndex_] != ">> Clear Pad") {
@@ -1225,8 +1291,18 @@ void PluginEditor::onLeftShiftButton(bool val)
 
 void PluginEditor::onRightShiftButton(bool val)
 {
-    if (!val) return;
-    switchPage(currentPage_ + 1);
+    if (val) {
+        // Press: enter mute mode
+        muteMode_ = true;
+        muteToggled_ = false;
+        repaint();
+    } else {
+        // Release: if nothing was toggled, treat as page switch
+        muteMode_ = false;
+        if (!muteToggled_)
+            switchPage(currentPage_ + 1);
+        repaint();
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1362,7 +1438,7 @@ void PluginEditor::onEncoderSwitch(int n, bool val)
             break;
         case PAGE_PLAY:
             if (n == 1) slot.setMode(PadMode::OneShot);
-            if (n == 2) slot.setVolume(1.0f);
+            if (n == 2) processor_.getEngine().toggleMute(selectedPad_);  // mute toggle
             if (n == 3) slot.setPan(0.0f);
             break;
         case PAGE_PITCH:

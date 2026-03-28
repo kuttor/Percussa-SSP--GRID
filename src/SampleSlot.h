@@ -39,9 +39,17 @@ public:
     float getPitchSemitones() const  { return pitchSemitones_; }
     float getPitchRate() const       { return pitchRate_; }
 
-    // Time stretch: 0.25x to 4.0x
+    // Time stretch: 0.25x to 4.0x (user control)
     void setTimeStretch(float t)     { timeStretch_ = juce::jlimit(0.25f, 4.0f, t); }
     float getTimeStretch() const     { return timeStretch_; }
+
+    // Clock stretch: auto-computed from BPM, 1.0 = no clock adjustment
+    void setClockStretch(float t)    { clockStretch_ = juce::jlimit(0.1f, 10.0f, t); }
+    float getClockStretch() const    { return clockStretch_; }
+    void clearClockStretch()         { clockStretch_ = 1.0f; }
+
+    // Effective stretch = clock base × user multiplier
+    float getEffectiveStretch() const { return clockStretch_ * timeStretch_; }
 
     // Fade: separate in/out, 0-100% of region. Separate curves per fade.
     void setFadeInMs(float ms)       { fadeInMs_ = std::max(0.0f, ms); }
@@ -98,6 +106,7 @@ private:
     float pitchSemitones_ = 0.0f;
     float pitchRate_      = 1.0f;
     float timeStretch_    = 1.0f;
+    float clockStretch_   = 1.0f;   // auto from BPM, 1.0 = no clock
     float fadeInMs_       = 0.0f;
     float fadeOutMs_      = 0.0f;
     int   fadeInCurve_    = 0;    // 0=linear, 1=exponential

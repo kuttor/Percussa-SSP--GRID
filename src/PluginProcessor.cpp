@@ -27,11 +27,14 @@ void PluginProcessor::processBlock(juce::AudioBuffer<float>& buffer,
     {
         int ch = trigChannel(pad);
         if (ch >= numChannels) continue;
+        if (engine_.isMuted(pad)) continue;  // skip muted pads
 
         bool triggered = false;
         for (int s = 0; s < numSamples; ++s)
         {
-            bool high = (buffer.getSample(ch, s) > kTrigThreshold);
+            float gSample = buffer.getSample(ch, s);
+            if (!std::isfinite(gSample)) continue;
+            bool high = (gSample > kTrigThreshold);
             if (high && !gateHigh_[pad]) {
                 triggered = true;
                 break;
@@ -41,7 +44,7 @@ void PluginProcessor::processBlock(juce::AudioBuffer<float>& buffer,
         gateHigh_[pad] = (buffer.getSample(ch, numSamples - 1) > kTrigThreshold);
 
         if (triggered)
-            engine_.trigger(pad);
+            engine_.forceTrigger(pad);  // always retrigger, even during fade-out
     }
 
     // ── Read pitch CVs ───────────────────────────────────────────────────
@@ -53,6 +56,25 @@ void PluginProcessor::processBlock(juce::AudioBuffer<float>& buffer,
         float voct = buffer.getSample(ch, numSamples - 1);
         if (std::isfinite(voct) && std::abs(voct) > 0.01f)
             engine_.getSlot(pad).setPitchSemitones(voct * 12.0f);
+    }
+
+    // ── Read per-pad Start/End CVs (0-1V = 0-100% position) ───────────
+    for (int pad = 0; pad < kNumPads; ++pad)
+    {
+        int sCh = startChannel(pad);
+        int eCh = endChannel(pad);
+        auto& slot = engine_.getSlot(pad);
+
+        if (sCh < numChannels) {
+            float sv = buffer.getSample(sCh, numSamples - 1);
+            if (std::isfinite(sv) && std::abs(sv) > 0.005f)
+                slot.setStartPos(juce::jlimit(0.0f, 1.0f, sv));
+        }
+        if (eCh < numChannels) {
+            float ev = buffer.getSample(eCh, numSamples - 1);
+            if (std::isfinite(ev) && std::abs(ev) > 0.005f)
+                slot.setEndPos(juce::jlimit(0.0f, 1.0f, ev));
+        }
     }
 
     // ── Read clock input — track BPM (bulletproofed) ─────────────────────
@@ -73,10 +95,10 @@ void PluginProcessor::processBlock(juce::AudioBuffer<float>& buffer,
                     if (intervalSecs > 0.001f) {  // sanity: at least 1ms
                         float newBPM = 60.0f / intervalSecs;
                         newBPM = juce::jlimit(20.0f, 300.0f, newBPM);  // clamp to sane range
-                        if (bpm_ < 1.0f)
-                            bpm_ = newBPM;
+                        if (bpm_ < 1.0f || std::abs(newBPM - bpm_) > bpm_ * 0.1f)
+                            bpm_ = newBPM;  // snap on big changes
                         else
-                            bpm_ = bpm_ * 0.7f + newBPM * 0.3f;
+                            bpm_ = bpm_ * 0.7f + newBPM * 0.3f;  // smooth jitter
                     }
                 }
                 clockActive_ = true;
@@ -114,30 +136,30 @@ void PluginProcessor::processBlock(juce::AudioBuffer<float>& buffer,
         resetHigh_ = (buffer.getSample(I_RESET, numSamples - 1) > kTrigThreshold);
     }
 
-    // ── Clock sync: adjust time stretch for CLK LOOP / CLK BAR pads ─────
-    if (clockActive_ && bpm_ >= 20.0f)
+    // ── Clock sync: set clock base stretch for CLK LOOP / CLK BAR pads ──
+    for (int pad = 0; pad < kNumPads; ++pad)
     {
-        float clockPeriodSecs = 60.0f / bpm_;
+        auto& slot = engine_.getSlot(pad);
+        PadMode mode = slot.getMode();
 
-        for (int pad = 0; pad < kNumPads; ++pad)
-        {
-            auto& slot = engine_.getSlot(pad);
-            PadMode mode = slot.getMode();
-            if (mode != PadMode::ClockedLoop && mode != PadMode::ClockedBar) continue;
-            if (!slot.isLoaded()) continue;
-
-            float regionFrac = slot.getEndPos() - slot.getStartPos();
-            if (regionFrac <= 0.01f) continue;
-            float regionSamples = regionFrac * (float)slot.getNumSamples();
-            if (regionSamples < 1.0f || sampleRate_ < 1.0) continue;
-            float regionSecs = regionSamples / (float)sampleRate_;
-
-            float targetSecs = (mode == PadMode::ClockedBar) ? clockPeriodSecs * 4.0f : clockPeriodSecs;
-
-            float stretch = targetSecs / regionSecs;
-            if (std::isfinite(stretch))
-                slot.setTimeStretch(juce::jlimit(0.25f, 4.0f, stretch));
+        if ((mode != PadMode::ClockedLoop && mode != PadMode::ClockedBar) || !clockActive_ || bpm_ < 20.0f) {
+            slot.clearClockStretch();  // non-clocked pads = 1.0
+            continue;
         }
+        if (!slot.isLoaded()) continue;
+
+        float clockPeriodSecs = 60.0f / bpm_;
+        float regionFrac = slot.getEndPos() - slot.getStartPos();
+        if (regionFrac <= 0.01f) continue;
+        float regionSamples = regionFrac * (float)slot.getNumSamples();
+        if (regionSamples < 1.0f || sampleRate_ < 1.0) continue;
+        float regionSecs = regionSamples / (float)sampleRate_;
+
+        float targetSecs = (mode == PadMode::ClockedBar) ? clockPeriodSecs * 4.0f : clockPeriodSecs;
+
+        float stretch = targetSecs / regionSecs;
+        if (std::isfinite(stretch))
+            slot.setClockStretch(stretch);
     }
 
     // ── Rec Gate: rising edge toggles arm/stop ─────────────────────────
@@ -335,6 +357,7 @@ void PluginProcessor::getStateInformation(juce::MemoryBlock& destData)
         pad->setAttribute("fadeOut", (double)slot.getFadeOutMs());
         pad->setAttribute("fadeInCurve", slot.getFadeInCurve());
         pad->setAttribute("fadeOutCurve", slot.getFadeOutCurve());
+        pad->setAttribute("muted", engine_.isMuted(i) ? 1 : 0);
     }
 
     copyXmlToBinary(*xml, destData);
@@ -377,6 +400,7 @@ void PluginProcessor::setStateInformation(const void* data, int sizeInBytes)
         slot.setFadeOutMs((float)pad->getDoubleAttribute("fadeOut", 0.0));
         slot.setFadeInCurve(pad->getIntAttribute("fadeInCurve", 0));
         slot.setFadeOutCurve(pad->getIntAttribute("fadeOutCurve", 0));
+        engine_.setMuted(i, pad->getIntAttribute("muted", 0) != 0);
     }
 }
 

@@ -57,17 +57,19 @@ Think MPC meets Eurorack. No menu diving. Everything visible. Everything patchab
 ## I/O Layout
 
 ```
-Inputs (37 total):
-  P1 Trig, P1 Pitch, P1 Start, P1 End
-  P2 Trig, P2 Pitch, P2 Start, P2 End
-  P3 Trig, P3 Pitch, P3 Start, P3 End
-  P4 Trig, P4 Pitch, P4 Start, P4 End
-  P5 Trig, P5 Pitch, P5 Start, P5 End
-  P6 Trig, P6 Pitch, P6 Start, P6 End
-  P7 Trig, P7 Pitch, P7 Start, P7 End
-  P8 Trig, P8 Pitch, P8 Start, P8 End
+Inputs (23 total):
+  P1 Trig, P1 Pitch
+  P2 Trig, P2 Pitch
+  P3 Trig, P3 Pitch
+  P4 Trig, P4 Pitch
+  P5 Trig, P5 Pitch
+  P6 Trig, P6 Pitch
+  P7 Trig, P7 Pitch
+  P8 Trig, P8 Pitch
   Clock
   Reset
+  Start CV
+  End CV
   Rec Gate
   Rec L, Rec R
 

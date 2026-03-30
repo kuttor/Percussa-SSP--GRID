@@ -36,6 +36,20 @@ Think MPC meets Eurorack. No menu diving. Everything visible. Everything patchab
 - Clock input with BPM detection (displayed on screen)
 - CLK LOOP mode: auto time-stretch to match one clock pulse
 - CLK BAR mode: auto time-stretch to match one bar (4 beats in 4/4)
+- Clock division setting (/1, /2, /4, /8)
+- MIDI clock support (24 PPQN, overrides CV clock)
+
+**MIDI**
+- Direct USB MIDI device access — no factory MIDI module needed
+- Per-pad MIDI channel (OFF, 1-16, OMNI)
+- Note On = trigger, Velocity = volume, Note = pitch
+- Default CC map: Start, End, Volume, Pan, Stretch
+- MIDI clock with automatic BPM detection
+
+**Options**
+- Choke groups (A-H) — open/closed hi-hat behavior
+- Reverse — flip sample playback direction
+- Enhance — one-shot normalization to 0.95 peak
 
 **CV Control (per pad)**
 - Trigger — gate input, rising edge fires the pad
@@ -83,13 +97,38 @@ Outputs (2):
 |-----|-------|-------|-------|-------|
 | PADS | Pad select / Browser | REC arm/stop | Rec mode | Max length |
 | SAMPLE | Pad select / Browser | Start % | End % | --- |
-| PLAY | Pad select / Browser | Mode | Volume | Pan |
-| WARP | Pad select / Browser | Pitch (st) | Time stretch | --- |
-| FADE | Pad select / Browser | Fade In (ms) | Fade Out (ms) | --- |
+| PLAY | Pad select / Browser | Mode | Volume (push=MUTE) | Pan |
+| WARP | Pad select / Browser | Pitch (st) | Time stretch | Clock div |
+| FADE | Pad select / Browser | Fade In (push=LIN/EXP) | Fade Out (push=LIN/EXP) | --- |
+| MIDI | Pad select / Browser | Channel (push=OFF) | Device (push=disconnect) | MIDI clock |
+| OPTIONS | Pad select / Browser | Choke group (push=NONE) | Reverse (push=toggle) | Enhance (push=normalize) |
 
-Push encoder resets that parameter to default. On FADE tab, push enc 1 or 2 toggles linear/exponential curve for that fade.
+Push encoder resets that parameter to default unless noted above.
 
-Buttons 1-8 always trigger the corresponding pad. In loop mode, pressing a playing pad stops it.
+Buttons 1-8 always trigger the corresponding pad. In loop mode, pressing a playing pad stops it. Hold right shift + buttons to toggle mutes.
+
+## MIDI
+
+GRID opens MIDI devices directly — no factory MIDI module needed. Plug a USB MIDI controller into the SSP and select it on the MIDI tab.
+
+Per-pad MIDI channel: set each pad to listen on a different MIDI channel (or OMNI for all). Note On triggers the pad, velocity scales volume, note number shifts pitch.
+
+Default CC map per channel:
+- CC 1 = Start position
+- CC 2 = End position
+- CC 7 = Volume
+- CC 10 = Pan
+- CC 11 = Time stretch
+
+MIDI clock (24 PPQN): enable on MIDI tab enc 3. Overrides CV clock input when active.
+
+## Options
+
+Choke groups (A-H): assign pads to a group. Triggering one pad in a group stops all others in that group. Classic open/closed hi-hat behavior.
+
+Reverse: flips the sample buffer. Waveform displays reversed. Toggle on/off.
+
+Enhance: one-shot normalization. Scans peak amplitude, applies gain to reach 0.95. Push enc 3 to apply.
 
 ## Installation
 
@@ -147,14 +186,13 @@ libs/
 
 ## Roadmap
 
-- Clock division setting (1/beat, 24 PPQN, etc)
-- Reset input (phase-lock clocked pads)
+- Config Browser — per-pad CC remapping (left+right shift flyout)
 - Kit files (.kit) — save/load 8-pad configurations
 - Stack files (.stack) — round-robin / random sample cycling per pad
 - Multi-select in browser to create kits and stacks
 - Per-pad direct outputs
-- MIDI note-to-pad mapping
-- Options flyout menu
+- Stereo waveform display
+- Background thread for WAV file writes
 - Editor refactor (SSPShell framework for reuse across plugins)
 
 ## Ecosystem (planned)

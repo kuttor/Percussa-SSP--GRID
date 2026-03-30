@@ -81,6 +81,7 @@ target_compile_definitions(GRID
 set(SYSROOT "${BUILDROOT}/arm-rockchip-linux-gnueabihf/sysroot")
 target_link_libraries(GRID PRIVATE
     "${SYSROOT}/usr/lib/libfreetype.so"
+    "${SYSROOT}/usr/lib/libasound.so"
 )
 
 target_link_libraries(GRID

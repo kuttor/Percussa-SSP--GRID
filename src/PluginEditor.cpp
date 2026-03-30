@@ -183,7 +183,7 @@ void PluginEditor::paint(juce::Graphics& g)
     // Firmware version (bottom bar, far right)
     g.setColour(juce::Colour(0xFF888888));
     g.setFont(17.0f);
-    g.drawText("Firmware 0.1.7-beta", w - 280, encY, 270, kEncoderBarH,
+    g.drawText("Firmware 0.1.7.2-beta", w - 280, encY, 270, kEncoderBarH,
                juce::Justification::centredRight);
 }
 
@@ -455,10 +455,10 @@ void PluginEditor::paintPadBox(juce::Graphics& g, juce::Rectangle<int> box, int 
         g.drawText("MUTE", box, juce::Justification::centred);
     }
 
-    // Mute mode indicator: highlight border when shift held
+    // Mute mode: colored borders when shift held
     if (muteMode_) {
         bool muted = processor_.getEngine().isMuted(padIndex);
-        g.setColour(juce::Colour(muted ? kTabActive : 0xFF4CAF50).withAlpha(0.6f));
+        g.setColour(juce::Colour(muted ? kTabActive : 0xFF4CAF50).withAlpha(0.7f));
         g.drawRoundedRectangle(box.toFloat().reduced(1.0f), 6.0f, 2.5f);
     }
 }
@@ -1109,7 +1109,7 @@ juce::String PluginEditor::getEncoderLabel(int page, int enc) const
             return l[enc];
         }
         case PAGE_PITCH: {
-            const char* l[] = { "", "PITCH", "TIME", "---" };
+            const char* l[] = { "", "PITCH", "TIME", "CLK DIV" };
             return l[enc];
         }
         case PAGE_FADE: {
@@ -1179,6 +1179,7 @@ juce::String PluginEditor::getEncoderValue(int page, int enc) const
                 }
                 return juce::String(slot.getTimeStretch(), 2) + "x";
             }
+            if (enc == 3) return "/" + juce::String(processor_.getClockDiv());
             return "---";
         }
         case PAGE_FADE: {
@@ -1220,7 +1221,7 @@ void PluginEditor::onButton(int n, bool val)
     if (!val || n < 0 || n >= kNumPads) return;
     auto& slot = processor_.getEngine().getSlot(n);
 
-    // Mute mode: shift held, buttons toggle mute
+    // Mute mode: right shift held, buttons toggle mutes
     if (muteMode_) {
         processor_.getEngine().toggleMute(n);
         muteToggled_ = true;
@@ -1292,12 +1293,10 @@ void PluginEditor::onLeftShiftButton(bool val)
 void PluginEditor::onRightShiftButton(bool val)
 {
     if (val) {
-        // Press: enter mute mode
         muteMode_ = true;
         muteToggled_ = false;
         repaint();
     } else {
-        // Release: if nothing was toggled, treat as page switch
         muteMode_ = false;
         if (!muteToggled_)
             switchPage(currentPage_ + 1);
@@ -1364,6 +1363,7 @@ void PluginEditor::onEncoder(int n, float delta)
             if (n == 1) {
                 int m = static_cast<int>(slot.getMode()) + (delta > 0 ? 1 : -1);
                 slot.setMode(static_cast<PadMode>(juce::jlimit(0, 3, m)));
+                slot.setTimeStretch(1.0f);  // reset stretch on mode change
             }
             if (n == 2) slot.setVolume(juce::jlimit(0.0f, 1.0f, slot.getVolume() + delta * 0.02f));
             if (n == 3) slot.setPan(juce::jlimit(-1.0f, 1.0f, slot.getPan() + delta * 0.05f));
@@ -1372,6 +1372,14 @@ void PluginEditor::onEncoder(int n, float delta)
         case PAGE_PITCH:
             if (n == 1) slot.setPitchSemitones(slot.getPitchSemitones() + delta * 1.0f);
             if (n == 2) slot.setTimeStretch(slot.getTimeStretch() + delta * 0.05f);
+            if (n == 3) {
+                static constexpr int divs[] = { 1, 2, 4, 8 };
+                int cur = processor_.getClockDiv();
+                int idx = 0;
+                for (int i = 0; i < 4; ++i) { if (divs[i] == cur) idx = i; }
+                idx = juce::jlimit(0, 3, idx + (delta > 0 ? 1 : -1));
+                processor_.setClockDiv(divs[idx]);
+            }
             break;
 
         case PAGE_FADE: {
@@ -1437,13 +1445,14 @@ void PluginEditor::onEncoderSwitch(int n, bool val)
             if (n == 2) slot.setEndPos(1.0f);
             break;
         case PAGE_PLAY:
-            if (n == 1) slot.setMode(PadMode::OneShot);
-            if (n == 2) processor_.getEngine().toggleMute(selectedPad_);  // mute toggle
+            if (n == 1) { slot.setMode(PadMode::OneShot); slot.setTimeStretch(1.0f); }
+            if (n == 2) processor_.getEngine().toggleMute(selectedPad_);
             if (n == 3) slot.setPan(0.0f);
             break;
         case PAGE_PITCH:
             if (n == 1) slot.setPitchSemitones(0.0f);
             if (n == 2) slot.setTimeStretch(1.0f);
+            if (n == 3) processor_.setClockDiv(1);
             break;
         case PAGE_FADE:
             if (n == 1) slot.setFadeInCurve(slot.getFadeInCurve() == 0 ? 1 : 0);

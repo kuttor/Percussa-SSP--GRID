@@ -83,14 +83,28 @@ void SampleSlot::trigger()
 {
     int ns = numSamples_.load();
     if (ns == 0) return;
+
+    // Retrigger guard: ignore triggers within 512 samples (~10ms at 48k)
+    // Prevents SSP button system from queuing phantom hits
+    if (samplesSinceLastTrigger_ < 512) return;
+    samplesSinceLastTrigger_ = 0;
+
     int startSample = static_cast<int>(startPos_ * (float)ns);
     readPosition_ = static_cast<double>(startSample);
     sourcePos_ = static_cast<double>(startSample);
     grainPos_[0] = sourcePos_;
     grainPos_[1] = sourcePos_;
     grainCounter_ = 0;
-    fadeIn_ = 0;        // start fade-in
+
+    // If already playing, skip fade-in (instant retrigger, no amplitude dip)
+    // Only fade from silence when starting fresh
+    if (playing_ && !stopping_)
+        fadeIn_ = kFadeSamples;  // already at full volume
+    else
+        fadeIn_ = 0;             // fade in from silence
+
     stopping_ = false;
+    fadeOut_ = 0;
     playing_ = true;
 }
 

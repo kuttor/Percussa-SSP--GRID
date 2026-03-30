@@ -22,6 +22,7 @@ public:
     void stop();
     bool isPlaying() const { return playing_; }
     bool isStopping() const { return stopping_; }
+    void advanceRetriggerGuard(int samples) { samplesSinceLastTrigger_ += samples; }
 
     // Process: writes into outL/outR (ADDS to existing data)
     void process(float* outL, float* outR, int numSamples);
@@ -97,6 +98,7 @@ private:
     int fadeIn_ = 0;    // counts up from 0 to kFadeSamples on trigger
     int fadeOut_ = 0;   // counts down from kFadeSamples to 0 on stop
     bool stopping_ = false;  // fade-out in progress
+    int samplesSinceLastTrigger_ = 99999;  // retrigger guard
 
     // Parameters
     float volume_         = 1.0f;

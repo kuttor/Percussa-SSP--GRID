@@ -22,12 +22,15 @@ void PluginProcessor::processBlock(juce::AudioBuffer<float>& buffer,
     const int numSamples = buffer.getNumSamples();
     const int numChannels = buffer.getNumChannels();
 
-    // ── Read gate CVs ────────────────────────────────────────────────────
+    // ── Read gate CVs + sample-and-hold Start/End CV on trigger ────────
+    bool hasStartCV = (I_START_CV < numChannels && isInputEnabled(I_START_CV));
+    bool hasEndCV   = (I_END_CV < numChannels && isInputEnabled(I_END_CV));
+
     for (int pad = 0; pad < kNumPads; ++pad)
     {
         int ch = trigChannel(pad);
-        if (ch >= numChannels) continue;
-        if (engine_.isMuted(pad)) continue;  // skip muted pads
+        if (ch >= numChannels || !isInputEnabled(ch)) continue;
+        if (engine_.isMuted(pad)) continue;
 
         bool triggered = false;
         for (int s = 0; s < numSamples; ++s)
@@ -43,77 +46,73 @@ void PluginProcessor::processBlock(juce::AudioBuffer<float>& buffer,
         }
         gateHigh_[pad] = (buffer.getSample(ch, numSamples - 1) > kTrigThreshold);
 
-        if (triggered)
-            engine_.forceTrigger(pad);  // always retrigger, even during fade-out
+        if (triggered) {
+            // Sample-and-hold: grab Start/End CV at trigger instant
+            auto& slot = engine_.getSlot(pad);
+            if (hasStartCV) {
+                float sv = buffer.getSample(I_START_CV, numSamples - 1);
+                if (std::isfinite(sv) && std::abs(sv) > 0.005f)
+                    slot.setStartPos(juce::jlimit(0.0f, 1.0f, sv));
+            }
+            if (hasEndCV) {
+                float ev = buffer.getSample(I_END_CV, numSamples - 1);
+                if (std::isfinite(ev) && std::abs(ev) > 0.005f)
+                    slot.setEndPos(juce::jlimit(0.0f, 1.0f, ev));
+            }
+            engine_.forceTrigger(pad);
+        }
     }
 
     // ── Read pitch CVs ───────────────────────────────────────────────────
     for (int pad = 0; pad < kNumPads; ++pad)
     {
         int ch = pitchChannel(pad);
-        if (ch >= numChannels) continue;
+        if (ch >= numChannels || !isInputEnabled(ch)) continue;
 
         float voct = buffer.getSample(ch, numSamples - 1);
         if (std::isfinite(voct) && std::abs(voct) > 0.01f)
             engine_.getSlot(pad).setPitchSemitones(voct * 12.0f);
     }
 
-    // ── Read per-pad Start/End CVs (0-1V = 0-100% position) ───────────
-    for (int pad = 0; pad < kNumPads; ++pad)
-    {
-        int sCh = startChannel(pad);
-        int eCh = endChannel(pad);
-        auto& slot = engine_.getSlot(pad);
-
-        if (sCh < numChannels) {
-            float sv = buffer.getSample(sCh, numSamples - 1);
-            if (std::isfinite(sv) && std::abs(sv) > 0.005f)
-                slot.setStartPos(juce::jlimit(0.0f, 1.0f, sv));
-        }
-        if (eCh < numChannels) {
-            float ev = buffer.getSample(eCh, numSamples - 1);
-            if (std::isfinite(ev) && std::abs(ev) > 0.005f)
-                slot.setEndPos(juce::jlimit(0.0f, 1.0f, ev));
-        }
-    }
-
     // ── Read clock input — track BPM (bulletproofed) ─────────────────────
-    if (I_CLOCK < numChannels)
+    if (I_CLOCK < numChannels && isInputEnabled(I_CLOCK))
     {
         for (int s = 0; s < numSamples; ++s)
         {
             float clkSample = buffer.getSample(I_CLOCK, s);
-            // Guard: skip NaN/inf from uninitialized buffer
             if (!std::isfinite(clkSample)) continue;
 
             bool high = (clkSample > kTrigThreshold);
             if (high && !clockHigh_) {
-                // Rising edge — compute BPM from interval
-                if (clockActive_ && samplesSinceClock_ > 64) {
-                    // Minimum 64 samples between edges (~750 BPM max at 48k)
-                    float intervalSecs = (float)samplesSinceClock_ / (float)sampleRate_;
-                    if (intervalSecs > 0.001f) {  // sanity: at least 1ms
-                        float newBPM = 60.0f / intervalSecs;
-                        newBPM = juce::jlimit(20.0f, 300.0f, newBPM);  // clamp to sane range
-                        if (bpm_ < 1.0f || std::abs(newBPM - bpm_) > bpm_ * 0.1f)
-                            bpm_ = newBPM;  // snap on big changes
-                        else
-                            bpm_ = bpm_ * 0.7f + newBPM * 0.3f;  // smooth jitter
+                // Rising edge — count pulses for division
+                clockPulseCount_++;
+                if (clockPulseCount_ >= clockDiv_) {
+                    // N pulses received = 1 beat
+                    if (clockActive_ && samplesSinceDiv_ > 64) {
+                        float intervalSecs = (float)samplesSinceDiv_ / (float)sampleRate_;
+                        if (intervalSecs > 0.001f) {
+                            float newBPM = 60.0f / intervalSecs;
+                            newBPM = juce::jlimit(20.0f, 300.0f, newBPM);
+                            if (bpm_ < 1.0f || std::abs(newBPM - bpm_) > bpm_ * 0.1f)
+                                bpm_ = newBPM;
+                            else
+                                bpm_ = bpm_ * 0.7f + newBPM * 0.3f;
+                        }
                     }
+                    clockActive_ = true;
+                    clockPulseCount_ = 0;
+                    samplesSinceDiv_ = 0;
                 }
-                clockActive_ = true;
-                samplesSinceClock_ = 0;
             }
             clockHigh_ = high;
-            samplesSinceClock_++;
+            samplesSinceDiv_++;
         }
-        // If no clock for 2 seconds, mark inactive
-        if (samplesSinceClock_ > (int)(sampleRate_ * 2.0))
+        if (samplesSinceDiv_ > (int)(sampleRate_ * 2.0))
             clockActive_ = false;
     }
 
     // ── Reset input: rising edge resets all clocked pads to start ────────
-    if (I_RESET < numChannels)
+    if (I_RESET < numChannels && isInputEnabled(I_RESET))
     {
         for (int s = 0; s < numSamples; ++s)
         {
@@ -163,7 +162,7 @@ void PluginProcessor::processBlock(juce::AudioBuffer<float>& buffer,
     }
 
     // ── Rec Gate: rising edge toggles arm/stop ─────────────────────────
-    if (I_REC_GATE < numChannels)
+    if (I_REC_GATE < numChannels && isInputEnabled(I_REC_GATE))
     {
         for (int s = 0; s < numSamples; ++s)
         {
@@ -182,8 +181,8 @@ void PluginProcessor::processBlock(juce::AudioBuffer<float>& buffer,
     // ── Recording ────────────────────────────────────────────────────────
     if (recState_ == RecState::Armed || recState_ == RecState::Recording)
     {
-        bool hasRecL = (I_REC_L < numChannels);
-        bool hasRecR = (I_REC_R < numChannels);
+        bool hasRecL = (I_REC_L < numChannels && isInputEnabled(I_REC_L));
+        bool hasRecR = (I_REC_R < numChannels && isInputEnabled(I_REC_R));
 
         for (int s = 0; s < numSamples; ++s)
         {
@@ -202,7 +201,7 @@ void PluginProcessor::processBlock(juce::AudioBuffer<float>& buffer,
                             start = true;
                         break;
                     case RecMode::NextBar:
-                        if (I_CLOCK < numChannels) {
+                        if (I_CLOCK < numChannels && isInputEnabled(I_CLOCK)) {
                             bool clkHi = (buffer.getSample(I_CLOCK, s) > kTrigThreshold);
                             if (clkHi && !clockHigh_) start = true;
                         }

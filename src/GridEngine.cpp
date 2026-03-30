@@ -13,6 +13,7 @@ void GridEngine::process(float* outL, float* outR, int numSamples)
     std::memset(outR, 0, sizeof(float) * static_cast<size_t>(numSamples));
 
     for (int i = 0; i < kNumPads; ++i) {
+        slots_[i].advanceRetriggerGuard(numSamples);  // always advance, even muted
         if (!muted_[i])
             slots_[i].process(outL, outR, numSamples);
     }

@@ -50,6 +50,8 @@ public:
     const juce::String& getSampleRootPath() const { return sampleRootPath_; }
     float getBPM() const { return bpm_; }
     bool hasClockInput() const { return clockActive_; }
+    int getClockDiv() const { return clockDiv_; }
+    void setClockDiv(int d) { clockDiv_ = juce::jlimit(1, 8, d); clockPulseCount_ = 0; }
 
     // Recording
     enum class RecState { Idle, Armed, Recording };
@@ -95,6 +97,9 @@ private:
     bool resetHigh_ = false;
     int samplesSinceClock_ = 0;
     float bpm_ = 0.0f;
+    int clockDiv_ = 1;          // pulses per beat (1,2,4,8)
+    int clockPulseCount_ = 0;   // counts pulses for division
+    int samplesSinceDiv_ = 0;   // samples since last divided beat
 
     // Recording
     RecState recState_ = RecState::Idle;

@@ -28,9 +28,23 @@ void GridEngine::trigger(int slot)
 void GridEngine::forceTrigger(int slot)
 {
     if (slot >= 0 && slot < kNumPads) {
-        // Kill any fade-out in progress, instant restart
         slots_[slot].trigger();
     }
+}
+
+void GridEngine::triggerWithChoke(int slot)
+{
+    if (slot < 0 || slot >= kNumPads) return;
+
+    // Choke: stop all other pads in the same group
+    ChokeGroup grp = slots_[slot].getChokeGroup();
+    if (grp != ChokeGroup::None) {
+        for (int i = 0; i < kNumPads; ++i) {
+            if (i != slot && slots_[i].getChokeGroup() == grp && slots_[i].isPlaying())
+                slots_[i].stop();
+        }
+    }
+    slots_[slot].trigger();
 }
 
 void GridEngine::stop(int slot)

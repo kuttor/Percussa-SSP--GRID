@@ -64,6 +64,18 @@ public:
     // Compat helper for context bar
     float getFadeMs() const          { return std::max(fadeInMs_, fadeOutMs_); }
 
+    // Options
+    void setChokeGroup(ChokeGroup g) { chokeGroup_ = g; }
+    ChokeGroup getChokeGroup() const { return chokeGroup_; }
+    void setReversed(bool r);
+    bool isReversed() const          { return reversed_; }
+    void normalize();                // one-shot: scan peak, apply gain to ~0.95
+    float getNormalizeGain() const   { return normalizeGain_; }
+
+    // MIDI (per-pad)
+    void setMidiChannel(int ch)      { midiChannel_ = juce::jlimit(0, 16, ch); }  // 0 = off
+    int getMidiChannel() const       { return midiChannel_; }
+
     PadMode getMode() const     { return mode_; }
     float getVolume() const     { return volume_; }
     float getPan() const        { return pan_; }
@@ -113,6 +125,10 @@ private:
     float fadeOutMs_      = 0.0f;
     int   fadeInCurve_    = 0;    // 0=linear, 1=exponential
     int   fadeOutCurve_   = 0;
+    ChokeGroup chokeGroup_ = ChokeGroup::None;
+    bool  reversed_       = false;
+    float normalizeGain_  = 1.0f;
+    int   midiChannel_    = 0;    // 0 = off, 1-16 = active
 
     // Granular time stretch state
     static constexpr int kGrainSize = 4096;  // ~85ms at 48kHz, less vibrato

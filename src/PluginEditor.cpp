@@ -66,7 +66,7 @@ void PluginEditor::paint(juce::Graphics& g)
     g.setColour(juce::Colour(kTabBg));
     g.fillRect(0, 0, w, kTabHeight);
 
-    const char* pages[] = { "PADS", "SAMPLE", "PLAY", "WARP", "FADE" };
+    const char* pages[] = { "PADS", "SAMPLE", "PLAY", "WARP", "FADE", "MIDI", "OPTIONS" };
     int tabW = 130;
     for (int i = 0; i < kNumPages; ++i)
     {
@@ -131,6 +131,20 @@ void PluginEditor::paint(juce::Graphics& g)
             if (locks.isNotEmpty()) locks += " ";
             locks += "MUTE";
         }
+        if (selSlot.getChokeGroup() != ChokeGroup::None) {
+            const char* grpNames[] = { "", "A", "B", "C", "D", "E", "F", "G", "H" };
+            if (locks.isNotEmpty()) locks += " ";
+            locks += "CHK:";
+            locks += grpNames[static_cast<int>(selSlot.getChokeGroup())];
+        }
+        if (selSlot.isReversed()) {
+            if (locks.isNotEmpty()) locks += " ";
+            locks += "REV";
+        }
+        if (selSlot.getMidiChannel() > 0) {
+            if (locks.isNotEmpty()) locks += " ";
+            locks += "MIDI";
+        }
 
         if (locks.isNotEmpty()) {
             g.setColour(juce::Colour(kTabActive));
@@ -183,7 +197,7 @@ void PluginEditor::paint(juce::Graphics& g)
     // Firmware version (bottom bar, far right)
     g.setColour(juce::Colour(0xFF888888));
     g.setFont(17.0f);
-    g.drawText("Firmware 0.1.7.2-beta", w - 280, encY, 270, kEncoderBarH,
+    g.drawText("Firmware 0.1.8-beta", w - 280, encY, 270, kEncoderBarH,
                juce::Justification::centredRight);
 }
 
@@ -441,6 +455,26 @@ void PluginEditor::paintPadBox(juce::Graphics& g, juce::Rectangle<int> box, int 
             g.fillRect((float)box.getX(), (float)box.getBottom() - 3.0f,
                        prog * (float)box.getWidth(), 3.0f);
         }
+    }
+
+    // Choke group indicator (top right corner)
+    ChokeGroup grp = slot.getChokeGroup();
+    if (grp != ChokeGroup::None) {
+        const char* grpNames[] = { "", "A", "B", "C", "D", "E", "F", "G", "H" };
+        g.setColour(juce::Colour(0xFFFFAA00).withAlpha(0.8f));
+        g.setFont(14.0f);
+        g.drawText(grpNames[static_cast<int>(grp)],
+                   box.getRight() - 18, box.getY() + 4, 14, 14,
+                   juce::Justification::centred);
+    }
+
+    // Reverse indicator (bottom right, small arrow)
+    if (slot.isReversed()) {
+        g.setColour(juce::Colour(0xFF42A5F5).withAlpha(0.8f));
+        g.setFont(12.0f);
+        g.drawText(juce::CharPointer_UTF8("\xe2\x97\x80"), // ◀
+                   box.getRight() - 18, box.getBottom() - 18, 14, 14,
+                   juce::Justification::centred);
     }
 
     // MUTE overlay (on top of everything)
@@ -1116,6 +1150,14 @@ juce::String PluginEditor::getEncoderLabel(int page, int enc) const
             const char* l[] = { "", "FADE IN", "FADE OUT", "---" };
             return l[enc];
         }
+        case PAGE_MIDI: {
+            const char* l[] = { "", "CHANNEL", "DEVICE", "CLK" };
+            return l[enc];
+        }
+        case PAGE_OPTIONS: {
+            const char* l[] = { "", "CHOKE", "REVERSE", "ENHANCE" };
+            return l[enc];
+        }
     }
     return "";
 }
@@ -1195,6 +1237,29 @@ juce::String PluginEditor::getEncoderValue(int page, int enc) const
             };
             if (enc == 1) return fmtFade(slot.getFadeInMs(), slot.getFadeInCurve());
             if (enc == 2) return fmtFade(slot.getFadeOutMs(), slot.getFadeOutCurve());
+            return "---";
+        }
+        case PAGE_MIDI: {
+            if (enc == 1) {
+                int ch = slot.getMidiChannel();
+                if (ch == 0) return "OFF";
+                if (ch == 17) return "OMNI";
+                return "CH " + juce::String(ch);
+            }
+            if (enc == 2) {
+                auto name = processor_.getMidiDeviceName();
+                return name.isEmpty() ? "None" : name;
+            }
+            if (enc == 3) return processor_.isMidiClockEnabled() ? "ON" : "OFF";
+            return "---";
+        }
+        case PAGE_OPTIONS: {
+            if (enc == 1) {
+                const char* grps[] = { "NONE", "A", "B", "C", "D", "E", "F", "G", "H" };
+                return grps[static_cast<int>(slot.getChokeGroup())];
+            }
+            if (enc == 2) return slot.isReversed() ? "ON" : "OFF";
+            if (enc == 3) return "[PUSH]";
             return "---";
         }
     }
@@ -1396,6 +1461,29 @@ void PluginEditor::onEncoder(int n, float delta)
             }
             break;
         }
+
+        case PAGE_MIDI:
+            if (n == 1) {
+                int ch = slot.getMidiChannel() + (delta > 0 ? 1 : -1);
+                slot.setMidiChannel(juce::jlimit(0, 17, ch));  // 0=off, 1-16=ch, 17=OMNI
+            }
+            if (n == 2) {
+                auto devs = processor_.getMidiDeviceNames();
+                int cur = devs.indexOf(processor_.getMidiDeviceName());
+                if (cur < 0) cur = 0;
+                int next = juce::jlimit(0, devs.size() - 1, cur + (delta > 0 ? 1 : -1));
+                processor_.setMidiDevice(devs[next]);
+            }
+            if (n == 3) processor_.setMidiClockEnabled(!processor_.isMidiClockEnabled());
+            break;
+
+        case PAGE_OPTIONS:
+            if (n == 1) {
+                int g = static_cast<int>(slot.getChokeGroup()) + (delta > 0 ? 1 : -1);
+                slot.setChokeGroup(static_cast<ChokeGroup>(juce::jlimit(0, 8, g)));
+            }
+            if (n == 2) slot.setReversed(!slot.isReversed());
+            break;
     }
 }
 
@@ -1457,6 +1545,16 @@ void PluginEditor::onEncoderSwitch(int n, bool val)
         case PAGE_FADE:
             if (n == 1) slot.setFadeInCurve(slot.getFadeInCurve() == 0 ? 1 : 0);
             if (n == 2) slot.setFadeOutCurve(slot.getFadeOutCurve() == 0 ? 1 : 0);
+            break;
+        case PAGE_MIDI:
+            if (n == 1) slot.setMidiChannel(0);  // push = OFF
+            if (n == 2) processor_.closeMidiDevice();  // push = disconnect
+            if (n == 3) processor_.setMidiClockEnabled(!processor_.isMidiClockEnabled());
+            break;
+        case PAGE_OPTIONS:
+            if (n == 1) slot.setChokeGroup(ChokeGroup::None);
+            if (n == 2) slot.setReversed(!slot.isReversed());
+            if (n == 3) slot.normalize();  // one-shot enhance
             break;
         default:
             break;

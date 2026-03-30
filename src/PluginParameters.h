@@ -8,7 +8,7 @@ namespace grid {
 static constexpr int kDisplayWidth  = 1600;
 static constexpr int kDisplayHeight = 480;
 static constexpr int kNumPads       = 8;
-static constexpr int kNumPages      = 5;
+static constexpr int kNumPages      = 7;
 static constexpr int kEncodersPerPage = 4;
 
 // -- I/O Channel Indices --
@@ -79,10 +79,13 @@ inline const char* outputBusName(int i) {
 static constexpr float kTrigThreshold = 0.2f;
 
 // -- Pages --
-enum Page { PAGE_OVERVIEW = 0, PAGE_SAMPLE, PAGE_PLAY, PAGE_PITCH, PAGE_FADE };
+enum Page { PAGE_OVERVIEW = 0, PAGE_SAMPLE, PAGE_PLAY, PAGE_PITCH, PAGE_FADE, PAGE_MIDI, PAGE_OPTIONS };
 
 // -- Per-pad modes --
 enum class PadMode { OneShot = 0, Loop, ClockedLoop, ClockedBar };
+
+// -- Choke groups --
+enum class ChokeGroup { None = 0, A, B, C, D, E, F, G, H };
 
 // -- Path finder --
 inline juce::String findSSPSamplePath()

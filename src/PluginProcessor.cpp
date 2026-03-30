@@ -9,10 +9,26 @@ PluginProcessor::PluginProcessor()
     sampleRootPath_ = findSSPSamplePath();
 }
 
+PluginProcessor::~PluginProcessor()
+{
+    if (midiInDevice_) {
+        midiInDevice_->stop();
+        midiInDevice_ = nullptr;
+    }
+}
+
 void PluginProcessor::prepareToPlay(double sampleRate, int samplesPerBlock)
 {
     sampleRate_ = sampleRate;
     engine_.prepare(sampleRate, samplesPerBlock);
+}
+
+void PluginProcessor::releaseResources()
+{
+    if (midiInDevice_) {
+        midiInDevice_->stop();
+        midiInDevice_ = nullptr;
+    }
 }
 
 void PluginProcessor::processBlock(juce::AudioBuffer<float>& buffer,
@@ -59,9 +75,26 @@ void PluginProcessor::processBlock(juce::AudioBuffer<float>& buffer,
                 if (std::isfinite(ev) && std::abs(ev) > 0.005f)
                     slot.setEndPos(juce::jlimit(0.0f, 1.0f, ev));
             }
-            engine_.forceTrigger(pad);
+            engine_.triggerWithChoke(pad);
         }
     }
+
+    // ── Process pending MIDI triggers ──────────────────────────────────
+    for (int pad = 0; pad < kNumPads; ++pad)
+    {
+        if (midiTrigPending_[pad]) {
+            midiTrigPending_[pad] = false;
+            if (!engine_.isMuted(pad)) {
+                // Apply velocity as volume for this hit
+                float vel = midiVelocity_[pad];
+                engine_.getSlot(pad).setVolume(vel);
+                engine_.triggerWithChoke(pad);
+            }
+        }
+    }
+
+    // ── MIDI clock BPM (overrides CV clock when enabled) ────────────────
+    // Handled in handleIncomingMidiMessage — midiClockCount_ counts 24 PPQN
 
     // ── Read pitch CVs ───────────────────────────────────────────────────
     for (int pad = 0; pad < kNumPads; ++pad)
@@ -328,6 +361,126 @@ void PluginProcessor::finalizeRecording()
     recPos_ = 0;
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// MIDI (direct device access — Bear's pattern, improved)
+// ═══════════════════════════════════════════════════════════════════════════
+
+static bool isInternalMidi(const juce::String& name) {
+    return name.contains("Juce") || name.contains("Midi Through Port");
+}
+
+juce::StringArray PluginProcessor::getMidiDeviceNames() const
+{
+    juce::StringArray names;
+    names.add("None");
+    auto devs = juce::MidiInput::getAvailableDevices();
+    for (auto& d : devs) {
+        if (!isInternalMidi(d.name))
+            names.add(d.name);
+    }
+    return names;
+}
+
+void PluginProcessor::setMidiDevice(const juce::String& name)
+{
+    if (name == midiDeviceName_) return;
+    closeMidiDevice();
+
+    if (name.isEmpty() || name == "None") {
+        midiDeviceName_.clear();
+        return;
+    }
+
+    auto devs = juce::MidiInput::getAvailableDevices();
+    for (auto& d : devs) {
+        if (d.name == name) {
+            midiInDevice_ = juce::MidiInput::openDevice(d.identifier, this);
+            if (midiInDevice_) {
+                midiInDevice_->start();
+                midiDeviceName_ = name;
+            }
+            return;
+        }
+    }
+}
+
+void PluginProcessor::closeMidiDevice()
+{
+    if (midiInDevice_) {
+        midiInDevice_->stop();
+        midiInDevice_ = nullptr;
+    }
+    midiDeviceName_.clear();
+}
+
+void PluginProcessor::handleIncomingMidiMessage(juce::MidiInput*, const juce::MidiMessage& msg)
+{
+    // MIDI clock: 0xF8, 24 pulses per quarter note
+    if (midiClockEnabled_ && msg.isMidiClock()) {
+        midiClockCount_++;
+        if (midiClockCount_ >= 24) {
+            // One beat received (24 PPQN)
+            if (midiClockSamples_ > 0 && sampleRate_ > 0) {
+                float intervalSecs = (float)midiClockSamples_ / (float)sampleRate_;
+                float newBPM = 60.0f / intervalSecs;
+                newBPM = juce::jlimit(20.0f, 300.0f, newBPM);
+                if (std::abs(newBPM - bpm_) > bpm_ * 0.1f)
+                    bpm_ = newBPM;
+                else
+                    bpm_ = bpm_ * 0.7f + newBPM * 0.3f;
+            }
+            clockActive_ = true;
+            midiClockCount_ = 0;
+            midiClockSamples_ = 0;
+        }
+        midiClockSamples_ += 128;  // approximate: one processBlock per callback
+        return;
+    }
+
+    if (msg.isMidiStart() || msg.isMidiContinue()) {
+        midiClockCount_ = 0;
+        midiClockSamples_ = 0;
+        return;
+    }
+
+    // Note on → trigger pad (matched by per-pad MIDI channel)
+    if (msg.isNoteOn()) {
+        int ch = msg.getChannel();  // 1-16
+        for (int pad = 0; pad < kNumPads; ++pad) {
+            int padCh = engine_.getSlot(pad).getMidiChannel();
+            if (padCh == 0) continue;  // MIDI off for this pad
+            if (padCh == ch || padCh == 17) {  // 17 = OMNI (respond to all)
+                midiTrigPending_[pad] = true;
+                midiVelocity_[pad] = msg.getFloatVelocity();
+                break;  // first matching pad wins
+            }
+        }
+    }
+
+    // CC handling — per-pad, using default CC map
+    if (msg.isController()) {
+        int ch = msg.getChannel();
+        int cc = msg.getControllerNumber();
+        float val = (float)msg.getControllerValue() / 127.0f;
+
+        for (int pad = 0; pad < kNumPads; ++pad) {
+            int padCh = engine_.getSlot(pad).getMidiChannel();
+            if (padCh == 0) continue;
+            if (padCh != ch && padCh != 17) continue;
+
+            auto& slot = engine_.getSlot(pad);
+            switch (cc) {
+                case 1:  slot.setStartPos(val); break;
+                case 2:  slot.setEndPos(val); break;
+                case 7:  slot.setVolume(val); break;
+                case 10: slot.setPan(val * 2.0f - 1.0f); break;  // 0-127 → -1..+1
+                case 11: slot.setTimeStretch(0.25f + val * 3.75f); break;  // 0-127 → 0.25-4.0
+                default: break;
+            }
+        }
+    }
+}
+
 void PluginProcessor::getStateInformation(juce::MemoryBlock& destData)
 {
     auto xml = std::make_unique<juce::XmlElement>("GRID_STATE");
@@ -357,7 +510,15 @@ void PluginProcessor::getStateInformation(juce::MemoryBlock& destData)
         pad->setAttribute("fadeInCurve", slot.getFadeInCurve());
         pad->setAttribute("fadeOutCurve", slot.getFadeOutCurve());
         pad->setAttribute("muted", engine_.isMuted(i) ? 1 : 0);
+        pad->setAttribute("choke", static_cast<int>(slot.getChokeGroup()));
+        pad->setAttribute("reversed", slot.isReversed() ? 1 : 0);
+        pad->setAttribute("midiChannel", slot.getMidiChannel());
     }
+
+    // Global MIDI settings
+    xml->setAttribute("midiDevice", midiDeviceName_);
+    xml->setAttribute("midiClock", midiClockEnabled_ ? 1 : 0);
+    xml->setAttribute("clockDiv", clockDiv_);
 
     copyXmlToBinary(*xml, destData);
 }
@@ -400,7 +561,16 @@ void PluginProcessor::setStateInformation(const void* data, int sizeInBytes)
         slot.setFadeInCurve(pad->getIntAttribute("fadeInCurve", 0));
         slot.setFadeOutCurve(pad->getIntAttribute("fadeOutCurve", 0));
         engine_.setMuted(i, pad->getIntAttribute("muted", 0) != 0);
+        slot.setChokeGroup(static_cast<ChokeGroup>(pad->getIntAttribute("choke", 0)));
+        if (pad->getIntAttribute("reversed", 0)) slot.setReversed(true);
+        slot.setMidiChannel(pad->getIntAttribute("midiChannel", 0));
     }
+
+    // Global MIDI settings
+    juce::String midiDev = xml->getStringAttribute("midiDevice");
+    if (midiDev.isNotEmpty()) setMidiDevice(midiDev);
+    midiClockEnabled_ = xml->getIntAttribute("midiClock", 0) != 0;
+    clockDiv_ = xml->getIntAttribute("clockDiv", 1);
 }
 
 juce::AudioProcessorEditor* PluginProcessor::createEditor()

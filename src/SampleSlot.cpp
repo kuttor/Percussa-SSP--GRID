@@ -77,6 +77,56 @@ void SampleSlot::clear()
     filePath_.clear();
     readPosition_ = 0.0;
     sourcePos_ = 0.0;
+    reversed_ = false;
+    normalizeGain_ = 1.0f;
+    chokeGroup_ = ChokeGroup::None;
+    midiChannel_ = 0;
+}
+
+void SampleSlot::setReversed(bool r)
+{
+    if (r == reversed_) return;
+    reversed_ = r;
+
+    // Flip the buffer data in place
+    int ns = numSamples_.load();
+    if (ns <= 0) return;
+
+    numSamples_.store(0);  // signal "not loaded" while flipping
+    for (int ch = 0; ch < numChannels_; ++ch) {
+        float* data = buffer_.getWritePointer(ch);
+        std::reverse(data, data + ns);
+    }
+    numSamples_.store(ns);
+}
+
+void SampleSlot::normalize()
+{
+    int ns = numSamples_.load();
+    if (ns <= 0) return;
+
+    // Find peak across all channels
+    float peak = 0.0f;
+    for (int ch = 0; ch < numChannels_; ++ch) {
+        const float* data = buffer_.getReadPointer(ch);
+        for (int s = 0; s < ns; ++s) {
+            float a = std::abs(data[s]);
+            if (a > peak) peak = a;
+        }
+    }
+    if (peak < 0.001f) return;  // silence
+
+    float gain = 0.95f / peak;
+    normalizeGain_ = gain;
+
+    // Apply gain in place
+    numSamples_.store(0);
+    for (int ch = 0; ch < numChannels_; ++ch) {
+        float* data = buffer_.getWritePointer(ch);
+        for (int s = 0; s < ns; ++s)
+            data[s] *= gain;
+    }
+    numSamples_.store(ns);
 }
 
 void SampleSlot::trigger()

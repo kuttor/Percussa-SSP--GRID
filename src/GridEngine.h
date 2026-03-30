@@ -11,7 +11,8 @@ public:
     void process(float* outL, float* outR, int numSamples);
 
     void trigger(int slot);
-    void forceTrigger(int slot);  // retrigger even during fade-out
+    void forceTrigger(int slot);
+    void triggerWithChoke(int slot);  // trigger + stop other pads in same choke group
     void stop(int slot);
     void stopAll();
 

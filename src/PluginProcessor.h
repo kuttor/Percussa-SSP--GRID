@@ -1,24 +1,26 @@
 #pragma once
 #include <juce_audio_processors/juce_audio_processors.h>
+#include <juce_audio_devices/juce_audio_devices.h>
 #include "PluginParameters.h"
 #include "GridEngine.h"
 
 namespace grid {
 
-class PluginProcessor : public juce::AudioProcessor {
+class PluginProcessor : public juce::AudioProcessor,
+                        public juce::MidiInputCallback {
 public:
     PluginProcessor();
-    ~PluginProcessor() override = default;
+    ~PluginProcessor() override;
 
     void prepareToPlay(double sampleRate, int samplesPerBlock) override;
-    void releaseResources() override {}
+    void releaseResources() override;
     void processBlock(juce::AudioBuffer<float>&, juce::MidiBuffer&) override;
 
     juce::AudioProcessorEditor* createEditor() override;
     bool hasEditor() const override { return true; }
 
     const juce::String getName() const override { return JucePlugin_Name; }
-    bool acceptsMidi() const override { return false; }
+    bool acceptsMidi() const override { return true; }
     bool producesMidi() const override { return false; }
     double getTailLengthSeconds() const override { return 0.0; }
 
@@ -67,6 +69,15 @@ public:
     void setRecTargetPad(int p) { recTargetPad_ = juce::jlimit(0, kNumPads - 1, p); }
     float getRecProgress() const;
 
+    // MIDI
+    void handleIncomingMidiMessage(juce::MidiInput* source, const juce::MidiMessage& msg) override;
+    juce::StringArray getMidiDeviceNames() const;
+    juce::String getMidiDeviceName() const { return midiDeviceName_; }
+    void setMidiDevice(const juce::String& name);
+    void closeMidiDevice();
+    bool isMidiClockEnabled() const { return midiClockEnabled_; }
+    void setMidiClockEnabled(bool b) { midiClockEnabled_ = b; }
+
     // Mono bus layout (Bear's pattern) — must be inside AudioProcessor subclass
     static BusesProperties getBusesProperties() {
         BusesProperties props;
@@ -95,7 +106,6 @@ private:
     bool clockHigh_ = false;
     bool clockActive_ = false;
     bool resetHigh_ = false;
-    int samplesSinceClock_ = 0;
     float bpm_ = 0.0f;
     int clockDiv_ = 1;          // pulses per beat (1,2,4,8)
     int clockPulseCount_ = 0;   // counts pulses for division
@@ -117,6 +127,15 @@ private:
     static constexpr int kSilenceTimeoutSamples = 48000 * 3;  // 3s at 48k
 
     void finalizeRecording();
+
+    // MIDI state (direct device access, Bear's pattern)
+    std::unique_ptr<juce::MidiInput> midiInDevice_;
+    juce::String midiDeviceName_;
+    bool midiClockEnabled_ = false;
+    int midiClockCount_ = 0;         // counts 24 PPQN
+    int midiClockSamples_ = 0;       // samples since last beat (24 clocks)
+    bool midiTrigPending_[kNumPads] = {};
+    float midiVelocity_[kNumPads] = {};
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(PluginProcessor)
 };

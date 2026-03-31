@@ -136,6 +136,7 @@ private:
     int midiClockSamples_ = 0;       // samples since last beat (24 clocks)
     bool midiTrigPending_[kNumPads] = {};
     float midiVelocity_[kNumPads] = {};
+    int midiNote_[kNumPads] = {};  // note number for pitch offset (60 = no shift)
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(PluginProcessor)
 };

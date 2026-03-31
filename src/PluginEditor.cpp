@@ -149,7 +149,8 @@ void PluginEditor::paint(juce::Graphics& g)
         if (locks.isNotEmpty()) {
             g.setColour(juce::Colour(kTabActive));
             g.setFont(17.0f);
-            g.drawText(locks, 540, 8, w - 550, 22, juce::Justification::centredRight);
+            int locksRight = processor_.hasClockInput() ? (w - 140) : (w - 10);
+            g.drawText(locks, 540, 8, locksRight - 540, 22, juce::Justification::centredRight);
         }
     }
 
@@ -435,8 +436,8 @@ void PluginEditor::paintPadBox(juce::Graphics& g, juce::Rectangle<int> box, int 
     // Filename
     juce::String dispName = slot.getFileName();
     if (dispName.contains(".")) dispName = dispName.upToLastOccurrenceOf(".", false, false);
-    g.setColour(juce::Colour(kPadText));
-    g.setFont(14.0f);
+    g.setColour(juce::Colour(kPadText).withAlpha(0.75f));
+    g.setFont(16.0f);
     g.drawText(dispName, box.getX() + 30, box.getY() + 4, box.getWidth() - 40, 20,
                juce::Justification::centredRight);
 
@@ -449,7 +450,6 @@ void PluginEditor::paintPadBox(juce::Graphics& g, juce::Rectangle<int> box, int 
         g.drawText(recording ? "REC" : "ARM", box.getX() + 8, box.getBottom() - 20, 40, 16,
                    juce::Justification::bottomLeft);
         if (recording) {
-            // Progress bar at bottom of pad
             float prog = processor_.getRecProgress();
             g.setColour(juce::Colour(kTabActive).withAlpha(0.4f));
             g.fillRect((float)box.getX(), (float)box.getBottom() - 3.0f,
@@ -457,23 +457,37 @@ void PluginEditor::paintPadBox(juce::Graphics& g, juce::Rectangle<int> box, int 
         }
     }
 
-    // Choke group indicator (top right corner)
-    ChokeGroup grp = slot.getChokeGroup();
-    if (grp != ChokeGroup::None) {
-        const char* grpNames[] = { "", "A", "B", "C", "D", "E", "F", "G", "H" };
-        g.setColour(juce::Colour(0xFFFFAA00).withAlpha(0.8f));
-        g.setFont(14.0f);
-        g.drawText(grpNames[static_cast<int>(grp)],
-                   box.getRight() - 18, box.getY() + 4, 14, 14,
+    // ── Status symbols (bottom right, side by side) ──────────────────────
+    int symX = box.getRight() - 6;  // right edge, accumulates leftward
+    const int symY = box.getBottom() - 28;
+    const auto symCol = juce::Colour(0xFFFFFFFF).withAlpha(0.55f);
+
+    // Reverse indicator
+    if (slot.isReversed()) {
+        symX -= 28;
+        g.setColour(symCol);
+        g.setFont(22.0f);
+        g.drawText(juce::CharPointer_UTF8("\xe2\x97\x80"), symX, symY, 26, 24,
                    juce::Justification::centred);
     }
 
-    // Reverse indicator (bottom right, small arrow)
-    if (slot.isReversed()) {
-        g.setColour(juce::Colour(0xFF42A5F5).withAlpha(0.8f));
-        g.setFont(12.0f);
-        g.drawText(juce::CharPointer_UTF8("\xe2\x97\x80"), // ◀
-                   box.getRight() - 18, box.getBottom() - 18, 14, 14,
+    // Choke group indicator (triangle with letter)
+    ChokeGroup grp = slot.getChokeGroup();
+    if (grp != ChokeGroup::None) {
+        symX -= 30;
+        const char* grpNames[] = { "", "A", "B", "C", "D", "E", "F", "G", "H" };
+        // Draw triangle outline
+        float cx = (float)symX + 13.0f;
+        float ty = (float)symY;
+        float by = (float)symY + 23.0f;
+        juce::Path tri;
+        tri.addTriangle(cx, ty, cx - 13.0f, by, cx + 13.0f, by);
+        g.setColour(symCol);
+        g.strokePath(tri, juce::PathStrokeType(1.8f));
+        // Letter inside
+        g.setFont(14.0f);
+        g.drawText(grpNames[static_cast<int>(grp)],
+                   symX, symY + 6, 26, 18,
                    juce::Justification::centred);
     }
 
@@ -1250,7 +1264,11 @@ juce::String PluginEditor::getEncoderValue(int page, int enc) const
                 auto name = processor_.getMidiDeviceName();
                 return name.isEmpty() ? "None" : name;
             }
-            if (enc == 3) return processor_.isMidiClockEnabled() ? "ON" : "OFF";
+            if (enc == 3) {
+                if (processor_.getMidiDeviceName().isEmpty())
+                    return "---";
+                return processor_.isMidiClockEnabled() ? "ON" : "OFF";
+            }
             return "---";
         }
         case PAGE_OPTIONS: {
@@ -1322,17 +1340,15 @@ void PluginEditor::onButton(int n, bool val)
 void PluginEditor::onLeftButton(bool val)
 {
     if (!val) return;
-    if (browseMode_) return;  // don't close browser with left
-    int col = selectedPad_ % 4;
-    if (col > 0) { selectedPad_--; repaint(); }
+    if (browseMode_) return;
+    switchPage(currentPage_ - 1);
 }
 
 void PluginEditor::onRightButton(bool val)
 {
     if (!val) return;
     if (browseMode_) return;
-    int col = selectedPad_ % 4;
-    if (col < 3) { selectedPad_++; repaint(); }
+    switchPage(currentPage_ + 1);
 }
 
 void PluginEditor::onUpButton(bool val)
@@ -1357,14 +1373,12 @@ void PluginEditor::onLeftShiftButton(bool val)
 
 void PluginEditor::onRightShiftButton(bool val)
 {
+    // Pure mute mode — hold to enter, release to exit. No page switching.
     if (val) {
         muteMode_ = true;
-        muteToggled_ = false;
         repaint();
     } else {
         muteMode_ = false;
-        if (!muteToggled_)
-            switchPage(currentPage_ + 1);
         repaint();
     }
 }
@@ -1465,16 +1479,21 @@ void PluginEditor::onEncoder(int n, float delta)
         case PAGE_MIDI:
             if (n == 1) {
                 int ch = slot.getMidiChannel() + (delta > 0 ? 1 : -1);
-                slot.setMidiChannel(juce::jlimit(0, 17, ch));  // 0=off, 1-16=ch, 17=OMNI
+                slot.setMidiChannel(juce::jlimit(0, 17, ch));
             }
             if (n == 2) {
                 auto devs = processor_.getMidiDeviceNames();
-                int cur = devs.indexOf(processor_.getMidiDeviceName());
-                if (cur < 0) cur = 0;
-                int next = juce::jlimit(0, devs.size() - 1, cur + (delta > 0 ? 1 : -1));
-                processor_.setMidiDevice(devs[next]);
+                if (devs.size() > 0) {
+                    auto curName = processor_.getMidiDeviceName();
+                    int cur = curName.isEmpty() ? 0 : devs.indexOf(curName);
+                    if (cur < 0) cur = 0;
+                    int next = juce::jlimit(0, devs.size() - 1, cur + (delta > 0 ? 1 : -1));
+                    processor_.setMidiDevice(devs[next]);
+                }
             }
-            if (n == 3) processor_.setMidiClockEnabled(!processor_.isMidiClockEnabled());
+            if (n == 3 && processor_.getMidiDeviceName().isNotEmpty()) {
+                processor_.setMidiClockEnabled(delta > 0);  // turn right = ON, left = OFF
+            }
             break;
 
         case PAGE_OPTIONS:
@@ -1482,7 +1501,7 @@ void PluginEditor::onEncoder(int n, float delta)
                 int g = static_cast<int>(slot.getChokeGroup()) + (delta > 0 ? 1 : -1);
                 slot.setChokeGroup(static_cast<ChokeGroup>(juce::jlimit(0, 8, g)));
             }
-            if (n == 2) slot.setReversed(!slot.isReversed());
+            // enc 2 (reverse) is push-only toggle
             break;
     }
 }
@@ -1549,7 +1568,8 @@ void PluginEditor::onEncoderSwitch(int n, bool val)
         case PAGE_MIDI:
             if (n == 1) slot.setMidiChannel(0);  // push = OFF
             if (n == 2) processor_.closeMidiDevice();  // push = disconnect
-            if (n == 3) processor_.setMidiClockEnabled(!processor_.isMidiClockEnabled());
+            if (n == 3 && processor_.getMidiDeviceName().isNotEmpty())
+                processor_.setMidiClockEnabled(!processor_.isMidiClockEnabled());
             break;
         case PAGE_OPTIONS:
             if (n == 1) slot.setChokeGroup(ChokeGroup::None);

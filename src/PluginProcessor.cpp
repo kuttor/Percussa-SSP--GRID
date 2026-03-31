@@ -67,12 +67,12 @@ void PluginProcessor::processBlock(juce::AudioBuffer<float>& buffer,
             auto& slot = engine_.getSlot(pad);
             if (hasStartCV) {
                 float sv = buffer.getSample(I_START_CV, numSamples - 1);
-                if (std::isfinite(sv) && std::abs(sv) > 0.005f)
+                if (std::isfinite(sv))
                     slot.setStartPos(juce::jlimit(0.0f, 1.0f, sv));
             }
             if (hasEndCV) {
                 float ev = buffer.getSample(I_END_CV, numSamples - 1);
-                if (std::isfinite(ev) && std::abs(ev) > 0.005f)
+                if (std::isfinite(ev))
                     slot.setEndPos(juce::jlimit(0.0f, 1.0f, ev));
             }
             engine_.triggerWithChoke(pad);
@@ -85,9 +85,11 @@ void PluginProcessor::processBlock(juce::AudioBuffer<float>& buffer,
         if (midiTrigPending_[pad]) {
             midiTrigPending_[pad] = false;
             if (!engine_.isMuted(pad)) {
-                // Apply velocity as volume for this hit
-                float vel = midiVelocity_[pad];
-                engine_.getSlot(pad).setVolume(vel);
+                auto& slot = engine_.getSlot(pad);
+                // Velocity → volume
+                slot.setVolume(midiVelocity_[pad]);
+                // Note → pitch offset in semitones (60 = C3 = no shift)
+                slot.setPitchSemitones((float)(midiNote_[pad] - 60));
                 engine_.triggerWithChoke(pad);
             }
         }
@@ -366,7 +368,10 @@ void PluginProcessor::finalizeRecording()
 // ═══════════════════════════════════════════════════════════════════════════
 
 static bool isInternalMidi(const juce::String& name) {
-    return name.contains("Juce") || name.contains("Midi Through Port");
+    auto lower = name.toLowerCase();
+    return lower.contains("juce") || lower.contains("midi through") || 
+           lower.contains("rtmidi") || lower.contains("internal") ||
+           name.isEmpty();
 }
 
 juce::StringArray PluginProcessor::getMidiDeviceNames() const
@@ -375,7 +380,7 @@ juce::StringArray PluginProcessor::getMidiDeviceNames() const
     names.add("None");
     auto devs = juce::MidiInput::getAvailableDevices();
     for (auto& d : devs) {
-        if (!isInternalMidi(d.name))
+        if (!isInternalMidi(d.name) && d.name.isNotEmpty())
             names.add(d.name);
     }
     return names;
@@ -391,9 +396,12 @@ void PluginProcessor::setMidiDevice(const juce::String& name)
         return;
     }
 
+    // Safety: never open internal MIDI devices
+    if (isInternalMidi(name)) return;
+
     auto devs = juce::MidiInput::getAvailableDevices();
     for (auto& d : devs) {
-        if (d.name == name) {
+        if (d.name == name && !isInternalMidi(d.name)) {
             midiInDevice_ = juce::MidiInput::openDevice(d.identifier, this);
             if (midiInDevice_) {
                 midiInDevice_->start();
@@ -402,6 +410,7 @@ void PluginProcessor::setMidiDevice(const juce::String& name)
             return;
         }
     }
+    // Device not found — don't set name, stay disconnected
 }
 
 void PluginProcessor::closeMidiDevice()
@@ -411,6 +420,7 @@ void PluginProcessor::closeMidiDevice()
         midiInDevice_ = nullptr;
     }
     midiDeviceName_.clear();
+    midiClockEnabled_ = false;  // no device = no clock
 }
 
 void PluginProcessor::handleIncomingMidiMessage(juce::MidiInput*, const juce::MidiMessage& msg)
@@ -452,6 +462,7 @@ void PluginProcessor::handleIncomingMidiMessage(juce::MidiInput*, const juce::Mi
             if (padCh == ch || padCh == 17) {  // 17 = OMNI (respond to all)
                 midiTrigPending_[pad] = true;
                 midiVelocity_[pad] = msg.getFloatVelocity();
+                midiNote_[pad] = msg.getNoteNumber();
                 break;  // first matching pad wins
             }
         }

@@ -202,641 +202,545 @@ GRID_VST3/fast:
 .PHONY : GRID_VST3/fast
 
 #=============================================================================
-# Target rules for targets named GRID_vst3_helper
+# Target rules for targets named juce_vst3_helper
 
 # Build rule for target.
-GRID_vst3_helper: cmake_check_build_system
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 GRID_vst3_helper
-.PHONY : GRID_vst3_helper
+juce_vst3_helper: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 juce_vst3_helper
+.PHONY : juce_vst3_helper
 
 # fast build rule for target.
-GRID_vst3_helper/fast:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID_vst3_helper.dir/build.make CMakeFiles/GRID_vst3_helper.dir/build
-.PHONY : GRID_vst3_helper/fast
+juce_vst3_helper/fast:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/juce_vst3_helper.dir/build.make CMakeFiles/juce_vst3_helper.dir/build
+.PHONY : juce_vst3_helper/fast
 
-Users/akuttor/Code/JUCE/modules/juce_audio_basics/juce_audio_basics.o: Users/akuttor/Code/JUCE/modules/juce_audio_basics/juce_audio_basics.cpp.o
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_audio_basics/juce_audio_basics.o
-
-# target to build an object file
-Users/akuttor/Code/JUCE/modules/juce_audio_basics/juce_audio_basics.cpp.o:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID.dir/build.make CMakeFiles/GRID.dir/Users/akuttor/Code/JUCE/modules/juce_audio_basics/juce_audio_basics.cpp.o
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_audio_basics/juce_audio_basics.cpp.o
-
-Users/akuttor/Code/JUCE/modules/juce_audio_basics/juce_audio_basics.i: Users/akuttor/Code/JUCE/modules/juce_audio_basics/juce_audio_basics.cpp.i
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_audio_basics/juce_audio_basics.i
-
-# target to preprocess a source file
-Users/akuttor/Code/JUCE/modules/juce_audio_basics/juce_audio_basics.cpp.i:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID.dir/build.make CMakeFiles/GRID.dir/Users/akuttor/Code/JUCE/modules/juce_audio_basics/juce_audio_basics.cpp.i
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_audio_basics/juce_audio_basics.cpp.i
-
-Users/akuttor/Code/JUCE/modules/juce_audio_basics/juce_audio_basics.s: Users/akuttor/Code/JUCE/modules/juce_audio_basics/juce_audio_basics.cpp.s
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_audio_basics/juce_audio_basics.s
-
-# target to generate assembly for a file
-Users/akuttor/Code/JUCE/modules/juce_audio_basics/juce_audio_basics.cpp.s:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID.dir/build.make CMakeFiles/GRID.dir/Users/akuttor/Code/JUCE/modules/juce_audio_basics/juce_audio_basics.cpp.s
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_audio_basics/juce_audio_basics.cpp.s
-
-Users/akuttor/Code/JUCE/modules/juce_audio_devices/juce_audio_devices.o: Users/akuttor/Code/JUCE/modules/juce_audio_devices/juce_audio_devices.cpp.o
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_audio_devices/juce_audio_devices.o
+Users/akuttor/Code/JUCE7/modules/juce_audio_basics/juce_audio_basics.o: Users/akuttor/Code/JUCE7/modules/juce_audio_basics/juce_audio_basics.cpp.o
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_audio_basics/juce_audio_basics.o
 
 # target to build an object file
-Users/akuttor/Code/JUCE/modules/juce_audio_devices/juce_audio_devices.cpp.o:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID.dir/build.make CMakeFiles/GRID.dir/Users/akuttor/Code/JUCE/modules/juce_audio_devices/juce_audio_devices.cpp.o
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_audio_devices/juce_audio_devices.cpp.o
+Users/akuttor/Code/JUCE7/modules/juce_audio_basics/juce_audio_basics.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID.dir/build.make CMakeFiles/GRID.dir/Users/akuttor/Code/JUCE7/modules/juce_audio_basics/juce_audio_basics.cpp.o
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_audio_basics/juce_audio_basics.cpp.o
 
-Users/akuttor/Code/JUCE/modules/juce_audio_devices/juce_audio_devices.i: Users/akuttor/Code/JUCE/modules/juce_audio_devices/juce_audio_devices.cpp.i
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_audio_devices/juce_audio_devices.i
+Users/akuttor/Code/JUCE7/modules/juce_audio_basics/juce_audio_basics.i: Users/akuttor/Code/JUCE7/modules/juce_audio_basics/juce_audio_basics.cpp.i
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_audio_basics/juce_audio_basics.i
 
 # target to preprocess a source file
-Users/akuttor/Code/JUCE/modules/juce_audio_devices/juce_audio_devices.cpp.i:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID.dir/build.make CMakeFiles/GRID.dir/Users/akuttor/Code/JUCE/modules/juce_audio_devices/juce_audio_devices.cpp.i
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_audio_devices/juce_audio_devices.cpp.i
+Users/akuttor/Code/JUCE7/modules/juce_audio_basics/juce_audio_basics.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID.dir/build.make CMakeFiles/GRID.dir/Users/akuttor/Code/JUCE7/modules/juce_audio_basics/juce_audio_basics.cpp.i
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_audio_basics/juce_audio_basics.cpp.i
 
-Users/akuttor/Code/JUCE/modules/juce_audio_devices/juce_audio_devices.s: Users/akuttor/Code/JUCE/modules/juce_audio_devices/juce_audio_devices.cpp.s
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_audio_devices/juce_audio_devices.s
+Users/akuttor/Code/JUCE7/modules/juce_audio_basics/juce_audio_basics.s: Users/akuttor/Code/JUCE7/modules/juce_audio_basics/juce_audio_basics.cpp.s
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_audio_basics/juce_audio_basics.s
 
 # target to generate assembly for a file
-Users/akuttor/Code/JUCE/modules/juce_audio_devices/juce_audio_devices.cpp.s:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID.dir/build.make CMakeFiles/GRID.dir/Users/akuttor/Code/JUCE/modules/juce_audio_devices/juce_audio_devices.cpp.s
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_audio_devices/juce_audio_devices.cpp.s
+Users/akuttor/Code/JUCE7/modules/juce_audio_basics/juce_audio_basics.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID.dir/build.make CMakeFiles/GRID.dir/Users/akuttor/Code/JUCE7/modules/juce_audio_basics/juce_audio_basics.cpp.s
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_audio_basics/juce_audio_basics.cpp.s
 
-Users/akuttor/Code/JUCE/modules/juce_audio_formats/juce_audio_formats.o: Users/akuttor/Code/JUCE/modules/juce_audio_formats/juce_audio_formats.cpp.o
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_audio_formats/juce_audio_formats.o
+Users/akuttor/Code/JUCE7/modules/juce_audio_devices/juce_audio_devices.o: Users/akuttor/Code/JUCE7/modules/juce_audio_devices/juce_audio_devices.cpp.o
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_audio_devices/juce_audio_devices.o
 
 # target to build an object file
-Users/akuttor/Code/JUCE/modules/juce_audio_formats/juce_audio_formats.cpp.o:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID.dir/build.make CMakeFiles/GRID.dir/Users/akuttor/Code/JUCE/modules/juce_audio_formats/juce_audio_formats.cpp.o
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_audio_formats/juce_audio_formats.cpp.o
+Users/akuttor/Code/JUCE7/modules/juce_audio_devices/juce_audio_devices.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID.dir/build.make CMakeFiles/GRID.dir/Users/akuttor/Code/JUCE7/modules/juce_audio_devices/juce_audio_devices.cpp.o
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_audio_devices/juce_audio_devices.cpp.o
 
-Users/akuttor/Code/JUCE/modules/juce_audio_formats/juce_audio_formats.i: Users/akuttor/Code/JUCE/modules/juce_audio_formats/juce_audio_formats.cpp.i
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_audio_formats/juce_audio_formats.i
+Users/akuttor/Code/JUCE7/modules/juce_audio_devices/juce_audio_devices.i: Users/akuttor/Code/JUCE7/modules/juce_audio_devices/juce_audio_devices.cpp.i
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_audio_devices/juce_audio_devices.i
 
 # target to preprocess a source file
-Users/akuttor/Code/JUCE/modules/juce_audio_formats/juce_audio_formats.cpp.i:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID.dir/build.make CMakeFiles/GRID.dir/Users/akuttor/Code/JUCE/modules/juce_audio_formats/juce_audio_formats.cpp.i
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_audio_formats/juce_audio_formats.cpp.i
+Users/akuttor/Code/JUCE7/modules/juce_audio_devices/juce_audio_devices.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID.dir/build.make CMakeFiles/GRID.dir/Users/akuttor/Code/JUCE7/modules/juce_audio_devices/juce_audio_devices.cpp.i
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_audio_devices/juce_audio_devices.cpp.i
 
-Users/akuttor/Code/JUCE/modules/juce_audio_formats/juce_audio_formats.s: Users/akuttor/Code/JUCE/modules/juce_audio_formats/juce_audio_formats.cpp.s
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_audio_formats/juce_audio_formats.s
+Users/akuttor/Code/JUCE7/modules/juce_audio_devices/juce_audio_devices.s: Users/akuttor/Code/JUCE7/modules/juce_audio_devices/juce_audio_devices.cpp.s
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_audio_devices/juce_audio_devices.s
 
 # target to generate assembly for a file
-Users/akuttor/Code/JUCE/modules/juce_audio_formats/juce_audio_formats.cpp.s:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID.dir/build.make CMakeFiles/GRID.dir/Users/akuttor/Code/JUCE/modules/juce_audio_formats/juce_audio_formats.cpp.s
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_audio_formats/juce_audio_formats.cpp.s
+Users/akuttor/Code/JUCE7/modules/juce_audio_devices/juce_audio_devices.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID.dir/build.make CMakeFiles/GRID.dir/Users/akuttor/Code/JUCE7/modules/juce_audio_devices/juce_audio_devices.cpp.s
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_audio_devices/juce_audio_devices.cpp.s
 
-Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/VST3/juce_VST3ManifestHelper.o: Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/VST3/juce_VST3ManifestHelper.cpp.o
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/VST3/juce_VST3ManifestHelper.o
+Users/akuttor/Code/JUCE7/modules/juce_audio_formats/juce_audio_formats.o: Users/akuttor/Code/JUCE7/modules/juce_audio_formats/juce_audio_formats.cpp.o
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_audio_formats/juce_audio_formats.o
 
 # target to build an object file
-Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/VST3/juce_VST3ManifestHelper.cpp.o:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID_vst3_helper.dir/build.make CMakeFiles/GRID_vst3_helper.dir/Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/VST3/juce_VST3ManifestHelper.cpp.o
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/VST3/juce_VST3ManifestHelper.cpp.o
+Users/akuttor/Code/JUCE7/modules/juce_audio_formats/juce_audio_formats.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID.dir/build.make CMakeFiles/GRID.dir/Users/akuttor/Code/JUCE7/modules/juce_audio_formats/juce_audio_formats.cpp.o
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_audio_formats/juce_audio_formats.cpp.o
 
-Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/VST3/juce_VST3ManifestHelper.i: Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/VST3/juce_VST3ManifestHelper.cpp.i
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/VST3/juce_VST3ManifestHelper.i
+Users/akuttor/Code/JUCE7/modules/juce_audio_formats/juce_audio_formats.i: Users/akuttor/Code/JUCE7/modules/juce_audio_formats/juce_audio_formats.cpp.i
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_audio_formats/juce_audio_formats.i
 
 # target to preprocess a source file
-Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/VST3/juce_VST3ManifestHelper.cpp.i:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID_vst3_helper.dir/build.make CMakeFiles/GRID_vst3_helper.dir/Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/VST3/juce_VST3ManifestHelper.cpp.i
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/VST3/juce_VST3ManifestHelper.cpp.i
+Users/akuttor/Code/JUCE7/modules/juce_audio_formats/juce_audio_formats.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID.dir/build.make CMakeFiles/GRID.dir/Users/akuttor/Code/JUCE7/modules/juce_audio_formats/juce_audio_formats.cpp.i
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_audio_formats/juce_audio_formats.cpp.i
 
-Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/VST3/juce_VST3ManifestHelper.s: Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/VST3/juce_VST3ManifestHelper.cpp.s
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/VST3/juce_VST3ManifestHelper.s
+Users/akuttor/Code/JUCE7/modules/juce_audio_formats/juce_audio_formats.s: Users/akuttor/Code/JUCE7/modules/juce_audio_formats/juce_audio_formats.cpp.s
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_audio_formats/juce_audio_formats.s
 
 # target to generate assembly for a file
-Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/VST3/juce_VST3ManifestHelper.cpp.s:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID_vst3_helper.dir/build.make CMakeFiles/GRID_vst3_helper.dir/Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/VST3/juce_VST3ManifestHelper.cpp.s
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/VST3/juce_VST3ManifestHelper.cpp.s
+Users/akuttor/Code/JUCE7/modules/juce_audio_formats/juce_audio_formats.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID.dir/build.make CMakeFiles/GRID.dir/Users/akuttor/Code/JUCE7/modules/juce_audio_formats/juce_audio_formats.cpp.s
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_audio_formats/juce_audio_formats.cpp.s
 
-Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_AAX.o: Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_AAX.cpp.o
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_AAX.o
+Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/VST3/juce_VST3ManifestHelper.o: Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/VST3/juce_VST3ManifestHelper.cpp.o
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/VST3/juce_VST3ManifestHelper.o
 
 # target to build an object file
-Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_AAX.cpp.o:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID_VST3.dir/build.make CMakeFiles/GRID_VST3.dir/Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_AAX.cpp.o
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_AAX.cpp.o
+Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/VST3/juce_VST3ManifestHelper.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/juce_vst3_helper.dir/build.make CMakeFiles/juce_vst3_helper.dir/Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/VST3/juce_VST3ManifestHelper.cpp.o
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/VST3/juce_VST3ManifestHelper.cpp.o
 
-Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_AAX.i: Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_AAX.cpp.i
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_AAX.i
+Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/VST3/juce_VST3ManifestHelper.i: Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/VST3/juce_VST3ManifestHelper.cpp.i
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/VST3/juce_VST3ManifestHelper.i
 
 # target to preprocess a source file
-Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_AAX.cpp.i:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID_VST3.dir/build.make CMakeFiles/GRID_VST3.dir/Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_AAX.cpp.i
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_AAX.cpp.i
+Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/VST3/juce_VST3ManifestHelper.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/juce_vst3_helper.dir/build.make CMakeFiles/juce_vst3_helper.dir/Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/VST3/juce_VST3ManifestHelper.cpp.i
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/VST3/juce_VST3ManifestHelper.cpp.i
 
-Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_AAX.s: Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_AAX.cpp.s
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_AAX.s
+Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/VST3/juce_VST3ManifestHelper.s: Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/VST3/juce_VST3ManifestHelper.cpp.s
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/VST3/juce_VST3ManifestHelper.s
 
 # target to generate assembly for a file
-Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_AAX.cpp.s:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID_VST3.dir/build.make CMakeFiles/GRID_VST3.dir/Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_AAX.cpp.s
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_AAX.cpp.s
+Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/VST3/juce_VST3ManifestHelper.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/juce_vst3_helper.dir/build.make CMakeFiles/juce_vst3_helper.dir/Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/VST3/juce_VST3ManifestHelper.cpp.s
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/VST3/juce_VST3ManifestHelper.cpp.s
 
-Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_AAX_utils.o: Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_AAX_utils.cpp.o
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_AAX_utils.o
+Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_AAX.o: Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_AAX.cpp.o
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_AAX.o
 
 # target to build an object file
-Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_AAX_utils.cpp.o:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID_VST3.dir/build.make CMakeFiles/GRID_VST3.dir/Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_AAX_utils.cpp.o
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_AAX_utils.cpp.o
+Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_AAX.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID_VST3.dir/build.make CMakeFiles/GRID_VST3.dir/Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_AAX.cpp.o
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_AAX.cpp.o
 
-Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_AAX_utils.i: Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_AAX_utils.cpp.i
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_AAX_utils.i
+Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_AAX.i: Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_AAX.cpp.i
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_AAX.i
 
 # target to preprocess a source file
-Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_AAX_utils.cpp.i:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID_VST3.dir/build.make CMakeFiles/GRID_VST3.dir/Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_AAX_utils.cpp.i
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_AAX_utils.cpp.i
+Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_AAX.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID_VST3.dir/build.make CMakeFiles/GRID_VST3.dir/Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_AAX.cpp.i
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_AAX.cpp.i
 
-Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_AAX_utils.s: Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_AAX_utils.cpp.s
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_AAX_utils.s
+Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_AAX.s: Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_AAX.cpp.s
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_AAX.s
 
 # target to generate assembly for a file
-Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_AAX_utils.cpp.s:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID_VST3.dir/build.make CMakeFiles/GRID_VST3.dir/Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_AAX_utils.cpp.s
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_AAX_utils.cpp.s
+Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_AAX.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID_VST3.dir/build.make CMakeFiles/GRID_VST3.dir/Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_AAX.cpp.s
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_AAX.cpp.s
 
-Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_ARA.o: Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_ARA.cpp.o
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_ARA.o
+Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_AAX_utils.o: Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_AAX_utils.cpp.o
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_AAX_utils.o
 
 # target to build an object file
-Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_ARA.cpp.o:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID_VST3.dir/build.make CMakeFiles/GRID_VST3.dir/Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_ARA.cpp.o
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_ARA.cpp.o
+Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_AAX_utils.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID_VST3.dir/build.make CMakeFiles/GRID_VST3.dir/Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_AAX_utils.cpp.o
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_AAX_utils.cpp.o
 
-Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_ARA.i: Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_ARA.cpp.i
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_ARA.i
+Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_AAX_utils.i: Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_AAX_utils.cpp.i
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_AAX_utils.i
 
 # target to preprocess a source file
-Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_ARA.cpp.i:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID_VST3.dir/build.make CMakeFiles/GRID_VST3.dir/Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_ARA.cpp.i
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_ARA.cpp.i
+Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_AAX_utils.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID_VST3.dir/build.make CMakeFiles/GRID_VST3.dir/Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_AAX_utils.cpp.i
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_AAX_utils.cpp.i
 
-Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_ARA.s: Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_ARA.cpp.s
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_ARA.s
+Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_AAX_utils.s: Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_AAX_utils.cpp.s
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_AAX_utils.s
 
 # target to generate assembly for a file
-Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_ARA.cpp.s:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID_VST3.dir/build.make CMakeFiles/GRID_VST3.dir/Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_ARA.cpp.s
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_ARA.cpp.s
+Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_AAX_utils.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID_VST3.dir/build.make CMakeFiles/GRID_VST3.dir/Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_AAX_utils.cpp.s
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_AAX_utils.cpp.s
 
-Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_LV2.o: Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_LV2.cpp.o
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_LV2.o
+Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_ARA.o: Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_ARA.cpp.o
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_ARA.o
 
 # target to build an object file
-Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_LV2.cpp.o:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID_VST3.dir/build.make CMakeFiles/GRID_VST3.dir/Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_LV2.cpp.o
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_LV2.cpp.o
+Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_ARA.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID_VST3.dir/build.make CMakeFiles/GRID_VST3.dir/Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_ARA.cpp.o
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_ARA.cpp.o
 
-Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_LV2.i: Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_LV2.cpp.i
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_LV2.i
+Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_ARA.i: Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_ARA.cpp.i
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_ARA.i
 
 # target to preprocess a source file
-Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_LV2.cpp.i:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID_VST3.dir/build.make CMakeFiles/GRID_VST3.dir/Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_LV2.cpp.i
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_LV2.cpp.i
+Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_ARA.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID_VST3.dir/build.make CMakeFiles/GRID_VST3.dir/Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_ARA.cpp.i
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_ARA.cpp.i
 
-Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_LV2.s: Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_LV2.cpp.s
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_LV2.s
+Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_ARA.s: Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_ARA.cpp.s
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_ARA.s
 
 # target to generate assembly for a file
-Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_LV2.cpp.s:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID_VST3.dir/build.make CMakeFiles/GRID_VST3.dir/Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_LV2.cpp.s
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_LV2.cpp.s
+Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_ARA.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID_VST3.dir/build.make CMakeFiles/GRID_VST3.dir/Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_ARA.cpp.s
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_ARA.cpp.s
 
-Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_Standalone.o: Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_Standalone.cpp.o
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_Standalone.o
+Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_LV2.o: Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_LV2.cpp.o
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_LV2.o
 
 # target to build an object file
-Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_Standalone.cpp.o:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID_VST3.dir/build.make CMakeFiles/GRID_VST3.dir/Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_Standalone.cpp.o
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_Standalone.cpp.o
+Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_LV2.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID_VST3.dir/build.make CMakeFiles/GRID_VST3.dir/Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_LV2.cpp.o
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_LV2.cpp.o
 
-Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_Standalone.i: Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_Standalone.cpp.i
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_Standalone.i
+Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_LV2.i: Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_LV2.cpp.i
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_LV2.i
 
 # target to preprocess a source file
-Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_Standalone.cpp.i:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID_VST3.dir/build.make CMakeFiles/GRID_VST3.dir/Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_Standalone.cpp.i
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_Standalone.cpp.i
+Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_LV2.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID_VST3.dir/build.make CMakeFiles/GRID_VST3.dir/Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_LV2.cpp.i
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_LV2.cpp.i
 
-Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_Standalone.s: Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_Standalone.cpp.s
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_Standalone.s
+Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_LV2.s: Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_LV2.cpp.s
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_LV2.s
 
 # target to generate assembly for a file
-Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_Standalone.cpp.s:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID_VST3.dir/build.make CMakeFiles/GRID_VST3.dir/Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_Standalone.cpp.s
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_Standalone.cpp.s
+Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_LV2.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID_VST3.dir/build.make CMakeFiles/GRID_VST3.dir/Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_LV2.cpp.s
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_LV2.cpp.s
 
-Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_Unity.o: Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_Unity.cpp.o
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_Unity.o
+Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_Standalone.o: Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_Standalone.cpp.o
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_Standalone.o
 
 # target to build an object file
-Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_Unity.cpp.o:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID_VST3.dir/build.make CMakeFiles/GRID_VST3.dir/Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_Unity.cpp.o
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_Unity.cpp.o
+Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_Standalone.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID_VST3.dir/build.make CMakeFiles/GRID_VST3.dir/Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_Standalone.cpp.o
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_Standalone.cpp.o
 
-Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_Unity.i: Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_Unity.cpp.i
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_Unity.i
+Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_Standalone.i: Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_Standalone.cpp.i
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_Standalone.i
 
 # target to preprocess a source file
-Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_Unity.cpp.i:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID_VST3.dir/build.make CMakeFiles/GRID_VST3.dir/Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_Unity.cpp.i
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_Unity.cpp.i
+Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_Standalone.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID_VST3.dir/build.make CMakeFiles/GRID_VST3.dir/Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_Standalone.cpp.i
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_Standalone.cpp.i
 
-Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_Unity.s: Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_Unity.cpp.s
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_Unity.s
+Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_Standalone.s: Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_Standalone.cpp.s
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_Standalone.s
 
 # target to generate assembly for a file
-Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_Unity.cpp.s:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID_VST3.dir/build.make CMakeFiles/GRID_VST3.dir/Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_Unity.cpp.s
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_Unity.cpp.s
+Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_Standalone.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID_VST3.dir/build.make CMakeFiles/GRID_VST3.dir/Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_Standalone.cpp.s
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_Standalone.cpp.s
 
-Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_VST2.o: Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_VST2.cpp.o
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_VST2.o
+Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_Unity.o: Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_Unity.cpp.o
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_Unity.o
 
 # target to build an object file
-Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_VST2.cpp.o:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID_VST3.dir/build.make CMakeFiles/GRID_VST3.dir/Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_VST2.cpp.o
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_VST2.cpp.o
+Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_Unity.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID_VST3.dir/build.make CMakeFiles/GRID_VST3.dir/Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_Unity.cpp.o
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_Unity.cpp.o
 
-Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_VST2.i: Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_VST2.cpp.i
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_VST2.i
+Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_Unity.i: Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_Unity.cpp.i
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_Unity.i
 
 # target to preprocess a source file
-Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_VST2.cpp.i:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID_VST3.dir/build.make CMakeFiles/GRID_VST3.dir/Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_VST2.cpp.i
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_VST2.cpp.i
+Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_Unity.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID_VST3.dir/build.make CMakeFiles/GRID_VST3.dir/Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_Unity.cpp.i
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_Unity.cpp.i
 
-Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_VST2.s: Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_VST2.cpp.s
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_VST2.s
+Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_Unity.s: Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_Unity.cpp.s
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_Unity.s
 
 # target to generate assembly for a file
-Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_VST2.cpp.s:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID_VST3.dir/build.make CMakeFiles/GRID_VST3.dir/Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_VST2.cpp.s
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_VST2.cpp.s
+Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_Unity.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID_VST3.dir/build.make CMakeFiles/GRID_VST3.dir/Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_Unity.cpp.s
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_Unity.cpp.s
 
-Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_VST3.o: Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_VST3.cpp.o
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_VST3.o
+Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_VST2.o: Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_VST2.cpp.o
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_VST2.o
 
 # target to build an object file
-Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_VST3.cpp.o:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID_VST3.dir/build.make CMakeFiles/GRID_VST3.dir/Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_VST3.cpp.o
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_VST3.cpp.o
+Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_VST2.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID_VST3.dir/build.make CMakeFiles/GRID_VST3.dir/Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_VST2.cpp.o
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_VST2.cpp.o
 
-Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_VST3.i: Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_VST3.cpp.i
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_VST3.i
+Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_VST2.i: Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_VST2.cpp.i
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_VST2.i
 
 # target to preprocess a source file
-Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_VST3.cpp.i:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID_VST3.dir/build.make CMakeFiles/GRID_VST3.dir/Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_VST3.cpp.i
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_VST3.cpp.i
+Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_VST2.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID_VST3.dir/build.make CMakeFiles/GRID_VST3.dir/Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_VST2.cpp.i
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_VST2.cpp.i
 
-Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_VST3.s: Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_VST3.cpp.s
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_VST3.s
+Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_VST2.s: Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_VST2.cpp.s
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_VST2.s
 
 # target to generate assembly for a file
-Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_VST3.cpp.s:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID_VST3.dir/build.make CMakeFiles/GRID_VST3.dir/Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_VST3.cpp.s
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_VST3.cpp.s
+Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_VST2.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID_VST3.dir/build.make CMakeFiles/GRID_VST3.dir/Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_VST2.cpp.s
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_VST2.cpp.s
 
-Users/akuttor/Code/JUCE/modules/juce_audio_processors/juce_audio_processors.o: Users/akuttor/Code/JUCE/modules/juce_audio_processors/juce_audio_processors.cpp.o
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_audio_processors/juce_audio_processors.o
+Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_VST3.o: Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_VST3.cpp.o
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_VST3.o
 
 # target to build an object file
-Users/akuttor/Code/JUCE/modules/juce_audio_processors/juce_audio_processors.cpp.o:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID.dir/build.make CMakeFiles/GRID.dir/Users/akuttor/Code/JUCE/modules/juce_audio_processors/juce_audio_processors.cpp.o
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_audio_processors/juce_audio_processors.cpp.o
+Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_VST3.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID_VST3.dir/build.make CMakeFiles/GRID_VST3.dir/Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_VST3.cpp.o
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_VST3.cpp.o
 
-Users/akuttor/Code/JUCE/modules/juce_audio_processors/juce_audio_processors.i: Users/akuttor/Code/JUCE/modules/juce_audio_processors/juce_audio_processors.cpp.i
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_audio_processors/juce_audio_processors.i
+Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_VST3.i: Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_VST3.cpp.i
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_VST3.i
 
 # target to preprocess a source file
-Users/akuttor/Code/JUCE/modules/juce_audio_processors/juce_audio_processors.cpp.i:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID.dir/build.make CMakeFiles/GRID.dir/Users/akuttor/Code/JUCE/modules/juce_audio_processors/juce_audio_processors.cpp.i
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_audio_processors/juce_audio_processors.cpp.i
+Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_VST3.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID_VST3.dir/build.make CMakeFiles/GRID_VST3.dir/Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_VST3.cpp.i
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_VST3.cpp.i
 
-Users/akuttor/Code/JUCE/modules/juce_audio_processors/juce_audio_processors.s: Users/akuttor/Code/JUCE/modules/juce_audio_processors/juce_audio_processors.cpp.s
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_audio_processors/juce_audio_processors.s
+Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_VST3.s: Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_VST3.cpp.s
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_VST3.s
 
 # target to generate assembly for a file
-Users/akuttor/Code/JUCE/modules/juce_audio_processors/juce_audio_processors.cpp.s:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID.dir/build.make CMakeFiles/GRID.dir/Users/akuttor/Code/JUCE/modules/juce_audio_processors/juce_audio_processors.cpp.s
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_audio_processors/juce_audio_processors.cpp.s
+Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_VST3.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID_VST3.dir/build.make CMakeFiles/GRID_VST3.dir/Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_VST3.cpp.s
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_VST3.cpp.s
 
-Users/akuttor/Code/JUCE/modules/juce_audio_processors_headless/juce_audio_processors_headless.o: Users/akuttor/Code/JUCE/modules/juce_audio_processors_headless/juce_audio_processors_headless.cpp.o
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_audio_processors_headless/juce_audio_processors_headless.o
+Users/akuttor/Code/JUCE7/modules/juce_audio_processors/juce_audio_processors.o: Users/akuttor/Code/JUCE7/modules/juce_audio_processors/juce_audio_processors.cpp.o
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_audio_processors/juce_audio_processors.o
 
 # target to build an object file
-Users/akuttor/Code/JUCE/modules/juce_audio_processors_headless/juce_audio_processors_headless.cpp.o:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID.dir/build.make CMakeFiles/GRID.dir/Users/akuttor/Code/JUCE/modules/juce_audio_processors_headless/juce_audio_processors_headless.cpp.o
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_audio_processors_headless/juce_audio_processors_headless.cpp.o
+Users/akuttor/Code/JUCE7/modules/juce_audio_processors/juce_audio_processors.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID.dir/build.make CMakeFiles/GRID.dir/Users/akuttor/Code/JUCE7/modules/juce_audio_processors/juce_audio_processors.cpp.o
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_audio_processors/juce_audio_processors.cpp.o
 
-Users/akuttor/Code/JUCE/modules/juce_audio_processors_headless/juce_audio_processors_headless.i: Users/akuttor/Code/JUCE/modules/juce_audio_processors_headless/juce_audio_processors_headless.cpp.i
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_audio_processors_headless/juce_audio_processors_headless.i
+Users/akuttor/Code/JUCE7/modules/juce_audio_processors/juce_audio_processors.i: Users/akuttor/Code/JUCE7/modules/juce_audio_processors/juce_audio_processors.cpp.i
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_audio_processors/juce_audio_processors.i
 
 # target to preprocess a source file
-Users/akuttor/Code/JUCE/modules/juce_audio_processors_headless/juce_audio_processors_headless.cpp.i:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID.dir/build.make CMakeFiles/GRID.dir/Users/akuttor/Code/JUCE/modules/juce_audio_processors_headless/juce_audio_processors_headless.cpp.i
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_audio_processors_headless/juce_audio_processors_headless.cpp.i
+Users/akuttor/Code/JUCE7/modules/juce_audio_processors/juce_audio_processors.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID.dir/build.make CMakeFiles/GRID.dir/Users/akuttor/Code/JUCE7/modules/juce_audio_processors/juce_audio_processors.cpp.i
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_audio_processors/juce_audio_processors.cpp.i
 
-Users/akuttor/Code/JUCE/modules/juce_audio_processors_headless/juce_audio_processors_headless.s: Users/akuttor/Code/JUCE/modules/juce_audio_processors_headless/juce_audio_processors_headless.cpp.s
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_audio_processors_headless/juce_audio_processors_headless.s
+Users/akuttor/Code/JUCE7/modules/juce_audio_processors/juce_audio_processors.s: Users/akuttor/Code/JUCE7/modules/juce_audio_processors/juce_audio_processors.cpp.s
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_audio_processors/juce_audio_processors.s
 
 # target to generate assembly for a file
-Users/akuttor/Code/JUCE/modules/juce_audio_processors_headless/juce_audio_processors_headless.cpp.s:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID.dir/build.make CMakeFiles/GRID.dir/Users/akuttor/Code/JUCE/modules/juce_audio_processors_headless/juce_audio_processors_headless.cpp.s
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_audio_processors_headless/juce_audio_processors_headless.cpp.s
+Users/akuttor/Code/JUCE7/modules/juce_audio_processors/juce_audio_processors.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID.dir/build.make CMakeFiles/GRID.dir/Users/akuttor/Code/JUCE7/modules/juce_audio_processors/juce_audio_processors.cpp.s
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_audio_processors/juce_audio_processors.cpp.s
 
-Users/akuttor/Code/JUCE/modules/juce_audio_processors_headless/juce_audio_processors_headless_ara.o: Users/akuttor/Code/JUCE/modules/juce_audio_processors_headless/juce_audio_processors_headless_ara.cpp.o
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_audio_processors_headless/juce_audio_processors_headless_ara.o
+Users/akuttor/Code/JUCE7/modules/juce_audio_processors/juce_audio_processors_ara.o: Users/akuttor/Code/JUCE7/modules/juce_audio_processors/juce_audio_processors_ara.cpp.o
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_audio_processors/juce_audio_processors_ara.o
 
 # target to build an object file
-Users/akuttor/Code/JUCE/modules/juce_audio_processors_headless/juce_audio_processors_headless_ara.cpp.o:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID.dir/build.make CMakeFiles/GRID.dir/Users/akuttor/Code/JUCE/modules/juce_audio_processors_headless/juce_audio_processors_headless_ara.cpp.o
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_audio_processors_headless/juce_audio_processors_headless_ara.cpp.o
+Users/akuttor/Code/JUCE7/modules/juce_audio_processors/juce_audio_processors_ara.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID.dir/build.make CMakeFiles/GRID.dir/Users/akuttor/Code/JUCE7/modules/juce_audio_processors/juce_audio_processors_ara.cpp.o
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_audio_processors/juce_audio_processors_ara.cpp.o
 
-Users/akuttor/Code/JUCE/modules/juce_audio_processors_headless/juce_audio_processors_headless_ara.i: Users/akuttor/Code/JUCE/modules/juce_audio_processors_headless/juce_audio_processors_headless_ara.cpp.i
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_audio_processors_headless/juce_audio_processors_headless_ara.i
+Users/akuttor/Code/JUCE7/modules/juce_audio_processors/juce_audio_processors_ara.i: Users/akuttor/Code/JUCE7/modules/juce_audio_processors/juce_audio_processors_ara.cpp.i
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_audio_processors/juce_audio_processors_ara.i
 
 # target to preprocess a source file
-Users/akuttor/Code/JUCE/modules/juce_audio_processors_headless/juce_audio_processors_headless_ara.cpp.i:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID.dir/build.make CMakeFiles/GRID.dir/Users/akuttor/Code/JUCE/modules/juce_audio_processors_headless/juce_audio_processors_headless_ara.cpp.i
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_audio_processors_headless/juce_audio_processors_headless_ara.cpp.i
+Users/akuttor/Code/JUCE7/modules/juce_audio_processors/juce_audio_processors_ara.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID.dir/build.make CMakeFiles/GRID.dir/Users/akuttor/Code/JUCE7/modules/juce_audio_processors/juce_audio_processors_ara.cpp.i
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_audio_processors/juce_audio_processors_ara.cpp.i
 
-Users/akuttor/Code/JUCE/modules/juce_audio_processors_headless/juce_audio_processors_headless_ara.s: Users/akuttor/Code/JUCE/modules/juce_audio_processors_headless/juce_audio_processors_headless_ara.cpp.s
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_audio_processors_headless/juce_audio_processors_headless_ara.s
+Users/akuttor/Code/JUCE7/modules/juce_audio_processors/juce_audio_processors_ara.s: Users/akuttor/Code/JUCE7/modules/juce_audio_processors/juce_audio_processors_ara.cpp.s
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_audio_processors/juce_audio_processors_ara.s
 
 # target to generate assembly for a file
-Users/akuttor/Code/JUCE/modules/juce_audio_processors_headless/juce_audio_processors_headless_ara.cpp.s:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID.dir/build.make CMakeFiles/GRID.dir/Users/akuttor/Code/JUCE/modules/juce_audio_processors_headless/juce_audio_processors_headless_ara.cpp.s
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_audio_processors_headless/juce_audio_processors_headless_ara.cpp.s
+Users/akuttor/Code/JUCE7/modules/juce_audio_processors/juce_audio_processors_ara.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID.dir/build.make CMakeFiles/GRID.dir/Users/akuttor/Code/JUCE7/modules/juce_audio_processors/juce_audio_processors_ara.cpp.s
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_audio_processors/juce_audio_processors_ara.cpp.s
 
-Users/akuttor/Code/JUCE/modules/juce_audio_processors_headless/juce_audio_processors_headless_lv2_libs.o: Users/akuttor/Code/JUCE/modules/juce_audio_processors_headless/juce_audio_processors_headless_lv2_libs.cpp.o
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_audio_processors_headless/juce_audio_processors_headless_lv2_libs.o
+Users/akuttor/Code/JUCE7/modules/juce_audio_processors/juce_audio_processors_lv2_libs.o: Users/akuttor/Code/JUCE7/modules/juce_audio_processors/juce_audio_processors_lv2_libs.cpp.o
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_audio_processors/juce_audio_processors_lv2_libs.o
 
 # target to build an object file
-Users/akuttor/Code/JUCE/modules/juce_audio_processors_headless/juce_audio_processors_headless_lv2_libs.cpp.o:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID.dir/build.make CMakeFiles/GRID.dir/Users/akuttor/Code/JUCE/modules/juce_audio_processors_headless/juce_audio_processors_headless_lv2_libs.cpp.o
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_audio_processors_headless/juce_audio_processors_headless_lv2_libs.cpp.o
+Users/akuttor/Code/JUCE7/modules/juce_audio_processors/juce_audio_processors_lv2_libs.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID.dir/build.make CMakeFiles/GRID.dir/Users/akuttor/Code/JUCE7/modules/juce_audio_processors/juce_audio_processors_lv2_libs.cpp.o
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_audio_processors/juce_audio_processors_lv2_libs.cpp.o
 
-Users/akuttor/Code/JUCE/modules/juce_audio_processors_headless/juce_audio_processors_headless_lv2_libs.i: Users/akuttor/Code/JUCE/modules/juce_audio_processors_headless/juce_audio_processors_headless_lv2_libs.cpp.i
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_audio_processors_headless/juce_audio_processors_headless_lv2_libs.i
+Users/akuttor/Code/JUCE7/modules/juce_audio_processors/juce_audio_processors_lv2_libs.i: Users/akuttor/Code/JUCE7/modules/juce_audio_processors/juce_audio_processors_lv2_libs.cpp.i
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_audio_processors/juce_audio_processors_lv2_libs.i
 
 # target to preprocess a source file
-Users/akuttor/Code/JUCE/modules/juce_audio_processors_headless/juce_audio_processors_headless_lv2_libs.cpp.i:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID.dir/build.make CMakeFiles/GRID.dir/Users/akuttor/Code/JUCE/modules/juce_audio_processors_headless/juce_audio_processors_headless_lv2_libs.cpp.i
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_audio_processors_headless/juce_audio_processors_headless_lv2_libs.cpp.i
+Users/akuttor/Code/JUCE7/modules/juce_audio_processors/juce_audio_processors_lv2_libs.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID.dir/build.make CMakeFiles/GRID.dir/Users/akuttor/Code/JUCE7/modules/juce_audio_processors/juce_audio_processors_lv2_libs.cpp.i
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_audio_processors/juce_audio_processors_lv2_libs.cpp.i
 
-Users/akuttor/Code/JUCE/modules/juce_audio_processors_headless/juce_audio_processors_headless_lv2_libs.s: Users/akuttor/Code/JUCE/modules/juce_audio_processors_headless/juce_audio_processors_headless_lv2_libs.cpp.s
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_audio_processors_headless/juce_audio_processors_headless_lv2_libs.s
+Users/akuttor/Code/JUCE7/modules/juce_audio_processors/juce_audio_processors_lv2_libs.s: Users/akuttor/Code/JUCE7/modules/juce_audio_processors/juce_audio_processors_lv2_libs.cpp.s
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_audio_processors/juce_audio_processors_lv2_libs.s
 
 # target to generate assembly for a file
-Users/akuttor/Code/JUCE/modules/juce_audio_processors_headless/juce_audio_processors_headless_lv2_libs.cpp.s:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID.dir/build.make CMakeFiles/GRID.dir/Users/akuttor/Code/JUCE/modules/juce_audio_processors_headless/juce_audio_processors_headless_lv2_libs.cpp.s
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_audio_processors_headless/juce_audio_processors_headless_lv2_libs.cpp.s
+Users/akuttor/Code/JUCE7/modules/juce_audio_processors/juce_audio_processors_lv2_libs.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID.dir/build.make CMakeFiles/GRID.dir/Users/akuttor/Code/JUCE7/modules/juce_audio_processors/juce_audio_processors_lv2_libs.cpp.s
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_audio_processors/juce_audio_processors_lv2_libs.cpp.s
 
-Users/akuttor/Code/JUCE/modules/juce_audio_utils/juce_audio_utils.o: Users/akuttor/Code/JUCE/modules/juce_audio_utils/juce_audio_utils.cpp.o
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_audio_utils/juce_audio_utils.o
+Users/akuttor/Code/JUCE7/modules/juce_audio_utils/juce_audio_utils.o: Users/akuttor/Code/JUCE7/modules/juce_audio_utils/juce_audio_utils.cpp.o
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_audio_utils/juce_audio_utils.o
 
 # target to build an object file
-Users/akuttor/Code/JUCE/modules/juce_audio_utils/juce_audio_utils.cpp.o:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID.dir/build.make CMakeFiles/GRID.dir/Users/akuttor/Code/JUCE/modules/juce_audio_utils/juce_audio_utils.cpp.o
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_audio_utils/juce_audio_utils.cpp.o
+Users/akuttor/Code/JUCE7/modules/juce_audio_utils/juce_audio_utils.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID.dir/build.make CMakeFiles/GRID.dir/Users/akuttor/Code/JUCE7/modules/juce_audio_utils/juce_audio_utils.cpp.o
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_audio_utils/juce_audio_utils.cpp.o
 
-Users/akuttor/Code/JUCE/modules/juce_audio_utils/juce_audio_utils.i: Users/akuttor/Code/JUCE/modules/juce_audio_utils/juce_audio_utils.cpp.i
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_audio_utils/juce_audio_utils.i
+Users/akuttor/Code/JUCE7/modules/juce_audio_utils/juce_audio_utils.i: Users/akuttor/Code/JUCE7/modules/juce_audio_utils/juce_audio_utils.cpp.i
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_audio_utils/juce_audio_utils.i
 
 # target to preprocess a source file
-Users/akuttor/Code/JUCE/modules/juce_audio_utils/juce_audio_utils.cpp.i:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID.dir/build.make CMakeFiles/GRID.dir/Users/akuttor/Code/JUCE/modules/juce_audio_utils/juce_audio_utils.cpp.i
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_audio_utils/juce_audio_utils.cpp.i
+Users/akuttor/Code/JUCE7/modules/juce_audio_utils/juce_audio_utils.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID.dir/build.make CMakeFiles/GRID.dir/Users/akuttor/Code/JUCE7/modules/juce_audio_utils/juce_audio_utils.cpp.i
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_audio_utils/juce_audio_utils.cpp.i
 
-Users/akuttor/Code/JUCE/modules/juce_audio_utils/juce_audio_utils.s: Users/akuttor/Code/JUCE/modules/juce_audio_utils/juce_audio_utils.cpp.s
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_audio_utils/juce_audio_utils.s
+Users/akuttor/Code/JUCE7/modules/juce_audio_utils/juce_audio_utils.s: Users/akuttor/Code/JUCE7/modules/juce_audio_utils/juce_audio_utils.cpp.s
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_audio_utils/juce_audio_utils.s
 
 # target to generate assembly for a file
-Users/akuttor/Code/JUCE/modules/juce_audio_utils/juce_audio_utils.cpp.s:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID.dir/build.make CMakeFiles/GRID.dir/Users/akuttor/Code/JUCE/modules/juce_audio_utils/juce_audio_utils.cpp.s
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_audio_utils/juce_audio_utils.cpp.s
+Users/akuttor/Code/JUCE7/modules/juce_audio_utils/juce_audio_utils.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID.dir/build.make CMakeFiles/GRID.dir/Users/akuttor/Code/JUCE7/modules/juce_audio_utils/juce_audio_utils.cpp.s
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_audio_utils/juce_audio_utils.cpp.s
 
-Users/akuttor/Code/JUCE/modules/juce_core/juce_core.o: Users/akuttor/Code/JUCE/modules/juce_core/juce_core.cpp.o
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_core/juce_core.o
+Users/akuttor/Code/JUCE7/modules/juce_core/juce_core.o: Users/akuttor/Code/JUCE7/modules/juce_core/juce_core.cpp.o
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_core/juce_core.o
 
 # target to build an object file
-Users/akuttor/Code/JUCE/modules/juce_core/juce_core.cpp.o:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID.dir/build.make CMakeFiles/GRID.dir/Users/akuttor/Code/JUCE/modules/juce_core/juce_core.cpp.o
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_core/juce_core.cpp.o
+Users/akuttor/Code/JUCE7/modules/juce_core/juce_core.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID.dir/build.make CMakeFiles/GRID.dir/Users/akuttor/Code/JUCE7/modules/juce_core/juce_core.cpp.o
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_core/juce_core.cpp.o
 
-Users/akuttor/Code/JUCE/modules/juce_core/juce_core.i: Users/akuttor/Code/JUCE/modules/juce_core/juce_core.cpp.i
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_core/juce_core.i
+Users/akuttor/Code/JUCE7/modules/juce_core/juce_core.i: Users/akuttor/Code/JUCE7/modules/juce_core/juce_core.cpp.i
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_core/juce_core.i
 
 # target to preprocess a source file
-Users/akuttor/Code/JUCE/modules/juce_core/juce_core.cpp.i:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID.dir/build.make CMakeFiles/GRID.dir/Users/akuttor/Code/JUCE/modules/juce_core/juce_core.cpp.i
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_core/juce_core.cpp.i
+Users/akuttor/Code/JUCE7/modules/juce_core/juce_core.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID.dir/build.make CMakeFiles/GRID.dir/Users/akuttor/Code/JUCE7/modules/juce_core/juce_core.cpp.i
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_core/juce_core.cpp.i
 
-Users/akuttor/Code/JUCE/modules/juce_core/juce_core.s: Users/akuttor/Code/JUCE/modules/juce_core/juce_core.cpp.s
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_core/juce_core.s
+Users/akuttor/Code/JUCE7/modules/juce_core/juce_core.s: Users/akuttor/Code/JUCE7/modules/juce_core/juce_core.cpp.s
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_core/juce_core.s
 
 # target to generate assembly for a file
-Users/akuttor/Code/JUCE/modules/juce_core/juce_core.cpp.s:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID.dir/build.make CMakeFiles/GRID.dir/Users/akuttor/Code/JUCE/modules/juce_core/juce_core.cpp.s
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_core/juce_core.cpp.s
+Users/akuttor/Code/JUCE7/modules/juce_core/juce_core.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID.dir/build.make CMakeFiles/GRID.dir/Users/akuttor/Code/JUCE7/modules/juce_core/juce_core.cpp.s
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_core/juce_core.cpp.s
 
-Users/akuttor/Code/JUCE/modules/juce_core/juce_core_CompilationTime.o: Users/akuttor/Code/JUCE/modules/juce_core/juce_core_CompilationTime.cpp.o
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_core/juce_core_CompilationTime.o
+Users/akuttor/Code/JUCE7/modules/juce_data_structures/juce_data_structures.o: Users/akuttor/Code/JUCE7/modules/juce_data_structures/juce_data_structures.cpp.o
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_data_structures/juce_data_structures.o
 
 # target to build an object file
-Users/akuttor/Code/JUCE/modules/juce_core/juce_core_CompilationTime.cpp.o:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID.dir/build.make CMakeFiles/GRID.dir/Users/akuttor/Code/JUCE/modules/juce_core/juce_core_CompilationTime.cpp.o
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_core/juce_core_CompilationTime.cpp.o
+Users/akuttor/Code/JUCE7/modules/juce_data_structures/juce_data_structures.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID.dir/build.make CMakeFiles/GRID.dir/Users/akuttor/Code/JUCE7/modules/juce_data_structures/juce_data_structures.cpp.o
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_data_structures/juce_data_structures.cpp.o
 
-Users/akuttor/Code/JUCE/modules/juce_core/juce_core_CompilationTime.i: Users/akuttor/Code/JUCE/modules/juce_core/juce_core_CompilationTime.cpp.i
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_core/juce_core_CompilationTime.i
+Users/akuttor/Code/JUCE7/modules/juce_data_structures/juce_data_structures.i: Users/akuttor/Code/JUCE7/modules/juce_data_structures/juce_data_structures.cpp.i
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_data_structures/juce_data_structures.i
 
 # target to preprocess a source file
-Users/akuttor/Code/JUCE/modules/juce_core/juce_core_CompilationTime.cpp.i:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID.dir/build.make CMakeFiles/GRID.dir/Users/akuttor/Code/JUCE/modules/juce_core/juce_core_CompilationTime.cpp.i
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_core/juce_core_CompilationTime.cpp.i
+Users/akuttor/Code/JUCE7/modules/juce_data_structures/juce_data_structures.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID.dir/build.make CMakeFiles/GRID.dir/Users/akuttor/Code/JUCE7/modules/juce_data_structures/juce_data_structures.cpp.i
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_data_structures/juce_data_structures.cpp.i
 
-Users/akuttor/Code/JUCE/modules/juce_core/juce_core_CompilationTime.s: Users/akuttor/Code/JUCE/modules/juce_core/juce_core_CompilationTime.cpp.s
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_core/juce_core_CompilationTime.s
+Users/akuttor/Code/JUCE7/modules/juce_data_structures/juce_data_structures.s: Users/akuttor/Code/JUCE7/modules/juce_data_structures/juce_data_structures.cpp.s
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_data_structures/juce_data_structures.s
 
 # target to generate assembly for a file
-Users/akuttor/Code/JUCE/modules/juce_core/juce_core_CompilationTime.cpp.s:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID.dir/build.make CMakeFiles/GRID.dir/Users/akuttor/Code/JUCE/modules/juce_core/juce_core_CompilationTime.cpp.s
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_core/juce_core_CompilationTime.cpp.s
+Users/akuttor/Code/JUCE7/modules/juce_data_structures/juce_data_structures.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID.dir/build.make CMakeFiles/GRID.dir/Users/akuttor/Code/JUCE7/modules/juce_data_structures/juce_data_structures.cpp.s
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_data_structures/juce_data_structures.cpp.s
 
-Users/akuttor/Code/JUCE/modules/juce_data_structures/juce_data_structures.o: Users/akuttor/Code/JUCE/modules/juce_data_structures/juce_data_structures.cpp.o
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_data_structures/juce_data_structures.o
+Users/akuttor/Code/JUCE7/modules/juce_events/juce_events.o: Users/akuttor/Code/JUCE7/modules/juce_events/juce_events.cpp.o
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_events/juce_events.o
 
 # target to build an object file
-Users/akuttor/Code/JUCE/modules/juce_data_structures/juce_data_structures.cpp.o:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID.dir/build.make CMakeFiles/GRID.dir/Users/akuttor/Code/JUCE/modules/juce_data_structures/juce_data_structures.cpp.o
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_data_structures/juce_data_structures.cpp.o
+Users/akuttor/Code/JUCE7/modules/juce_events/juce_events.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID.dir/build.make CMakeFiles/GRID.dir/Users/akuttor/Code/JUCE7/modules/juce_events/juce_events.cpp.o
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_events/juce_events.cpp.o
 
-Users/akuttor/Code/JUCE/modules/juce_data_structures/juce_data_structures.i: Users/akuttor/Code/JUCE/modules/juce_data_structures/juce_data_structures.cpp.i
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_data_structures/juce_data_structures.i
+Users/akuttor/Code/JUCE7/modules/juce_events/juce_events.i: Users/akuttor/Code/JUCE7/modules/juce_events/juce_events.cpp.i
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_events/juce_events.i
 
 # target to preprocess a source file
-Users/akuttor/Code/JUCE/modules/juce_data_structures/juce_data_structures.cpp.i:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID.dir/build.make CMakeFiles/GRID.dir/Users/akuttor/Code/JUCE/modules/juce_data_structures/juce_data_structures.cpp.i
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_data_structures/juce_data_structures.cpp.i
+Users/akuttor/Code/JUCE7/modules/juce_events/juce_events.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID.dir/build.make CMakeFiles/GRID.dir/Users/akuttor/Code/JUCE7/modules/juce_events/juce_events.cpp.i
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_events/juce_events.cpp.i
 
-Users/akuttor/Code/JUCE/modules/juce_data_structures/juce_data_structures.s: Users/akuttor/Code/JUCE/modules/juce_data_structures/juce_data_structures.cpp.s
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_data_structures/juce_data_structures.s
+Users/akuttor/Code/JUCE7/modules/juce_events/juce_events.s: Users/akuttor/Code/JUCE7/modules/juce_events/juce_events.cpp.s
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_events/juce_events.s
 
 # target to generate assembly for a file
-Users/akuttor/Code/JUCE/modules/juce_data_structures/juce_data_structures.cpp.s:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID.dir/build.make CMakeFiles/GRID.dir/Users/akuttor/Code/JUCE/modules/juce_data_structures/juce_data_structures.cpp.s
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_data_structures/juce_data_structures.cpp.s
+Users/akuttor/Code/JUCE7/modules/juce_events/juce_events.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID.dir/build.make CMakeFiles/GRID.dir/Users/akuttor/Code/JUCE7/modules/juce_events/juce_events.cpp.s
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_events/juce_events.cpp.s
 
-Users/akuttor/Code/JUCE/modules/juce_events/juce_events.o: Users/akuttor/Code/JUCE/modules/juce_events/juce_events.cpp.o
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_events/juce_events.o
+Users/akuttor/Code/JUCE7/modules/juce_graphics/juce_graphics.o: Users/akuttor/Code/JUCE7/modules/juce_graphics/juce_graphics.cpp.o
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_graphics/juce_graphics.o
 
 # target to build an object file
-Users/akuttor/Code/JUCE/modules/juce_events/juce_events.cpp.o:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID.dir/build.make CMakeFiles/GRID.dir/Users/akuttor/Code/JUCE/modules/juce_events/juce_events.cpp.o
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_events/juce_events.cpp.o
+Users/akuttor/Code/JUCE7/modules/juce_graphics/juce_graphics.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID.dir/build.make CMakeFiles/GRID.dir/Users/akuttor/Code/JUCE7/modules/juce_graphics/juce_graphics.cpp.o
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_graphics/juce_graphics.cpp.o
 
-Users/akuttor/Code/JUCE/modules/juce_events/juce_events.i: Users/akuttor/Code/JUCE/modules/juce_events/juce_events.cpp.i
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_events/juce_events.i
+Users/akuttor/Code/JUCE7/modules/juce_graphics/juce_graphics.i: Users/akuttor/Code/JUCE7/modules/juce_graphics/juce_graphics.cpp.i
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_graphics/juce_graphics.i
 
 # target to preprocess a source file
-Users/akuttor/Code/JUCE/modules/juce_events/juce_events.cpp.i:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID.dir/build.make CMakeFiles/GRID.dir/Users/akuttor/Code/JUCE/modules/juce_events/juce_events.cpp.i
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_events/juce_events.cpp.i
+Users/akuttor/Code/JUCE7/modules/juce_graphics/juce_graphics.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID.dir/build.make CMakeFiles/GRID.dir/Users/akuttor/Code/JUCE7/modules/juce_graphics/juce_graphics.cpp.i
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_graphics/juce_graphics.cpp.i
 
-Users/akuttor/Code/JUCE/modules/juce_events/juce_events.s: Users/akuttor/Code/JUCE/modules/juce_events/juce_events.cpp.s
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_events/juce_events.s
+Users/akuttor/Code/JUCE7/modules/juce_graphics/juce_graphics.s: Users/akuttor/Code/JUCE7/modules/juce_graphics/juce_graphics.cpp.s
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_graphics/juce_graphics.s
 
 # target to generate assembly for a file
-Users/akuttor/Code/JUCE/modules/juce_events/juce_events.cpp.s:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID.dir/build.make CMakeFiles/GRID.dir/Users/akuttor/Code/JUCE/modules/juce_events/juce_events.cpp.s
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_events/juce_events.cpp.s
+Users/akuttor/Code/JUCE7/modules/juce_graphics/juce_graphics.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID.dir/build.make CMakeFiles/GRID.dir/Users/akuttor/Code/JUCE7/modules/juce_graphics/juce_graphics.cpp.s
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_graphics/juce_graphics.cpp.s
 
-Users/akuttor/Code/JUCE/modules/juce_graphics/juce_graphics.o: Users/akuttor/Code/JUCE/modules/juce_graphics/juce_graphics.cpp.o
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_graphics/juce_graphics.o
+Users/akuttor/Code/JUCE7/modules/juce_gui_basics/juce_gui_basics.o: Users/akuttor/Code/JUCE7/modules/juce_gui_basics/juce_gui_basics.cpp.o
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_gui_basics/juce_gui_basics.o
 
 # target to build an object file
-Users/akuttor/Code/JUCE/modules/juce_graphics/juce_graphics.cpp.o:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID.dir/build.make CMakeFiles/GRID.dir/Users/akuttor/Code/JUCE/modules/juce_graphics/juce_graphics.cpp.o
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_graphics/juce_graphics.cpp.o
+Users/akuttor/Code/JUCE7/modules/juce_gui_basics/juce_gui_basics.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID.dir/build.make CMakeFiles/GRID.dir/Users/akuttor/Code/JUCE7/modules/juce_gui_basics/juce_gui_basics.cpp.o
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_gui_basics/juce_gui_basics.cpp.o
 
-Users/akuttor/Code/JUCE/modules/juce_graphics/juce_graphics.i: Users/akuttor/Code/JUCE/modules/juce_graphics/juce_graphics.cpp.i
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_graphics/juce_graphics.i
+Users/akuttor/Code/JUCE7/modules/juce_gui_basics/juce_gui_basics.i: Users/akuttor/Code/JUCE7/modules/juce_gui_basics/juce_gui_basics.cpp.i
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_gui_basics/juce_gui_basics.i
 
 # target to preprocess a source file
-Users/akuttor/Code/JUCE/modules/juce_graphics/juce_graphics.cpp.i:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID.dir/build.make CMakeFiles/GRID.dir/Users/akuttor/Code/JUCE/modules/juce_graphics/juce_graphics.cpp.i
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_graphics/juce_graphics.cpp.i
+Users/akuttor/Code/JUCE7/modules/juce_gui_basics/juce_gui_basics.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID.dir/build.make CMakeFiles/GRID.dir/Users/akuttor/Code/JUCE7/modules/juce_gui_basics/juce_gui_basics.cpp.i
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_gui_basics/juce_gui_basics.cpp.i
 
-Users/akuttor/Code/JUCE/modules/juce_graphics/juce_graphics.s: Users/akuttor/Code/JUCE/modules/juce_graphics/juce_graphics.cpp.s
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_graphics/juce_graphics.s
+Users/akuttor/Code/JUCE7/modules/juce_gui_basics/juce_gui_basics.s: Users/akuttor/Code/JUCE7/modules/juce_gui_basics/juce_gui_basics.cpp.s
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_gui_basics/juce_gui_basics.s
 
 # target to generate assembly for a file
-Users/akuttor/Code/JUCE/modules/juce_graphics/juce_graphics.cpp.s:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID.dir/build.make CMakeFiles/GRID.dir/Users/akuttor/Code/JUCE/modules/juce_graphics/juce_graphics.cpp.s
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_graphics/juce_graphics.cpp.s
+Users/akuttor/Code/JUCE7/modules/juce_gui_basics/juce_gui_basics.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID.dir/build.make CMakeFiles/GRID.dir/Users/akuttor/Code/JUCE7/modules/juce_gui_basics/juce_gui_basics.cpp.s
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_gui_basics/juce_gui_basics.cpp.s
 
-Users/akuttor/Code/JUCE/modules/juce_graphics/juce_graphics_Harfbuzz.o: Users/akuttor/Code/JUCE/modules/juce_graphics/juce_graphics_Harfbuzz.cpp.o
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_graphics/juce_graphics_Harfbuzz.o
+Users/akuttor/Code/JUCE7/modules/juce_gui_extra/juce_gui_extra.o: Users/akuttor/Code/JUCE7/modules/juce_gui_extra/juce_gui_extra.cpp.o
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_gui_extra/juce_gui_extra.o
 
 # target to build an object file
-Users/akuttor/Code/JUCE/modules/juce_graphics/juce_graphics_Harfbuzz.cpp.o:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID.dir/build.make CMakeFiles/GRID.dir/Users/akuttor/Code/JUCE/modules/juce_graphics/juce_graphics_Harfbuzz.cpp.o
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_graphics/juce_graphics_Harfbuzz.cpp.o
+Users/akuttor/Code/JUCE7/modules/juce_gui_extra/juce_gui_extra.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID.dir/build.make CMakeFiles/GRID.dir/Users/akuttor/Code/JUCE7/modules/juce_gui_extra/juce_gui_extra.cpp.o
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_gui_extra/juce_gui_extra.cpp.o
 
-Users/akuttor/Code/JUCE/modules/juce_graphics/juce_graphics_Harfbuzz.i: Users/akuttor/Code/JUCE/modules/juce_graphics/juce_graphics_Harfbuzz.cpp.i
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_graphics/juce_graphics_Harfbuzz.i
-
-# target to preprocess a source file
-Users/akuttor/Code/JUCE/modules/juce_graphics/juce_graphics_Harfbuzz.cpp.i:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID.dir/build.make CMakeFiles/GRID.dir/Users/akuttor/Code/JUCE/modules/juce_graphics/juce_graphics_Harfbuzz.cpp.i
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_graphics/juce_graphics_Harfbuzz.cpp.i
-
-Users/akuttor/Code/JUCE/modules/juce_graphics/juce_graphics_Harfbuzz.s: Users/akuttor/Code/JUCE/modules/juce_graphics/juce_graphics_Harfbuzz.cpp.s
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_graphics/juce_graphics_Harfbuzz.s
-
-# target to generate assembly for a file
-Users/akuttor/Code/JUCE/modules/juce_graphics/juce_graphics_Harfbuzz.cpp.s:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID.dir/build.make CMakeFiles/GRID.dir/Users/akuttor/Code/JUCE/modules/juce_graphics/juce_graphics_Harfbuzz.cpp.s
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_graphics/juce_graphics_Harfbuzz.cpp.s
-
-Users/akuttor/Code/JUCE/modules/juce_graphics/juce_graphics_Sheenbidi.o: Users/akuttor/Code/JUCE/modules/juce_graphics/juce_graphics_Sheenbidi.c.o
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_graphics/juce_graphics_Sheenbidi.o
-
-# target to build an object file
-Users/akuttor/Code/JUCE/modules/juce_graphics/juce_graphics_Sheenbidi.c.o:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID.dir/build.make CMakeFiles/GRID.dir/Users/akuttor/Code/JUCE/modules/juce_graphics/juce_graphics_Sheenbidi.c.o
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_graphics/juce_graphics_Sheenbidi.c.o
-
-Users/akuttor/Code/JUCE/modules/juce_graphics/juce_graphics_Sheenbidi.i: Users/akuttor/Code/JUCE/modules/juce_graphics/juce_graphics_Sheenbidi.c.i
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_graphics/juce_graphics_Sheenbidi.i
+Users/akuttor/Code/JUCE7/modules/juce_gui_extra/juce_gui_extra.i: Users/akuttor/Code/JUCE7/modules/juce_gui_extra/juce_gui_extra.cpp.i
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_gui_extra/juce_gui_extra.i
 
 # target to preprocess a source file
-Users/akuttor/Code/JUCE/modules/juce_graphics/juce_graphics_Sheenbidi.c.i:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID.dir/build.make CMakeFiles/GRID.dir/Users/akuttor/Code/JUCE/modules/juce_graphics/juce_graphics_Sheenbidi.c.i
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_graphics/juce_graphics_Sheenbidi.c.i
+Users/akuttor/Code/JUCE7/modules/juce_gui_extra/juce_gui_extra.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID.dir/build.make CMakeFiles/GRID.dir/Users/akuttor/Code/JUCE7/modules/juce_gui_extra/juce_gui_extra.cpp.i
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_gui_extra/juce_gui_extra.cpp.i
 
-Users/akuttor/Code/JUCE/modules/juce_graphics/juce_graphics_Sheenbidi.s: Users/akuttor/Code/JUCE/modules/juce_graphics/juce_graphics_Sheenbidi.c.s
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_graphics/juce_graphics_Sheenbidi.s
-
-# target to generate assembly for a file
-Users/akuttor/Code/JUCE/modules/juce_graphics/juce_graphics_Sheenbidi.c.s:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID.dir/build.make CMakeFiles/GRID.dir/Users/akuttor/Code/JUCE/modules/juce_graphics/juce_graphics_Sheenbidi.c.s
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_graphics/juce_graphics_Sheenbidi.c.s
-
-Users/akuttor/Code/JUCE/modules/juce_gui_basics/juce_gui_basics.o: Users/akuttor/Code/JUCE/modules/juce_gui_basics/juce_gui_basics.cpp.o
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_gui_basics/juce_gui_basics.o
-
-# target to build an object file
-Users/akuttor/Code/JUCE/modules/juce_gui_basics/juce_gui_basics.cpp.o:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID.dir/build.make CMakeFiles/GRID.dir/Users/akuttor/Code/JUCE/modules/juce_gui_basics/juce_gui_basics.cpp.o
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_gui_basics/juce_gui_basics.cpp.o
-
-Users/akuttor/Code/JUCE/modules/juce_gui_basics/juce_gui_basics.i: Users/akuttor/Code/JUCE/modules/juce_gui_basics/juce_gui_basics.cpp.i
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_gui_basics/juce_gui_basics.i
-
-# target to preprocess a source file
-Users/akuttor/Code/JUCE/modules/juce_gui_basics/juce_gui_basics.cpp.i:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID.dir/build.make CMakeFiles/GRID.dir/Users/akuttor/Code/JUCE/modules/juce_gui_basics/juce_gui_basics.cpp.i
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_gui_basics/juce_gui_basics.cpp.i
-
-Users/akuttor/Code/JUCE/modules/juce_gui_basics/juce_gui_basics.s: Users/akuttor/Code/JUCE/modules/juce_gui_basics/juce_gui_basics.cpp.s
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_gui_basics/juce_gui_basics.s
+Users/akuttor/Code/JUCE7/modules/juce_gui_extra/juce_gui_extra.s: Users/akuttor/Code/JUCE7/modules/juce_gui_extra/juce_gui_extra.cpp.s
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_gui_extra/juce_gui_extra.s
 
 # target to generate assembly for a file
-Users/akuttor/Code/JUCE/modules/juce_gui_basics/juce_gui_basics.cpp.s:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID.dir/build.make CMakeFiles/GRID.dir/Users/akuttor/Code/JUCE/modules/juce_gui_basics/juce_gui_basics.cpp.s
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_gui_basics/juce_gui_basics.cpp.s
-
-Users/akuttor/Code/JUCE/modules/juce_gui_extra/juce_gui_extra.o: Users/akuttor/Code/JUCE/modules/juce_gui_extra/juce_gui_extra.cpp.o
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_gui_extra/juce_gui_extra.o
-
-# target to build an object file
-Users/akuttor/Code/JUCE/modules/juce_gui_extra/juce_gui_extra.cpp.o:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID.dir/build.make CMakeFiles/GRID.dir/Users/akuttor/Code/JUCE/modules/juce_gui_extra/juce_gui_extra.cpp.o
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_gui_extra/juce_gui_extra.cpp.o
-
-Users/akuttor/Code/JUCE/modules/juce_gui_extra/juce_gui_extra.i: Users/akuttor/Code/JUCE/modules/juce_gui_extra/juce_gui_extra.cpp.i
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_gui_extra/juce_gui_extra.i
-
-# target to preprocess a source file
-Users/akuttor/Code/JUCE/modules/juce_gui_extra/juce_gui_extra.cpp.i:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID.dir/build.make CMakeFiles/GRID.dir/Users/akuttor/Code/JUCE/modules/juce_gui_extra/juce_gui_extra.cpp.i
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_gui_extra/juce_gui_extra.cpp.i
-
-Users/akuttor/Code/JUCE/modules/juce_gui_extra/juce_gui_extra.s: Users/akuttor/Code/JUCE/modules/juce_gui_extra/juce_gui_extra.cpp.s
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_gui_extra/juce_gui_extra.s
-
-# target to generate assembly for a file
-Users/akuttor/Code/JUCE/modules/juce_gui_extra/juce_gui_extra.cpp.s:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID.dir/build.make CMakeFiles/GRID.dir/Users/akuttor/Code/JUCE/modules/juce_gui_extra/juce_gui_extra.cpp.s
-.PHONY : Users/akuttor/Code/JUCE/modules/juce_gui_extra/juce_gui_extra.cpp.s
+Users/akuttor/Code/JUCE7/modules/juce_gui_extra/juce_gui_extra.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/GRID.dir/build.make CMakeFiles/GRID.dir/Users/akuttor/Code/JUCE7/modules/juce_gui_extra/juce_gui_extra.cpp.s
+.PHONY : Users/akuttor/Code/JUCE7/modules/juce_gui_extra/juce_gui_extra.cpp.s
 
 src/GridEngine.o: src/GridEngine.cpp.o
 .PHONY : src/GridEngine.o
@@ -976,85 +880,73 @@ help:
 	@echo "... GRID_All"
 	@echo "... GRID"
 	@echo "... GRID_VST3"
-	@echo "... GRID_vst3_helper"
-	@echo "... Users/akuttor/Code/JUCE/modules/juce_audio_basics/juce_audio_basics.o"
-	@echo "... Users/akuttor/Code/JUCE/modules/juce_audio_basics/juce_audio_basics.i"
-	@echo "... Users/akuttor/Code/JUCE/modules/juce_audio_basics/juce_audio_basics.s"
-	@echo "... Users/akuttor/Code/JUCE/modules/juce_audio_devices/juce_audio_devices.o"
-	@echo "... Users/akuttor/Code/JUCE/modules/juce_audio_devices/juce_audio_devices.i"
-	@echo "... Users/akuttor/Code/JUCE/modules/juce_audio_devices/juce_audio_devices.s"
-	@echo "... Users/akuttor/Code/JUCE/modules/juce_audio_formats/juce_audio_formats.o"
-	@echo "... Users/akuttor/Code/JUCE/modules/juce_audio_formats/juce_audio_formats.i"
-	@echo "... Users/akuttor/Code/JUCE/modules/juce_audio_formats/juce_audio_formats.s"
-	@echo "... Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/VST3/juce_VST3ManifestHelper.o"
-	@echo "... Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/VST3/juce_VST3ManifestHelper.i"
-	@echo "... Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/VST3/juce_VST3ManifestHelper.s"
-	@echo "... Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_AAX.o"
-	@echo "... Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_AAX.i"
-	@echo "... Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_AAX.s"
-	@echo "... Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_AAX_utils.o"
-	@echo "... Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_AAX_utils.i"
-	@echo "... Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_AAX_utils.s"
-	@echo "... Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_ARA.o"
-	@echo "... Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_ARA.i"
-	@echo "... Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_ARA.s"
-	@echo "... Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_LV2.o"
-	@echo "... Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_LV2.i"
-	@echo "... Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_LV2.s"
-	@echo "... Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_Standalone.o"
-	@echo "... Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_Standalone.i"
-	@echo "... Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_Standalone.s"
-	@echo "... Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_Unity.o"
-	@echo "... Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_Unity.i"
-	@echo "... Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_Unity.s"
-	@echo "... Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_VST2.o"
-	@echo "... Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_VST2.i"
-	@echo "... Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_VST2.s"
-	@echo "... Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_VST3.o"
-	@echo "... Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_VST3.i"
-	@echo "... Users/akuttor/Code/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_VST3.s"
-	@echo "... Users/akuttor/Code/JUCE/modules/juce_audio_processors/juce_audio_processors.o"
-	@echo "... Users/akuttor/Code/JUCE/modules/juce_audio_processors/juce_audio_processors.i"
-	@echo "... Users/akuttor/Code/JUCE/modules/juce_audio_processors/juce_audio_processors.s"
-	@echo "... Users/akuttor/Code/JUCE/modules/juce_audio_processors_headless/juce_audio_processors_headless.o"
-	@echo "... Users/akuttor/Code/JUCE/modules/juce_audio_processors_headless/juce_audio_processors_headless.i"
-	@echo "... Users/akuttor/Code/JUCE/modules/juce_audio_processors_headless/juce_audio_processors_headless.s"
-	@echo "... Users/akuttor/Code/JUCE/modules/juce_audio_processors_headless/juce_audio_processors_headless_ara.o"
-	@echo "... Users/akuttor/Code/JUCE/modules/juce_audio_processors_headless/juce_audio_processors_headless_ara.i"
-	@echo "... Users/akuttor/Code/JUCE/modules/juce_audio_processors_headless/juce_audio_processors_headless_ara.s"
-	@echo "... Users/akuttor/Code/JUCE/modules/juce_audio_processors_headless/juce_audio_processors_headless_lv2_libs.o"
-	@echo "... Users/akuttor/Code/JUCE/modules/juce_audio_processors_headless/juce_audio_processors_headless_lv2_libs.i"
-	@echo "... Users/akuttor/Code/JUCE/modules/juce_audio_processors_headless/juce_audio_processors_headless_lv2_libs.s"
-	@echo "... Users/akuttor/Code/JUCE/modules/juce_audio_utils/juce_audio_utils.o"
-	@echo "... Users/akuttor/Code/JUCE/modules/juce_audio_utils/juce_audio_utils.i"
-	@echo "... Users/akuttor/Code/JUCE/modules/juce_audio_utils/juce_audio_utils.s"
-	@echo "... Users/akuttor/Code/JUCE/modules/juce_core/juce_core.o"
-	@echo "... Users/akuttor/Code/JUCE/modules/juce_core/juce_core.i"
-	@echo "... Users/akuttor/Code/JUCE/modules/juce_core/juce_core.s"
-	@echo "... Users/akuttor/Code/JUCE/modules/juce_core/juce_core_CompilationTime.o"
-	@echo "... Users/akuttor/Code/JUCE/modules/juce_core/juce_core_CompilationTime.i"
-	@echo "... Users/akuttor/Code/JUCE/modules/juce_core/juce_core_CompilationTime.s"
-	@echo "... Users/akuttor/Code/JUCE/modules/juce_data_structures/juce_data_structures.o"
-	@echo "... Users/akuttor/Code/JUCE/modules/juce_data_structures/juce_data_structures.i"
-	@echo "... Users/akuttor/Code/JUCE/modules/juce_data_structures/juce_data_structures.s"
-	@echo "... Users/akuttor/Code/JUCE/modules/juce_events/juce_events.o"
-	@echo "... Users/akuttor/Code/JUCE/modules/juce_events/juce_events.i"
-	@echo "... Users/akuttor/Code/JUCE/modules/juce_events/juce_events.s"
-	@echo "... Users/akuttor/Code/JUCE/modules/juce_graphics/juce_graphics.o"
-	@echo "... Users/akuttor/Code/JUCE/modules/juce_graphics/juce_graphics.i"
-	@echo "... Users/akuttor/Code/JUCE/modules/juce_graphics/juce_graphics.s"
-	@echo "... Users/akuttor/Code/JUCE/modules/juce_graphics/juce_graphics_Harfbuzz.o"
-	@echo "... Users/akuttor/Code/JUCE/modules/juce_graphics/juce_graphics_Harfbuzz.i"
-	@echo "... Users/akuttor/Code/JUCE/modules/juce_graphics/juce_graphics_Harfbuzz.s"
-	@echo "... Users/akuttor/Code/JUCE/modules/juce_graphics/juce_graphics_Sheenbidi.o"
-	@echo "... Users/akuttor/Code/JUCE/modules/juce_graphics/juce_graphics_Sheenbidi.i"
-	@echo "... Users/akuttor/Code/JUCE/modules/juce_graphics/juce_graphics_Sheenbidi.s"
-	@echo "... Users/akuttor/Code/JUCE/modules/juce_gui_basics/juce_gui_basics.o"
-	@echo "... Users/akuttor/Code/JUCE/modules/juce_gui_basics/juce_gui_basics.i"
-	@echo "... Users/akuttor/Code/JUCE/modules/juce_gui_basics/juce_gui_basics.s"
-	@echo "... Users/akuttor/Code/JUCE/modules/juce_gui_extra/juce_gui_extra.o"
-	@echo "... Users/akuttor/Code/JUCE/modules/juce_gui_extra/juce_gui_extra.i"
-	@echo "... Users/akuttor/Code/JUCE/modules/juce_gui_extra/juce_gui_extra.s"
+	@echo "... juce_vst3_helper"
+	@echo "... Users/akuttor/Code/JUCE7/modules/juce_audio_basics/juce_audio_basics.o"
+	@echo "... Users/akuttor/Code/JUCE7/modules/juce_audio_basics/juce_audio_basics.i"
+	@echo "... Users/akuttor/Code/JUCE7/modules/juce_audio_basics/juce_audio_basics.s"
+	@echo "... Users/akuttor/Code/JUCE7/modules/juce_audio_devices/juce_audio_devices.o"
+	@echo "... Users/akuttor/Code/JUCE7/modules/juce_audio_devices/juce_audio_devices.i"
+	@echo "... Users/akuttor/Code/JUCE7/modules/juce_audio_devices/juce_audio_devices.s"
+	@echo "... Users/akuttor/Code/JUCE7/modules/juce_audio_formats/juce_audio_formats.o"
+	@echo "... Users/akuttor/Code/JUCE7/modules/juce_audio_formats/juce_audio_formats.i"
+	@echo "... Users/akuttor/Code/JUCE7/modules/juce_audio_formats/juce_audio_formats.s"
+	@echo "... Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/VST3/juce_VST3ManifestHelper.o"
+	@echo "... Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/VST3/juce_VST3ManifestHelper.i"
+	@echo "... Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/VST3/juce_VST3ManifestHelper.s"
+	@echo "... Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_AAX.o"
+	@echo "... Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_AAX.i"
+	@echo "... Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_AAX.s"
+	@echo "... Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_AAX_utils.o"
+	@echo "... Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_AAX_utils.i"
+	@echo "... Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_AAX_utils.s"
+	@echo "... Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_ARA.o"
+	@echo "... Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_ARA.i"
+	@echo "... Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_ARA.s"
+	@echo "... Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_LV2.o"
+	@echo "... Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_LV2.i"
+	@echo "... Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_LV2.s"
+	@echo "... Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_Standalone.o"
+	@echo "... Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_Standalone.i"
+	@echo "... Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_Standalone.s"
+	@echo "... Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_Unity.o"
+	@echo "... Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_Unity.i"
+	@echo "... Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_Unity.s"
+	@echo "... Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_VST2.o"
+	@echo "... Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_VST2.i"
+	@echo "... Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_VST2.s"
+	@echo "... Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_VST3.o"
+	@echo "... Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_VST3.i"
+	@echo "... Users/akuttor/Code/JUCE7/modules/juce_audio_plugin_client/juce_audio_plugin_client_VST3.s"
+	@echo "... Users/akuttor/Code/JUCE7/modules/juce_audio_processors/juce_audio_processors.o"
+	@echo "... Users/akuttor/Code/JUCE7/modules/juce_audio_processors/juce_audio_processors.i"
+	@echo "... Users/akuttor/Code/JUCE7/modules/juce_audio_processors/juce_audio_processors.s"
+	@echo "... Users/akuttor/Code/JUCE7/modules/juce_audio_processors/juce_audio_processors_ara.o"
+	@echo "... Users/akuttor/Code/JUCE7/modules/juce_audio_processors/juce_audio_processors_ara.i"
+	@echo "... Users/akuttor/Code/JUCE7/modules/juce_audio_processors/juce_audio_processors_ara.s"
+	@echo "... Users/akuttor/Code/JUCE7/modules/juce_audio_processors/juce_audio_processors_lv2_libs.o"
+	@echo "... Users/akuttor/Code/JUCE7/modules/juce_audio_processors/juce_audio_processors_lv2_libs.i"
+	@echo "... Users/akuttor/Code/JUCE7/modules/juce_audio_processors/juce_audio_processors_lv2_libs.s"
+	@echo "... Users/akuttor/Code/JUCE7/modules/juce_audio_utils/juce_audio_utils.o"
+	@echo "... Users/akuttor/Code/JUCE7/modules/juce_audio_utils/juce_audio_utils.i"
+	@echo "... Users/akuttor/Code/JUCE7/modules/juce_audio_utils/juce_audio_utils.s"
+	@echo "... Users/akuttor/Code/JUCE7/modules/juce_core/juce_core.o"
+	@echo "... Users/akuttor/Code/JUCE7/modules/juce_core/juce_core.i"
+	@echo "... Users/akuttor/Code/JUCE7/modules/juce_core/juce_core.s"
+	@echo "... Users/akuttor/Code/JUCE7/modules/juce_data_structures/juce_data_structures.o"
+	@echo "... Users/akuttor/Code/JUCE7/modules/juce_data_structures/juce_data_structures.i"
+	@echo "... Users/akuttor/Code/JUCE7/modules/juce_data_structures/juce_data_structures.s"
+	@echo "... Users/akuttor/Code/JUCE7/modules/juce_events/juce_events.o"
+	@echo "... Users/akuttor/Code/JUCE7/modules/juce_events/juce_events.i"
+	@echo "... Users/akuttor/Code/JUCE7/modules/juce_events/juce_events.s"
+	@echo "... Users/akuttor/Code/JUCE7/modules/juce_graphics/juce_graphics.o"
+	@echo "... Users/akuttor/Code/JUCE7/modules/juce_graphics/juce_graphics.i"
+	@echo "... Users/akuttor/Code/JUCE7/modules/juce_graphics/juce_graphics.s"
+	@echo "... Users/akuttor/Code/JUCE7/modules/juce_gui_basics/juce_gui_basics.o"
+	@echo "... Users/akuttor/Code/JUCE7/modules/juce_gui_basics/juce_gui_basics.i"
+	@echo "... Users/akuttor/Code/JUCE7/modules/juce_gui_basics/juce_gui_basics.s"
+	@echo "... Users/akuttor/Code/JUCE7/modules/juce_gui_extra/juce_gui_extra.o"
+	@echo "... Users/akuttor/Code/JUCE7/modules/juce_gui_extra/juce_gui_extra.i"
+	@echo "... Users/akuttor/Code/JUCE7/modules/juce_gui_extra/juce_gui_extra.s"
 	@echo "... src/GridEngine.o"
 	@echo "... src/GridEngine.i"
 	@echo "... src/GridEngine.s"

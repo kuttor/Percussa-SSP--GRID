@@ -58,11 +58,15 @@ target_sources(GRID
         src/SSPApi.cpp
 )
 
+# ─── Sysroot ───────────────────────────────────────────────────────────────
+set(SYSROOT "${BUILDROOT}/arm-rockchip-linux-gnueabihf/sysroot")
+
 # ─── Include Paths ─────────────────────────────────────────────────────────
 target_include_directories(GRID
     PRIVATE
         ${CMAKE_SOURCE_DIR}/src
         ${SSP_SDK_DIR}
+        ${SYSROOT}/usr/include
 )
 
 # ─── Compile Definitions ──────────────────────────────────────────────────
@@ -73,12 +77,12 @@ target_compile_definitions(GRID
         JUCE_VST3_CAN_REPLACE_VST2=0
         JUCE_DISPLAY_SPLASH_SCREEN=0
         JUCE_USE_FONTCONFIG=0
+        JUCE_ALSA=1
         SSP_DISPLAY_WIDTH=1600
         SSP_DISPLAY_HEIGHT=480
 )
 
-# Link buildroot freetype only (no fontconfig)
-set(SYSROOT "${BUILDROOT}/arm-rockchip-linux-gnueabihf/sysroot")
+# Link buildroot libs
 target_link_libraries(GRID PRIVATE
     "${SYSROOT}/usr/lib/libfreetype.so"
     "${SYSROOT}/usr/lib/libasound.so"

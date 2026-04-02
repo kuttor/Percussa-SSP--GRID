@@ -21,14 +21,19 @@ void PluginProcessor::prepareToPlay(double sampleRate, int samplesPerBlock)
 {
     sampleRate_ = sampleRate;
     engine_.prepare(sampleRate, samplesPerBlock);
+    refreshMidiDevices();
+
+    // Reopen MIDI device if name is set but device was killed
+    if (midiDeviceName_.isNotEmpty() && midiInDevice_ == nullptr) {
+        auto saved = midiDeviceName_;
+        midiDeviceName_.clear();  // force setMidiDevice to actually open
+        setMidiDevice(saved);
+    }
 }
 
 void PluginProcessor::releaseResources()
 {
-    if (midiInDevice_) {
-        midiInDevice_->stop();
-        midiInDevice_ = nullptr;
-    }
+    // Don't close MIDI here — device persists across audio restarts
 }
 
 void PluginProcessor::processBlock(juce::AudioBuffer<float>& buffer,
@@ -85,11 +90,8 @@ void PluginProcessor::processBlock(juce::AudioBuffer<float>& buffer,
         if (midiTrigPending_[pad]) {
             midiTrigPending_[pad] = false;
             if (!engine_.isMuted(pad)) {
-                auto& slot = engine_.getSlot(pad);
-                // Velocity → volume
-                slot.setVolume(midiVelocity_[pad]);
-                // Note → pitch offset in semitones (60 = C3 = no shift)
-                slot.setPitchSemitones((float)(midiNote_[pad] - 60));
+                float vel = midiVelocity_[pad];
+                engine_.getSlot(pad).setVolume(vel);
                 engine_.triggerWithChoke(pad);
             }
         }
@@ -109,8 +111,8 @@ void PluginProcessor::processBlock(juce::AudioBuffer<float>& buffer,
             engine_.getSlot(pad).setPitchSemitones(voct * 12.0f);
     }
 
-    // ── Read clock input — track BPM (bulletproofed) ─────────────────────
-    if (I_CLOCK < numChannels && isInputEnabled(I_CLOCK))
+    // ── Read clock input — track BPM (skipped when MIDI clock active) ────
+    if (!midiClockEnabled_ && I_CLOCK < numChannels && isInputEnabled(I_CLOCK))
     {
         for (int s = 0; s < numSamples; ++s)
         {
@@ -121,7 +123,7 @@ void PluginProcessor::processBlock(juce::AudioBuffer<float>& buffer,
             if (high && !clockHigh_) {
                 // Rising edge — count pulses for division
                 clockPulseCount_++;
-                if (clockPulseCount_ >= clockDiv_) {
+                if (clockPulseCount_ >= getClockPulsesPerBeat()) {
                     // N pulses received = 1 beat
                     if (clockActive_ && samplesSinceDiv_ > 64) {
                         float intervalSecs = (float)samplesSinceDiv_ / (float)sampleRate_;
@@ -137,6 +139,17 @@ void PluginProcessor::processBlock(juce::AudioBuffer<float>& buffer,
                     clockActive_ = true;
                     clockPulseCount_ = 0;
                     samplesSinceDiv_ = 0;
+
+                    // Beat/bar tracking
+                    beatCount_++;
+                    if (beatCount_ >= 4) {
+                        beatCount_ = 0;
+                        barCount_++;
+                        if (pendingBarCountdown_ > 0) {
+                            pendingBarCountdown_--;
+                            if (pendingBarCountdown_ == 0) flushBarMutes();
+                        }
+                    }
                 }
             }
             clockHigh_ = high;
@@ -183,13 +196,18 @@ void PluginProcessor::processBlock(juce::AudioBuffer<float>& buffer,
         if (!slot.isLoaded()) continue;
 
         float clockPeriodSecs = 60.0f / bpm_;
+        float mult = getClockMultiplier();
         float regionFrac = slot.getEndPos() - slot.getStartPos();
         if (regionFrac <= 0.01f) continue;
         float regionSamples = regionFrac * (float)slot.getNumSamples();
         if (regionSamples < 1.0f || sampleRate_ < 1.0) continue;
         float regionSecs = regionSamples / (float)sampleRate_;
 
-        float targetSecs = (mode == PadMode::ClockedBar) ? clockPeriodSecs * 4.0f : clockPeriodSecs;
+        // ClockedBar = 4 beats (1 bar in 4/4), ClockedLoop = 1 beat
+        // mult scales: *8 means sample represents 8 beats, /2 means half a beat
+        float targetSecs = (mode == PadMode::ClockedBar)
+            ? clockPeriodSecs * 4.0f * mult
+            : clockPeriodSecs * mult;
 
         float stretch = targetSecs / regionSecs;
         if (std::isfinite(stretch))
@@ -376,28 +394,46 @@ static bool isInternalMidi(const juce::String& name) {
 
 juce::StringArray PluginProcessor::getMidiDeviceNames() const
 {
-    juce::StringArray names;
-    names.add("None");
+    return cachedMidiDeviceNames_;
+}
+
+void PluginProcessor::refreshMidiDevices()
+{
+    cachedMidiDeviceNames_.clear();
+    cachedMidiDeviceNames_.add("None");
     auto devs = juce::MidiInput::getAvailableDevices();
     for (auto& d : devs) {
         if (!isInternalMidi(d.name) && d.name.isNotEmpty())
-            names.add(d.name);
+            cachedMidiDeviceNames_.add(d.name);
     }
-    return names;
 }
 
 void PluginProcessor::setMidiDevice(const juce::String& name)
 {
-    if (name == midiDeviceName_) return;
-    closeMidiDevice();
+    // Skip only if name matches AND device is actually open
+    if (name == midiDeviceName_ && midiInDevice_ != nullptr) return;
 
     if (name.isEmpty() || name == "None") {
+        // Only close if something is actually open
+        if (midiInDevice_) {
+            midiInDevice_->stop();
+            midiInDevice_ = nullptr;  // Bear's pattern
+        }
+        if (midiDeviceName_.isNotEmpty())
+            showTicker("MIDI device disconnected");
         midiDeviceName_.clear();
+        midiClockEnabled_ = false;
+        midiTransportRunning_ = false;
         return;
     }
 
-    // Safety: never open internal MIDI devices
     if (isInternalMidi(name)) return;
+
+    // Close existing device before opening new one
+    if (midiInDevice_) {
+        midiInDevice_->stop();
+        midiInDevice_ = nullptr;
+    }
 
     auto devs = juce::MidiInput::getAvailableDevices();
     for (auto& d : devs) {
@@ -406,73 +442,292 @@ void PluginProcessor::setMidiDevice(const juce::String& name)
             if (midiInDevice_) {
                 midiInDevice_->start();
                 midiDeviceName_ = name;
+                showTicker("MIDI: " + name);
             }
             return;
         }
     }
-    // Device not found — don't set name, stay disconnected
 }
 
 void PluginProcessor::closeMidiDevice()
 {
     if (midiInDevice_) {
         midiInDevice_->stop();
-        midiInDevice_ = nullptr;
+        midiInDevice_ = nullptr;  // Bear's pattern
     }
     midiDeviceName_.clear();
-    midiClockEnabled_ = false;  // no device = no clock
+    midiClockEnabled_ = false;
+    midiTransportRunning_ = false;
+    midiClockCount_ = 0;
+    midiClockLastBeatMs_ = 0.0;
+}
+
+void PluginProcessor::rebootPlugin()
+{
+    // Close and reopen MIDI
+    auto savedDevice = midiDeviceName_;
+    auto savedClock = midiClockEnabled_;
+    closeMidiDevice();
+
+    // Stop all pads
+    engine_.stopAll();
+
+    // Reset clock state
+    bpm_ = 0.0f;
+    clockActive_ = false;
+    clockPulseCount_ = 0;
+    samplesSinceDiv_ = 0;
+
+    // Reopen MIDI if it was connected
+    if (savedDevice.isNotEmpty()) {
+        setMidiDevice(savedDevice);
+        if (savedClock) setMidiClockEnabled(true);
+    }
+
+    showTicker("Plugin rebooted");
+}
+
+void PluginProcessor::commitBarMutes(int barsAhead)
+{
+    pendingBarCountdown_ = juce::jlimit(1, 4, barsAhead);
+    juce::String msg = "Mutes queued: " + juce::String(pendingBarCountdown_) + " bar";
+    if (pendingBarCountdown_ > 1) msg += "s";
+    showTicker(msg);
+}
+
+void PluginProcessor::flushBarMutes()
+{
+    for (int i = 0; i < kNumPads; ++i) {
+        if (pendingBarMutes_[i]) {
+            engine_.toggleMute(i);
+            pendingBarMutes_[i] = false;
+        }
+    }
+    pendingBarCountdown_ = 0;
+    showTicker("Mutes applied");
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Kit / Stack Management
+// ═══════════════════════════════════════════════════════════════════════════
+
+juce::File PluginProcessor::getKitsDir() const
+{
+    auto dir = juce::File(sampleRootPath_).getChildFile("kits");
+    if (!dir.isDirectory()) dir.createDirectory();
+    return dir;
+}
+
+juce::File PluginProcessor::getStacksDir() const
+{
+    auto dir = juce::File(sampleRootPath_).getChildFile("stacks");
+    if (!dir.isDirectory()) dir.createDirectory();
+    return dir;
+}
+
+juce::Array<juce::File> PluginProcessor::getAvailableKits() const
+{
+    auto dir = juce::File(sampleRootPath_).getChildFile("kits");
+    if (!dir.isDirectory()) return {};
+    auto files = dir.findChildFiles(juce::File::findFiles, false, "*.kit");
+    files.sort();
+    return files;
+}
+
+KitData PluginProcessor::captureCurrentState() const
+{
+    KitData kit;
+    kit.name = currentKitName_;
+    for (int i = 0; i < kNumPads; ++i) {
+        auto& slot = engine_.getSlot(i);
+        auto& p = kit.pads[i];
+        // Store relative path
+        juce::String path = slot.getFilePath();
+        if (path.isNotEmpty() && path.startsWith(sampleRootPath_))
+            path = path.substring(sampleRootPath_.length() + 1);
+        p.filePath  = path;
+        p.volume    = slot.getVolume();
+        p.pan       = slot.getPan();
+        p.startPos  = slot.getStartPos();
+        p.endPos    = slot.getEndPos();
+        p.pitch     = slot.getPitchSemitones();
+        p.stretch   = slot.getTimeStretch();
+        p.mode      = static_cast<int>(slot.getMode());
+        p.choke     = static_cast<int>(slot.getChokeGroup());
+        p.reversed  = slot.isReversed();
+        p.midiCh    = slot.getMidiChannel();
+    }
+    return kit;
+}
+
+void PluginProcessor::applyKitData(const KitData& kit)
+{
+    currentKitName_ = kit.name;
+    for (int i = 0; i < kNumPads; ++i) {
+        auto& slot = engine_.getSlot(i);
+        auto& p = kit.pads[i];
+
+        // Load sample
+        if (p.filePath.isNotEmpty()) {
+            juce::File file(p.filePath);
+            if (!file.existsAsFile())
+                file = juce::File(sampleRootPath_ + "/" + p.filePath);
+            if (file.existsAsFile())
+                slot.loadFile(file);
+            else
+                slot.clear();
+        } else {
+            slot.clear();
+        }
+
+        slot.setMode(static_cast<PadMode>(p.mode));
+        slot.setVolume(p.volume);
+        slot.setPan(p.pan);
+        slot.setStartPos(p.startPos);
+        slot.setEndPos(p.endPos);
+        slot.setPitchSemitones(p.pitch);
+        slot.setTimeStretch(p.stretch);
+        slot.setChokeGroup(static_cast<ChokeGroup>(p.choke));
+        if (p.reversed != slot.isReversed()) slot.setReversed(p.reversed);
+        slot.setMidiChannel(p.midiCh);
+        engine_.setMuted(i, false);
+    }
+    showTicker("Kit: " + kit.name);
+}
+
+void PluginProcessor::saveCurrentAsKit(const juce::String& name)
+{
+    auto kit = captureCurrentState();
+    kit.name = name;
+    currentKitName_ = name;
+    auto file = getKitsDir().getChildFile(name + ".kit");
+    kit.saveToFile(file);
+    showTicker("Saved: " + name);
+}
+
+void PluginProcessor::loadKit(const juce::File& kitFile)
+{
+    auto kit = KitData::loadFromFile(kitFile);
+    if (kit.name.isEmpty()) kit.name = kitFile.getFileNameWithoutExtension();
+    applyKitData(kit);
+}
+
+void PluginProcessor::createStackFile(const juce::String& name, const juce::StringArray& layerPaths)
+{
+    StackData stack;
+    stack.name = name;
+    stack.mode = StackLayerMode::RoundRobin;
+    stack.layerPaths = layerPaths;
+    auto file = getStacksDir().getChildFile(name + ".stack");
+    stack.saveToFile(file);
+    showTicker("Stack: " + name + " (" + juce::String(layerPaths.size()) + " layers)");
+}
+
+void PluginProcessor::setMidiClockEnabled(bool b)
+{
+    if (b == midiClockEnabled_) return;
+    midiClockEnabled_ = b;
+    midiClockCount_ = 0;
+    midiClockLastBeatMs_ = 0.0;
+
+    if (b) {
+        // Reset CV clock state — MIDI clock takes priority
+        clockActive_ = false;
+        bpm_ = 0.0f;
+        showTicker("MIDI Clock enabled - CV clock disabled");
+    } else {
+        clockActive_ = false;
+        bpm_ = 0.0f;
+        showTicker("MIDI Clock disabled");
+    }
 }
 
 void PluginProcessor::handleIncomingMidiMessage(juce::MidiInput*, const juce::MidiMessage& msg)
 {
-    // MIDI clock: 0xF8, 24 pulses per quarter note
+    // ── MIDI Transport ──────────────────────────────────────────────────
+    if (msg.isMidiStart()) {
+        midiTransportRunning_ = true;
+        midiClockCount_ = 0;
+        midiClockLastBeatMs_ = 0.0;
+        beatCount_ = 0;
+        barCount_ = 0;
+        if (midiClockEnabled_) clockActive_ = true;
+        return;
+    }
+    if (msg.isMidiContinue()) {
+        midiTransportRunning_ = true;
+        if (midiClockEnabled_) clockActive_ = true;
+        return;
+    }
+    if (msg.isMidiStop()) {
+        midiTransportRunning_ = false;
+        return;
+    }
+
+    // ── MIDI Clock: 24 PPQN ─────────────────────────────────────────────
     if (midiClockEnabled_ && msg.isMidiClock()) {
         midiClockCount_++;
         if (midiClockCount_ >= 24) {
-            // One beat received (24 PPQN)
-            if (midiClockSamples_ > 0 && sampleRate_ > 0) {
-                float intervalSecs = (float)midiClockSamples_ / (float)sampleRate_;
-                float newBPM = 60.0f / intervalSecs;
-                newBPM = juce::jlimit(20.0f, 300.0f, newBPM);
-                if (std::abs(newBPM - bpm_) > bpm_ * 0.1f)
-                    bpm_ = newBPM;
-                else
-                    bpm_ = bpm_ * 0.7f + newBPM * 0.3f;
+            // 24 pulses = 1 beat. Measure real wall-clock time.
+            double nowMs = juce::Time::getMillisecondCounterHiRes();
+            if (midiClockLastBeatMs_ > 0.0) {
+                double intervalMs = nowMs - midiClockLastBeatMs_;
+                if (intervalMs > 10.0 && intervalMs < 3000.0) {  // sane range: 20-6000 BPM
+                    float newBPM = (float)(60000.0 / intervalMs);
+                    newBPM = juce::jlimit(20.0f, 300.0f, newBPM);
+                    // 50/50 smoothing — settles in ~3 beats (~1 second)
+                    if (bpm_ < 1.0f)
+                        bpm_ = newBPM;  // first reading: snap
+                    else
+                        bpm_ = bpm_ * 0.5f + newBPM * 0.5f;
+                }
             }
-            clockActive_ = true;
+            midiClockLastBeatMs_ = nowMs;
             midiClockCount_ = 0;
-            midiClockSamples_ = 0;
+            clockActive_ = true;
+
+            // Beat/bar tracking
+            beatCount_++;
+            if (beatCount_ >= 4) {
+                beatCount_ = 0;
+                barCount_++;
+                if (pendingBarCountdown_ > 0) {
+                    pendingBarCountdown_--;
+                    if (pendingBarCountdown_ == 0) flushBarMutes();
+                }
+            }
         }
-        midiClockSamples_ += 128;  // approximate: one processBlock per callback
         return;
     }
 
-    if (msg.isMidiStart() || msg.isMidiContinue()) {
-        midiClockCount_ = 0;
-        midiClockSamples_ = 0;
-        return;
-    }
-
-    // Note on → trigger pad (matched by per-pad MIDI channel)
+    // ── Note On → trigger pad ───────────────────────────────────────────
     if (msg.isNoteOn()) {
-        int ch = msg.getChannel();  // 1-16
+        int ch = msg.getChannel();
+        int note = msg.getNoteNumber();
+        bool matched = false;
         for (int pad = 0; pad < kNumPads; ++pad) {
             int padCh = engine_.getSlot(pad).getMidiChannel();
-            if (padCh == 0) continue;  // MIDI off for this pad
-            if (padCh == ch || padCh == 17) {  // 17 = OMNI (respond to all)
+            if (padCh == 0) continue;
+            if (padCh == ch || padCh == 17) {
                 midiTrigPending_[pad] = true;
                 midiVelocity_[pad] = msg.getFloatVelocity();
-                midiNote_[pad] = msg.getNoteNumber();
-                break;  // first matching pad wins
+                midiNote_[pad] = note;
+                matched = true;
+                break;
             }
         }
+        if (!matched && debugMsgs_)
+            showTicker("MIDI note " + juce::String(note) + " ch" + juce::String(ch) + " - no pad matched");
     }
 
-    // CC handling — per-pad, using default CC map
+    // ── CC handling (per-pad CC maps from config browser) ─────────────
     if (msg.isController()) {
         int ch = msg.getChannel();
         int cc = msg.getControllerNumber();
         float val = (float)msg.getControllerValue() / 127.0f;
+
+        if (debugMsgs_)
+            showTicker("CC" + juce::String(cc) + " v" + juce::String(msg.getControllerValue()) + " ch" + juce::String(ch));
 
         for (int pad = 0; pad < kNumPads; ++pad) {
             int padCh = engine_.getSlot(pad).getMidiChannel();
@@ -480,14 +735,12 @@ void PluginProcessor::handleIncomingMidiMessage(juce::MidiInput*, const juce::Mi
             if (padCh != ch && padCh != 17) continue;
 
             auto& slot = engine_.getSlot(pad);
-            switch (cc) {
-                case 1:  slot.setStartPos(val); break;
-                case 2:  slot.setEndPos(val); break;
-                case 7:  slot.setVolume(val); break;
-                case 10: slot.setPan(val * 2.0f - 1.0f); break;  // 0-127 → -1..+1
-                case 11: slot.setTimeStretch(0.25f + val * 3.75f); break;  // 0-127 → 0.25-4.0
-                default: break;
-            }
+            auto& ccMap = padCCMaps_[pad];
+            if      (cc == ccMap.ccStart)   slot.setStartPos(val);
+            else if (cc == ccMap.ccEnd)     slot.setEndPos(val);
+            else if (cc == ccMap.ccVolume)  slot.setVolume(val);
+            else if (cc == ccMap.ccPan)     slot.setPan(val * 2.0f - 1.0f);
+            else if (cc == ccMap.ccStretch) slot.setTimeStretch(0.25f + val * 3.75f);
         }
     }
 }
@@ -524,12 +777,26 @@ void PluginProcessor::getStateInformation(juce::MemoryBlock& destData)
         pad->setAttribute("choke", static_cast<int>(slot.getChokeGroup()));
         pad->setAttribute("reversed", slot.isReversed() ? 1 : 0);
         pad->setAttribute("midiChannel", slot.getMidiChannel());
+
+        // Per-pad CC map
+        auto& ccMap = padCCMaps_[i];
+        pad->setAttribute("ccStart",   ccMap.ccStart);
+        pad->setAttribute("ccEnd",     ccMap.ccEnd);
+        pad->setAttribute("ccVolume",  ccMap.ccVolume);
+        pad->setAttribute("ccPan",     ccMap.ccPan);
+        pad->setAttribute("ccStretch", ccMap.ccStretch);
     }
 
     // Global MIDI settings
     xml->setAttribute("midiDevice", midiDeviceName_);
     xml->setAttribute("midiClock", midiClockEnabled_ ? 1 : 0);
     xml->setAttribute("clockDiv", clockDiv_);
+
+    // Global config
+    xml->setAttribute("perfMode", static_cast<int>(perfMode_));
+    xml->setAttribute("presetSwitchMode", static_cast<int>(presetSwitchMode_));
+    xml->setAttribute("queueBars", queueBars_);
+    xml->setAttribute("debugMidi", debugMsgs_ ? 1 : 0);
 
     copyXmlToBinary(*xml, destData);
 }
@@ -575,13 +842,43 @@ void PluginProcessor::setStateInformation(const void* data, int sizeInBytes)
         slot.setChokeGroup(static_cast<ChokeGroup>(pad->getIntAttribute("choke", 0)));
         if (pad->getIntAttribute("reversed", 0)) slot.setReversed(true);
         slot.setMidiChannel(pad->getIntAttribute("midiChannel", 0));
+
+        // Per-pad CC map (defaults if not present = backwards compatible)
+        auto& ccMap = padCCMaps_[i];
+        ccMap.ccStart   = pad->getIntAttribute("ccStart",   1);
+        ccMap.ccEnd     = pad->getIntAttribute("ccEnd",     2);
+        ccMap.ccVolume  = pad->getIntAttribute("ccVolume",  7);
+        ccMap.ccPan     = pad->getIntAttribute("ccPan",     10);
+        ccMap.ccStretch = pad->getIntAttribute("ccStretch", 11);
     }
 
     // Global MIDI settings
     juce::String midiDev = xml->getStringAttribute("midiDevice");
     if (midiDev.isNotEmpty()) setMidiDevice(midiDev);
     midiClockEnabled_ = xml->getIntAttribute("midiClock", 0) != 0;
-    clockDiv_ = xml->getIntAttribute("clockDiv", 1);
+
+    // Migrate old clockDiv values (1,2,4,8) → new format (-3 to 3)
+    int savedDiv = xml->getIntAttribute("clockDiv", 0);
+    if (savedDiv >= 2) {
+        // Old format: 2→1, 4→2, 8→3
+        int newVal = 0;
+        if (savedDiv >= 8) newVal = 3;
+        else if (savedDiv >= 4) newVal = 2;
+        else if (savedDiv >= 2) newVal = 1;
+        clockDiv_ = newVal;
+    } else {
+        clockDiv_ = juce::jlimit(-3, 3, savedDiv);
+    }
+
+    // Reset BPM — don't inherit stale values from presets
+    bpm_ = 0.0f;
+    clockActive_ = false;
+
+    // Global config
+    perfMode_ = static_cast<PerfMode>(xml->getIntAttribute("perfMode", 0));
+    presetSwitchMode_ = static_cast<PerfMode>(xml->getIntAttribute("presetSwitchMode", 0));
+    queueBars_ = juce::jlimit(1, 4, xml->getIntAttribute("queueBars", 1));
+    debugMsgs_ = xml->getIntAttribute("debugMidi", 0) != 0;
 }
 
 juce::AudioProcessorEditor* PluginProcessor::createEditor()

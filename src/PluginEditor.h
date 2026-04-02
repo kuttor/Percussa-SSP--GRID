@@ -2,6 +2,7 @@
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <juce_audio_processors/juce_audio_processors.h>
 #include "PluginProcessor.h"
+#include <functional>
 
 namespace grid {
 
@@ -61,6 +62,7 @@ private:
     bool browseMode_ = false;
     bool muteMode_ = false;
     bool muteToggled_ = false;
+    bool pendingMute_[kNumPads] = {};  // queued mute toggles (On Release / On Bar)
     int browseIndex_ = 0;
     int browseScrollOffset_ = 0;
     juce::File browseCurrentDir_;
@@ -76,6 +78,79 @@ private:
     void browseGoUp();
     void browseGoHome();
     void paintFileBrowser(juce::Graphics& g, juce::Rectangle<int> area);
+
+    // ── Config Browser (right-side flyout, LS+RS) ─────────────────────
+    bool configMode_ = false;
+    int configIndex_ = 0;       // index into configRows_ (selectable only)
+    int configScrollOffset_ = 0;
+    bool configEditMode_ = false;  // true = turning encoder changes value
+    bool leftShiftHeld_ = false;
+    bool rightShiftHeld_ = false;
+    double leftShiftPressTime_ = 0.0;
+    juce::Array<ConfigRow> configRows_;
+
+    void enterConfigMode();
+    void exitConfigMode();
+    void buildConfigRows();
+    void paintConfigBrowser(juce::Graphics& g, juce::Rectangle<int> area);
+    int configSelectableCount() const;
+    int configVisualToSelectable(int visualIdx) const;
+    int configSelectableToVisual(int selIdx) const;
+    void configAdjustValue(int selIdx, int delta);
+    void configPushValue(int selIdx);
+
+    // ── Popup Modal (Octatrack-style centered dialog) ─────────────────
+    bool popupMode_ = false;
+    int popupIndex_ = 0;
+    juce::String popupTitle_;
+    juce::StringArray popupOptions_;
+    std::function<void(int)> popupCallback_;  // called with selected index, -1 = cancel
+
+    void showPopup(const juce::String& title, const juce::StringArray& options,
+                   std::function<void(int)> callback);
+    void closePopup(int result = -1);
+    void paintPopup(juce::Graphics& g, juce::Rectangle<int> area);
+
+    // ── Multi-select in file browser ──────────────────────────────────
+    bool multiSelectMode_ = false;
+    bool multiSelected_[kNumPads] = {};     // which slots are filled
+    int multiSelectedIndices_[kNumPads] = {};  // browseItems_ index for each slot
+    int multiSelectCount_ = 0;
+
+    // ── Preset (Kit) Browsing ─────────────────────────────────────────
+    bool kitBrowseActive_ = false;
+    int kitBrowseIndex_ = -1;
+    int kitCurrentIndex_ = -1;
+    double kitBrowseStartTime_ = 0.0;
+    juce::Array<juce::File> availableKits_;
+    static constexpr double kKitBrowseTimeoutMs = 3000.0;
+
+    void refreshAvailableKits();
+    void kitBrowseCommit();
+    void kitBrowseRevert();
+
+    // ── Name Entry ────────────────────────────────────────────────────
+    juce::Random nameRng_;
+    void showNameEntryPopup(const juce::String& title,
+                            std::function<void(const juce::String&)> callback);
+
+    // ── On-screen Keyboard ───────────────────────────────────────────
+    bool keyboardMode_ = false;
+    juce::String keyboardTitle_;
+    juce::String keyboardText_;
+    int keyboardRow_ = 0;     // 0-3 (3 char rows + 1 button row)
+    int keyboardCol_ = 0;
+    std::function<void(const juce::String&)> keyboardCallback_;
+    static constexpr int kKeyboardMinLen = 4;
+    static constexpr int kKeyboardMaxLen = 12;
+
+    void showKeyboard(const juce::String& title,
+                      std::function<void(const juce::String&)> callback);
+    void closeKeyboard();
+    void keyboardAction();  // left shift press
+    void paintKeyboard(juce::Graphics& g, juce::Rectangle<int> area);
+    char keyboardCharAt(int row, int col) const;
+    int keyboardRowLen(int row) const;
 
     // ── Layout constants ─────────────────────────────────────────────────
     static constexpr int kTabHeight       = 36;
@@ -106,6 +181,13 @@ private:
     static constexpr uint32_t kBrowseSelBg    = 0xFFE53935;
     static constexpr uint32_t kBrowseText     = 0xFFFFFFFF;
     static constexpr uint32_t kBrowseFolder   = 0xFFFFAB40;
+    static constexpr uint32_t kConfigBg       = 0xE6121212;  // slight transparency
+    static constexpr uint32_t kConfigSelBg    = 0xFFE53935;
+    static constexpr uint32_t kConfigDivider  = 0x4DFFFFFF;  // 30% white
+    static constexpr uint32_t kConfigHeader   = 0xFFE53935;
+    static constexpr uint32_t kConfigLabel    = 0xFFAAAAAA;
+    static constexpr uint32_t kConfigValue    = 0xFFFFFFFF;
+    static constexpr uint32_t kConfigEditVal  = 0xFF42A5F5;  // blue when editing
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(PluginEditor)
 };

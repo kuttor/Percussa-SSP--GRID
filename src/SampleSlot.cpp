@@ -241,7 +241,7 @@ void SampleSlot::process(float* outL, float* outR, int numSamples)
         {
             int idx = static_cast<int>(readPosition_);
             if (idx >= endSample || idx >= ns) {
-                if (mode_ == PadMode::Loop || mode_ == PadMode::ClockedLoop) {
+                if (mode_ == PadMode::Loop || mode_ == PadMode::ClockedLoop || mode_ == PadMode::ClockedBar) {
                     readPosition_ = static_cast<double>(startSample);
                     idx = startSample;
                 } else {
@@ -283,7 +283,7 @@ void SampleSlot::process(float* outL, float* outR, int numSamples)
             }
 
             if (sourcePos_ >= static_cast<double>(endSample)) {
-                if (mode_ == PadMode::Loop || mode_ == PadMode::ClockedLoop) {
+                if (mode_ == PadMode::Loop || mode_ == PadMode::ClockedLoop || mode_ == PadMode::ClockedBar) {
                     sourcePos_ = static_cast<double>(startSample);
                     grainPos_[0] = sourcePos_;
                     grainPos_[1] = sourcePos_;

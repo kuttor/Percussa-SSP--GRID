@@ -73,7 +73,7 @@ public:
     float getNormalizeGain() const   { return normalizeGain_; }
 
     // MIDI (per-pad)
-    void setMidiChannel(int ch)      { midiChannel_ = juce::jlimit(0, 16, ch); }  // 0 = off
+    void setMidiChannel(int ch)      { midiChannel_ = juce::jlimit(0, 17, ch); }  // 0=off, 1-16=ch, 17=omni
     int getMidiChannel() const       { return midiChannel_; }
 
     PadMode getMode() const     { return mode_; }

@@ -53,7 +53,14 @@ public:
     float getBPM() const { return bpm_; }
     bool hasClockInput() const { return clockActive_; }
     int getClockDiv() const { return clockDiv_; }
-    void setClockDiv(int d) { clockDiv_ = juce::jlimit(1, 8, d); clockPulseCount_ = 0; }
+    void setClockDiv(int d) { clockDiv_ = juce::jlimit(-3, 3, d); clockPulseCount_ = 0; }
+    // clockDiv: -3=*8, -2=*4, -1=*2, 0=/1, 1=/2, 2=/4, 3=/8
+    float getClockMultiplier() const {
+        return std::pow(2.0f, -(float)clockDiv_);  // -3→8, -2→4, -1→2, 0→1, 1→0.5, 2→0.25, 3→0.125
+    }
+    int getClockPulsesPerBeat() const {
+        return clockDiv_ >= 0 ? (1 << clockDiv_) : 1;  // positive = more pulses per beat, negative = 1
+    }
 
     // Recording
     enum class RecState { Idle, Armed, Recording };
@@ -72,11 +79,13 @@ public:
     // MIDI
     void handleIncomingMidiMessage(juce::MidiInput* source, const juce::MidiMessage& msg) override;
     juce::StringArray getMidiDeviceNames() const;
+    void refreshMidiDevices();
     juce::String getMidiDeviceName() const { return midiDeviceName_; }
+    void showTickerPublic(const juce::String& msg) { showTicker(msg); }
     void setMidiDevice(const juce::String& name);
     void closeMidiDevice();
     bool isMidiClockEnabled() const { return midiClockEnabled_; }
-    void setMidiClockEnabled(bool b) { midiClockEnabled_ = b; }
+    void setMidiClockEnabled(bool b);
 
     // Mono bus layout (Bear's pattern) — must be inside AudioProcessor subclass
     static BusesProperties getBusesProperties() {
@@ -107,9 +116,28 @@ private:
     bool clockActive_ = false;
     bool resetHigh_ = false;
     float bpm_ = 0.0f;
-    int clockDiv_ = 1;          // pulses per beat (1,2,4,8)
+    int clockDiv_ = 0;          // -3=*8, -2=*4, -1=*2, 0=/1, 1=/2, 2=/4, 3=/8
     int clockPulseCount_ = 0;   // counts pulses for division
     int samplesSinceDiv_ = 0;   // samples since last divided beat
+
+    // Bar tracking (for On Bar performance features)
+    int beatCount_ = 0;         // 0-3 within a bar (4/4 assumed)
+    int barCount_ = 0;          // total bars since transport start
+    bool pendingBarMutes_[kNumPads] = {};  // queued mute toggles for next bar
+    int pendingBarCountdown_ = 0;  // bars remaining until flush (0 = no pending)
+
+public:
+    void setPendingBarMute(int pad, bool pending) {
+        if (pad >= 0 && pad < kNumPads) pendingBarMutes_[pad] = pending;
+    }
+    bool getPendingBarMute(int pad) const {
+        return (pad >= 0 && pad < kNumPads) ? pendingBarMutes_[pad] : false;
+    }
+    void commitBarMutes(int barsAhead);
+    void flushBarMutes();
+    int getPendingBarCountdown() const { return pendingBarCountdown_; }
+    int getBeatCount() const { return beatCount_; }
+private:
 
     // Recording
     RecState recState_ = RecState::Idle;
@@ -128,15 +156,77 @@ private:
 
     void finalizeRecording();
 
+    // Config state
+    PadCCMap padCCMaps_[kNumPads];
+    PerfMode perfMode_ = PerfMode::Immediate;
+    PerfMode presetSwitchMode_ = PerfMode::Immediate;
+    int queueBars_ = 1;  // 1-4 bars ahead for OnBar mode
+    bool debugMsgs_ = false;
+
+public:
+    PadCCMap& getPadCCMap(int pad) { return padCCMaps_[juce::jlimit(0, kNumPads - 1, pad)]; }
+    const PadCCMap& getPadCCMap(int pad) const { return padCCMaps_[juce::jlimit(0, kNumPads - 1, pad)]; }
+    PerfMode getPerfMode() const { return perfMode_; }
+    void setPerfMode(PerfMode m) { perfMode_ = m; }
+    PerfMode getPresetSwitchMode() const { return presetSwitchMode_; }
+    void setPresetSwitchMode(PerfMode m) { presetSwitchMode_ = m; }
+    int getQueueBars() const { return queueBars_; }
+    void setQueueBars(int b) { queueBars_ = juce::jlimit(1, 4, b); }
+    bool getDebugMsgs() const { return debugMsgs_; }
+    void setDebugMsgs(bool b) { debugMsgs_ = b; }
+    void rebootPlugin();
+private:
+
+    // Kit/Stack management
+public:
+    juce::String getCurrentKitName() const { return currentKitName_; }
+    void saveCurrentAsKit(const juce::String& name);
+    void loadKit(const juce::File& kitFile);
+    KitData captureCurrentState() const;
+    void applyKitData(const KitData& kit);
+    juce::File getKitsDir() const;
+    juce::File getStacksDir() const;
+    juce::Array<juce::File> getAvailableKits() const;
+    void createStackFile(const juce::String& name, const juce::StringArray& layerPaths);
+private:
+    juce::String currentKitName_ = "Untitled";
+
     // MIDI state (direct device access, Bear's pattern)
     std::unique_ptr<juce::MidiInput> midiInDevice_;
     juce::String midiDeviceName_;
+    juce::StringArray cachedMidiDeviceNames_ { "None" };
     bool midiClockEnabled_ = false;
-    int midiClockCount_ = 0;         // counts 24 PPQN
-    int midiClockSamples_ = 0;       // samples since last beat (24 clocks)
+    bool midiTransportRunning_ = false;  // MIDI Start/Stop state
+    int midiClockCount_ = 0;             // counts 24 PPQN pulses
+    double midiClockLastBeatMs_ = 0.0;   // hi-res time of last beat
     bool midiTrigPending_[kNumPads] = {};
     float midiVelocity_[kNumPads] = {};
-    int midiNote_[kNumPads] = {};  // note number for pitch offset (60 = no shift)
+    int midiNote_[kNumPads] = {};
+
+    // Ticker message system
+    juce::String tickerMessage_;
+    double tickerStartTime_ = 0.0;
+    static constexpr double kTickerDurationMs = 5000.0;
+
+public:
+    juce::String getTickerMessage() const {
+        if (tickerMessage_.isEmpty()) return {};
+        double elapsed = juce::Time::getMillisecondCounterHiRes() - tickerStartTime_;
+        if (elapsed > kTickerDurationMs) return {};
+        return tickerMessage_;
+    }
+    float getTickerProgress() const {
+        if (tickerMessage_.isEmpty()) return 0.0f;
+        double elapsed = juce::Time::getMillisecondCounterHiRes() - tickerStartTime_;
+        if (elapsed > kTickerDurationMs) return 0.0f;
+        return (float)(elapsed / kTickerDurationMs);
+    }
+    bool isMidiTransportRunning() const { return midiTransportRunning_; }
+private:
+    void showTicker(const juce::String& msg) {
+        tickerMessage_ = msg;
+        tickerStartTime_ = juce::Time::getMillisecondCounterHiRes();
+    }
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(PluginProcessor)
 };

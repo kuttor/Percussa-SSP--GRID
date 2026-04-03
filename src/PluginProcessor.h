@@ -49,6 +49,7 @@ public:
 
     // Access
     GridEngine& getEngine() { return engine_; }
+    const GridEngine& getEngine() const { return engine_; }
     const juce::String& getSampleRootPath() const { return sampleRootPath_; }
     float getBPM() const { return bpm_; }
     bool hasClockInput() const { return clockActive_; }
@@ -162,18 +163,26 @@ private:
     PerfMode presetSwitchMode_ = PerfMode::Immediate;
     int queueBars_ = 1;  // 1-4 bars ahead for OnBar mode
     bool debugMsgs_ = false;
+    float encoderSpeed_ = 1.0f;
 
 public:
     PadCCMap& getPadCCMap(int pad) { return padCCMaps_[juce::jlimit(0, kNumPads - 1, pad)]; }
     const PadCCMap& getPadCCMap(int pad) const { return padCCMaps_[juce::jlimit(0, kNumPads - 1, pad)]; }
     PerfMode getPerfMode() const { return perfMode_; }
-    void setPerfMode(PerfMode m) { perfMode_ = m; }
+    void setPerfMode(PerfMode m) {
+        perfMode_ = m;
+        // Clear all pending bar mutes when switching modes
+        for (int i = 0; i < kNumPads; ++i) pendingBarMutes_[i] = false;
+        pendingBarCountdown_ = 0;
+    }
     PerfMode getPresetSwitchMode() const { return presetSwitchMode_; }
     void setPresetSwitchMode(PerfMode m) { presetSwitchMode_ = m; }
     int getQueueBars() const { return queueBars_; }
     void setQueueBars(int b) { queueBars_ = juce::jlimit(1, 4, b); }
     bool getDebugMsgs() const { return debugMsgs_; }
     void setDebugMsgs(bool b) { debugMsgs_ = b; }
+    float getEncoderSpeed() const { return encoderSpeed_; }
+    void setEncoderSpeed(float s) { encoderSpeed_ = juce::jlimit(1.0f, 3.0f, s); }
     void rebootPlugin();
 private:
 

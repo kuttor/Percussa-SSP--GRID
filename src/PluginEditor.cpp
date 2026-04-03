@@ -66,8 +66,8 @@ void PluginEditor::paint(juce::Graphics& g)
     g.setColour(juce::Colour(kTabBg));
     g.fillRect(0, 0, w, kTabHeight);
 
-    const char* pages[] = { "PADS", "SAMPLE", "PLAY", "WARP", "FADE", "MIDI", "OPTIONS" };
-    int tabW = 130;
+    const char* pages[] = { "PADS", "SAMPLE", "PLAY", "WARP", "FADE", "FILTER", "MIDI", "OPTIONS" };
+    int tabW = 110;
     for (int i = 0; i < kNumPages; ++i)
     {
         int tx = 10 + i * (tabW + 6);
@@ -98,7 +98,7 @@ void PluginEditor::paint(juce::Graphics& g)
         juce::String locks;
         int mode = static_cast<int>(selSlot.getMode());
         if (mode != 0) {
-            const char* m[] = { "", "LOOP", "CLK LOOP", "CLK BAR" };
+            const char* m[] = { "", "LOOP", "CLK:LOOP", "CLK:1SHOT" };
             locks += juce::String(m[mode]);
         }
         if (selSlot.getVolume() < 0.99f) {
@@ -254,10 +254,18 @@ void PluginEditor::paint(juce::Graphics& g)
         g.fillRect(sx, encY + kEncoderBarH / 2, 1, kEncoderBarH / 2);
     }
 
-    // Firmware version (bottom bar, far right)
-    g.setColour(juce::Colour(0xFF888888));
-    g.setFont(17.0f);
-    g.drawText("Firmware 0.1.9-beta", w - 280, encY, 270, kEncoderBarH,
+    // ── Preset name (center of encoder bar, right half) ────────────────
+    {
+        juce::String kitName = processor_.getCurrentKitName();
+        g.setColour(juce::Colour(0xFFAAAAAA));
+        g.setFont(18.0f);
+        g.drawText(kitName, 850, encY, 500, kEncoderBarH, juce::Justification::centred);
+    }
+
+    // Version (bottom-right corner, small)
+    g.setColour(juce::Colour(0xFF555555));
+    g.setFont(14.0f);
+    g.drawText("0.1.9.1", w - 100, encY, 90, kEncoderBarH,
                juce::Justification::centredRight);
 
     // ── Popup overlay (renders on top of everything) ─────────────────
@@ -1036,13 +1044,14 @@ void PluginEditor::paintFileBrowser(juce::Graphics& g, juce::Rectangle<int> area
     g.drawText(header, content.removeFromTop(30), juce::Justification::centredLeft);
 
     // Pad indicator or multi-select status
-    auto subLine = content.removeFromTop(20);
-    g.setFont(14.0f);
+    auto subLine = content.removeFromTop(22);
     if (multiSelectMode_) {
         g.setColour(juce::Colour(kTabActive));
+        g.setFont(17.0f);
         g.drawText("SELECT: " + juce::String(multiSelectCount_) + "/8  (Enc0 to finish)",
                    subLine, juce::Justification::centredLeft);
     } else {
+        g.setFont(14.0f);
         g.setColour(juce::Colour(kEncLabel));
         g.drawText("-> PAD " + juce::String(selectedPad_ + 1), subLine, juce::Justification::centredLeft);
     }
@@ -1177,6 +1186,7 @@ void PluginEditor::exitBrowseMode() {
     browseMode_ = false;
     multiSelectMode_ = false;
     multiSelectCount_ = 0;
+    leftShiftHeld_ = false;  // prevent stuck shift from clearing pads
     for (int i = 0; i < kNumPads; ++i) multiSelected_[i] = false;
     updateEncoderDisplay();
     repaint();
@@ -1249,16 +1259,17 @@ void PluginEditor::browseGoUp()
     // If we're at Smart Home (no real dir), do nothing
     if (!browseCurrentDir_.isDirectory()) return;
 
-    // If we're at or below sample root, go to Smart Home instead of parent
     juce::File root(processor_.getSampleRootPath());
-    if (browseCurrentDir_ == root || !browseCurrentDir_.isAChildOf(root)) {
+    auto parent = browseCurrentDir_.getParentDirectory();
+
+    // Go to Smart Home if: at root, parent IS root, or outside root
+    if (browseCurrentDir_ == root || parent == root || !browseCurrentDir_.isAChildOf(root)) {
         browseGoHome();
         return;
     }
 
-    auto p = browseCurrentDir_.getParentDirectory();
-    if (p.isDirectory() && p != browseCurrentDir_) {
-        browseCurrentDir_ = p;
+    if (parent.isDirectory() && parent != browseCurrentDir_) {
+        browseCurrentDir_ = parent;
         browseScanCurrentDir();
         repaint();
     }
@@ -1421,6 +1432,10 @@ juce::String PluginEditor::getEncoderLabel(int page, int enc) const
             const char* l[] = { "", "FADE IN", "FADE OUT", "---" };
             return l[enc];
         }
+        case PAGE_FILTER: {
+            const char* l[] = { "", "TYPE", "CUTOFF", "RESO" };
+            return l[enc];
+        }
         case PAGE_MIDI: {
             const char* l[] = { "", "CHANNEL", "DEVICE", "CLK" };
             return l[enc];
@@ -1471,7 +1486,7 @@ juce::String PluginEditor::getEncoderValue(int page, int enc) const
             return "---";
         }
         case PAGE_PLAY: {
-            const char* modes[] = { "ONE-SHOT", "LOOP", "CLK LOOP", "CLK BAR" };
+            const char* modes[] = { "ONE-SHOT", "LOOP", "CLK:LOOP", "CLK:1SHOT" };
             if (enc == 1) return modes[static_cast<int>(slot.getMode())];
             if (enc == 2) {
                 if (processor_.getEngine().isMuted(selectedPad_))
@@ -1485,7 +1500,7 @@ juce::String PluginEditor::getEncoderValue(int page, int enc) const
             float st = slot.getPitchSemitones();
             if (enc == 1) return (st >= 0 ? "+" : "") + juce::String(st, 1) + "st";
             if (enc == 2) {
-                bool clocked = (slot.getMode() == PadMode::ClockedLoop || slot.getMode() == PadMode::ClockedBar);
+                bool clocked = (slot.getMode() == PadMode::ClockedLoop || slot.getMode() == PadMode::ClockedOneShot);
                 if (clocked && (processor_.hasClockInput() || processor_.isMidiClockEnabled())) {
                     return juce::String(slot.getTimeStretch(), 2) + "x CLK";
                 }
@@ -1512,6 +1527,30 @@ juce::String PluginEditor::getEncoderValue(int page, int enc) const
             };
             if (enc == 1) return fmtFade(slot.getFadeInMs(), slot.getFadeInCurve());
             if (enc == 2) return fmtFade(slot.getFadeOutMs(), slot.getFadeOutCurve());
+            return "---";
+        }
+        case PAGE_FILTER: {
+            if (enc == 1) {
+                const char* types[] = { "OFF", "LPF", "HPF", "BPF", "NOTCH", "FORMANT", "MS-20" };
+                return types[static_cast<int>(slot.getFilterType())];
+            }
+            if (enc == 2) {
+                float hz = slot.getFilterCutoff();
+                FilterType ft = slot.getFilterType();
+                // Strength: 0% = no filtering, 100% = max filtering
+                float pct;
+                if (ft == FilterType::HPF)
+                    pct = std::log(hz / 20.0f) / std::log(1000.0f);
+                else
+                    pct = 1.0f - std::log(hz / 20.0f) / std::log(1000.0f);
+                pct = juce::jlimit(0.0f, 1.0f, pct) * 100.0f;
+                juce::String hzStr;
+                if (hz >= 10000.0f) hzStr = juce::String(hz / 1000.0f, 1) + "k";
+                else if (hz >= 1000.0f) hzStr = juce::String(hz / 1000.0f, 2) + "k";
+                else hzStr = juce::String((int)hz);
+                return juce::String((int)pct) + "% / " + hzStr + "Hz";
+            }
+            if (enc == 3) return juce::String((int)(slot.getFilterResonance() * 100)) + "%";
             return "---";
         }
         case PAGE_MIDI: {
@@ -1602,13 +1641,23 @@ void PluginEditor::onButton(int n, bool val)
         return;
     }
 
+    // Left shift + pad = clear pad (only on OVERVIEW/OPTIONS page, not in any overlay)
+    if (leftShiftHeld_ && !browseMode_ && !muteMode_ && !configMode_
+        && (currentPage_ == PAGE_OVERVIEW || currentPage_ == PAGE_OPTIONS)) {
+        processor_.getEngine().getSlot(n).clear();
+        processor_.getEngine().setMuted(n, false);
+        selectedPad_ = n;
+        processor_.showTickerPublic("Pad " + juce::String(n + 1) + " cleared");
+        repaint();
+        return;
+    }
+
     // Mute mode: right shift held, buttons toggle mutes
     if (muteMode_) {
         PerfMode mode = processor_.getPerfMode();
         if (mode == PerfMode::Immediate) {
             processor_.getEngine().toggleMute(n);
         } else {
-            // Queue the toggle — flip pending state
             pendingMute_[n] = !pendingMute_[n];
         }
         muteToggled_ = true;
@@ -1617,7 +1666,6 @@ void PluginEditor::onButton(int n, bool val)
     }
 
     if (browseMode_) {
-        // Browse mode: load highlighted file to this pad + trigger
         if (browseIndex_ >= 0 && browseIndex_ < browseItems_.size()) {
             auto sel = browseItems_[browseIndex_];
             if (!sel.isDirectory() && browseItemNames_[browseIndex_] != ">> Clear Pad") {
@@ -1631,11 +1679,19 @@ void PluginEditor::onButton(int n, bool val)
     }
 
     // Normal mode: loop toggle or retrigger
-    bool isLoop = (slot.getMode() == PadMode::Loop || slot.getMode() == PadMode::ClockedLoop || slot.getMode() == PadMode::ClockedBar);
+    bool isLoop = (slot.getMode() == PadMode::Loop || slot.getMode() == PadMode::ClockedLoop);
     if (isLoop && slot.isPlaying() && !slot.isStopping()) {
         slot.stop();
     } else {
-        processor_.getEngine().trigger(n);
+        // Wall-clock debounce: drop stale queued button events
+        double nowMs = juce::Time::getMillisecondCounterHiRes();
+        if (nowMs - lastButtonTriggerMs_[n] < kButtonDebounceMs) {
+            selectedPad_ = n;
+            repaint();
+            return;
+        }
+        lastButtonTriggerMs_[n] = nowMs;
+        processor_.getEngine().triggerWithChoke(n);
     }
     selectedPad_ = n;
     repaint();
@@ -1889,7 +1945,11 @@ void PluginEditor::onRightShiftButton(bool val)
             }
         }
         else if (mode == PerfMode::OnBar) {
-            // Transfer pending mutes to processor and start countdown
+            // Clear any old pending bar mutes first
+            for (int i = 0; i < kNumPads; ++i)
+                processor_.setPendingBarMute(i, false);
+
+            // Transfer new pending mutes to processor and start countdown
             bool anyPending = false;
             for (int i = 0; i < kNumPads; ++i) {
                 if (pendingMute_[i]) {
@@ -1981,6 +2041,9 @@ void PluginEditor::onEncoder(int n, float delta)
         return;
     }
 
+    // Apply global encoder speed (doesn't affect enum steps which use delta > 0 ? 1 : -1)
+    delta *= processor_.getEncoderSpeed();
+
     switch (currentPage_)
     {
         case PAGE_OVERVIEW:
@@ -2029,6 +2092,41 @@ void PluginEditor::onEncoder(int n, float delta)
             }
             if (n == 2) {
                 slot.setFadeOutMs(slot.getFadeOutMs() - delta * fadeStep(slot.getFadeOutMs()));
+            }
+            break;
+        }
+
+        case PAGE_FILTER: {
+            if (n == 1) {
+                int t = static_cast<int>(slot.getFilterType()) + (delta > 0 ? 1 : -1);
+                auto newType = static_cast<FilterType>(juce::jlimit(0, 6, t));
+                slot.setFilterType(newType);
+                // Reset cutoff to 0% (no filtering) for the new type
+                if (newType == FilterType::HPF)
+                    slot.setFilterCutoff(20.0f);      // HPF 0% = 20Hz
+                else if (newType != FilterType::Off)
+                    slot.setFilterCutoff(20000.0f);    // others 0% = 20kHz
+            }
+            if (n == 2) {
+                // Work in strength % space: right = more filtering
+                float hz = slot.getFilterCutoff();
+                FilterType ft = slot.getFilterType();
+                float pct;
+                if (ft == FilterType::HPF)
+                    pct = std::log(hz / 20.0f) / std::log(1000.0f);
+                else
+                    pct = 1.0f - std::log(hz / 20.0f) / std::log(1000.0f);
+                pct += delta * 0.02f;  // 2% per click (scaled by encoder speed)
+                pct = juce::jlimit(0.0f, 1.0f, pct);
+                float newHz;
+                if (ft == FilterType::HPF)
+                    newHz = 20.0f * std::pow(1000.0f, pct);
+                else
+                    newHz = 20.0f * std::pow(1000.0f, 1.0f - pct);
+                slot.setFilterCutoff(newHz);
+            }
+            if (n == 3) {
+                slot.setFilterResonance(slot.getFilterResonance() + delta * 0.02f);
             }
             break;
         }
@@ -2237,6 +2335,17 @@ void PluginEditor::onEncoderSwitch(int n, bool val)
             if (n == 1) slot.setFadeInCurve(slot.getFadeInCurve() == 0 ? 1 : 0);
             if (n == 2) slot.setFadeOutCurve(slot.getFadeOutCurve() == 0 ? 1 : 0);
             break;
+        case PAGE_FILTER:
+            if (n == 1) slot.setFilterType(FilterType::Off);
+            if (n == 2) {
+                // Reset to 0% (no filtering) for current type
+                if (slot.getFilterType() == FilterType::HPF)
+                    slot.setFilterCutoff(20.0f);
+                else
+                    slot.setFilterCutoff(20000.0f);
+            }
+            if (n == 3) slot.setFilterResonance(0.0f);
+            break;
         case PAGE_MIDI:
             if (n == 1) slot.setMidiChannel(0);  // push = OFF
             if (n == 2) processor_.closeMidiDevice();  // push = disconnect
@@ -2292,6 +2401,8 @@ void PluginEditor::exitConfigMode()
 {
     configMode_ = false;
     configEditMode_ = false;
+    leftShiftHeld_ = false;
+    rightShiftHeld_ = false;
     updateEncoderDisplay();
     repaint();
 }
@@ -2310,6 +2421,17 @@ void PluginEditor::buildConfigRows()
     hdr.padIndex = selectedPad_;
     hdr.paramIndex = -1;
     configRows_.add(hdr);
+
+    // CLK Beats: only visible when pad is in a clocked mode
+    PadMode padMode = slot.getMode();
+    if (padMode == PadMode::ClockedLoop || padMode == PadMode::ClockedOneShot) {
+        { ConfigRow r; r.type = ConfigRowType::Enum; r.label = "CLK Beats";
+          r.padIndex = selectedPad_; r.paramIndex = 5; configRows_.add(r); }
+    }
+
+    // Spacer before CC section
+    { ConfigRow s; s.type = ConfigRowType::Spacer; s.padIndex = -1; s.paramIndex = -1;
+      configRows_.add(s); }
 
     for (int i = 0; i < PadCCMap::kNumCCs; ++i) {
         ConfigRow row;
@@ -2350,6 +2472,9 @@ void PluginEditor::buildConfigRows()
       configRows_.add(s); }
 
     // ── System group ──
+    // 5 = Encoder Speed
+    { ConfigRow r; r.type = ConfigRowType::Enum; r.label = "Enc Speed";
+      r.padIndex = -1; r.paramIndex = 5; configRows_.add(r); }
     // 3 = Debug Msgs
     { ConfigRow r; r.type = ConfigRowType::Enum; r.label = "Debug Msgs";
       r.padIndex = -1; r.paramIndex = 3; configRows_.add(r); }
@@ -2398,6 +2523,14 @@ juce::String configGetValueText(const PluginProcessor& proc, const ConfigRow& ro
         int cc = proc.getPadCCMap(row.padIndex).byIndex(row.paramIndex);
         return "CC " + juce::String(cc);
     }
+    // Per-pad enum (CLK Beats)
+    if (row.type == ConfigRowType::Enum && row.padIndex >= 0) {
+        if (row.paramIndex == 5) {
+            int beats = proc.getEngine().getSlot(row.padIndex).getClockBeats();
+            if (beats < 4) return juce::String(beats) + (beats == 1 ? " Beat" : " Beats");
+            return juce::String(beats / 4) + (beats == 4 ? " Bar" : " Bars") + " (" + juce::String(beats) + ")";
+        }
+    }
     if (row.type == ConfigRowType::Enum && row.padIndex < 0) {
         switch (row.paramIndex) {
             case 0: {  // Mute Mode
@@ -2412,6 +2545,8 @@ juce::String configGetValueText(const PluginProcessor& proc, const ConfigRow& ro
                 return juce::String(proc.getQueueBars()) + " bar" + (proc.getQueueBars() > 1 ? "s" : "");
             case 3:  // Debug Msgs
                 return proc.getDebugMsgs() ? "ON" : "OFF";
+            case 5:  // Encoder Speed
+                return juce::String(proc.getEncoderSpeed(), 2) + "x";
             default: return "?";
         }
     }
@@ -2551,6 +2686,18 @@ void PluginEditor::configAdjustValue(int selIdx, int delta)
         return;
     }
 
+    // Per-pad CLK Beats (paramIndex 5)
+    if (row.type == ConfigRowType::Enum && row.padIndex >= 0 && row.paramIndex == 5) {
+        auto& slot = processor_.getEngine().getSlot(row.padIndex);
+        int cur = slot.getClockBeats();
+        const int steps[] = { 1, 2, 4, 8, 16 };
+        int idx = 0;
+        for (int s = 0; s < 5; ++s) if (steps[s] == cur) { idx = s; break; }
+        idx = juce::jlimit(0, 4, idx + delta);
+        slot.setClockBeats(steps[idx]);
+        return;
+    }
+
     if (row.type == ConfigRowType::Enum && row.padIndex < 0) {
         switch (row.paramIndex) {
             case 0: {  // Mute Mode
@@ -2569,6 +2716,11 @@ void PluginEditor::configAdjustValue(int selIdx, int delta)
             }
             case 3: {  // Debug Msgs
                 processor_.setDebugMsgs(delta > 0);
+                break;
+            }
+            case 5: {  // Encoder Speed
+                float s = processor_.getEncoderSpeed() + (float)delta * 0.25f;
+                processor_.setEncoderSpeed(s);
                 break;
             }
             default: break;
@@ -2614,6 +2766,7 @@ void PluginEditor::showPopup(const juce::String& title, const juce::StringArray&
 void PluginEditor::closePopup(int result)
 {
     popupMode_ = false;
+    leftShiftHeld_ = false;
     auto cb = std::move(popupCallback_);
     popupCallback_ = nullptr;
     repaint();
@@ -2629,7 +2782,7 @@ void PluginEditor::paintPopup(juce::Graphics& g, juce::Rectangle<int> area)
     // Centered box
     int boxW = 380;
     int rowH = 40;
-    int boxH = 52 + (int)popupOptions_.size() * rowH + 16;
+    int boxH = 52 + (int)popupOptions_.size() * rowH + 32;  // extra room for hint
     int boxX = (area.getWidth() - boxW) / 2;
     int boxY = (area.getHeight() - boxH) / 2;
     auto box = juce::Rectangle<int>(boxX, boxY, boxW, boxH);
@@ -2670,6 +2823,12 @@ void PluginEditor::paintPopup(juce::Graphics& g, juce::Rectangle<int> area)
         g.drawText(popupOptions_[i], optRect.withTrimmedLeft(14),
                    juce::Justification::centredLeft);
     }
+
+    // Hint at bottom
+    g.setColour(juce::Colour(0x44FFFFFF));
+    g.setFont(12.0f);
+    g.drawText("LS = select    LEFT = cancel", box.getX(), box.getBottom() - 20,
+               box.getWidth(), 16, juce::Justification::centred);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -2725,6 +2884,7 @@ void PluginEditor::showKeyboard(const juce::String& title,
 void PluginEditor::closeKeyboard()
 {
     keyboardMode_ = false;
+    leftShiftHeld_ = false;
     keyboardCallback_ = nullptr;
     repaint();
 }

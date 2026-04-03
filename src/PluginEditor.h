@@ -157,6 +157,10 @@ private:
     static constexpr int kEncoderBarH     = 48;
     static constexpr int kBrowseRowHeight = 44;
 
+    // ── Button debounce (wall clock, prevents SSP callback queuing) ──
+    double lastButtonTriggerMs_[kNumPads] = {};
+    static constexpr double kButtonDebounceMs = 35.0;
+
     // ── Colors ───────────────────────────────────────────────────────────
     static constexpr uint32_t kBg             = 0xFF0D0D0D;
     static constexpr uint32_t kTabBg          = 0xFF151515;

@@ -12,7 +12,9 @@ public:
 
     void trigger(int slot);
     void forceTrigger(int slot);
-    void triggerWithChoke(int slot);  // trigger + stop other pads in same choke group
+    void triggerWithChoke(int slot);
+    void triggerWithChokeAndVelocity(int slot, float vel);
+    void triggerWithChokeAndOffset(int slot, int sampleOffset);
     void stop(int slot);
     void stopAll();
 

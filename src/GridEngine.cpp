@@ -5,6 +5,8 @@ namespace grid {
 void GridEngine::prepare(double sampleRate, int /*samplesPerBlock*/)
 {
     sampleRate_ = sampleRate;
+    for (int i = 0; i < kNumPads; ++i)
+        slots_[i].setOutputSampleRate(sampleRate);
 }
 
 void GridEngine::process(float* outL, float* outR, int numSamples)
@@ -36,7 +38,6 @@ void GridEngine::triggerWithChoke(int slot)
 {
     if (slot < 0 || slot >= kNumPads) return;
 
-    // Choke: stop all other pads in the same group
     ChokeGroup grp = slots_[slot].getChokeGroup();
     if (grp != ChokeGroup::None) {
         for (int i = 0; i < kNumPads; ++i) {
@@ -45,6 +46,34 @@ void GridEngine::triggerWithChoke(int slot)
         }
     }
     slots_[slot].trigger();
+}
+
+void GridEngine::triggerWithChokeAndVelocity(int slot, float vel)
+{
+    if (slot < 0 || slot >= kNumPads) return;
+
+    ChokeGroup grp = slots_[slot].getChokeGroup();
+    if (grp != ChokeGroup::None) {
+        for (int i = 0; i < kNumPads; ++i) {
+            if (i != slot && slots_[i].getChokeGroup() == grp && slots_[i].isPlaying())
+                slots_[i].stop();
+        }
+    }
+    slots_[slot].triggerWithVelocity(vel);
+}
+
+void GridEngine::triggerWithChokeAndOffset(int slot, int sampleOffset)
+{
+    if (slot < 0 || slot >= kNumPads) return;
+
+    ChokeGroup grp = slots_[slot].getChokeGroup();
+    if (grp != ChokeGroup::None) {
+        for (int i = 0; i < kNumPads; ++i) {
+            if (i != slot && slots_[i].getChokeGroup() == grp && slots_[i].isPlaying())
+                slots_[i].stop();
+        }
+    }
+    slots_[slot].triggerWithOffset(sampleOffset);
 }
 
 void GridEngine::stop(int slot)

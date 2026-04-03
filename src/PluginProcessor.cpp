@@ -54,13 +54,14 @@ void PluginProcessor::processBlock(juce::AudioBuffer<float>& buffer,
         if (engine_.isMuted(pad)) continue;
 
         bool triggered = false;
+        int triggerOffset = 0;
         for (int s = 0; s < numSamples; ++s)
         {
             float gSample = buffer.getSample(ch, s);
-            if (!std::isfinite(gSample)) continue;
             bool high = (gSample > kTrigThreshold);
             if (high && !gateHigh_[pad]) {
                 triggered = true;
+                triggerOffset = s;
                 break;
             }
             gateHigh_[pad] = high;
@@ -71,16 +72,16 @@ void PluginProcessor::processBlock(juce::AudioBuffer<float>& buffer,
             // Sample-and-hold: grab Start/End CV at trigger instant
             auto& slot = engine_.getSlot(pad);
             if (hasStartCV) {
-                float sv = buffer.getSample(I_START_CV, numSamples - 1);
+                float sv = buffer.getSample(I_START_CV, triggerOffset);
                 if (std::isfinite(sv))
                     slot.setStartPos(juce::jlimit(0.0f, 1.0f, sv));
             }
             if (hasEndCV) {
-                float ev = buffer.getSample(I_END_CV, numSamples - 1);
+                float ev = buffer.getSample(I_END_CV, triggerOffset);
                 if (std::isfinite(ev))
                     slot.setEndPos(juce::jlimit(0.0f, 1.0f, ev));
             }
-            engine_.triggerWithChoke(pad);
+            engine_.triggerWithChokeAndOffset(pad, triggerOffset);
         }
     }
 
@@ -91,8 +92,10 @@ void PluginProcessor::processBlock(juce::AudioBuffer<float>& buffer,
             midiTrigPending_[pad] = false;
             if (!engine_.isMuted(pad)) {
                 float vel = midiVelocity_[pad];
-                engine_.getSlot(pad).setVolume(vel);
-                engine_.triggerWithChoke(pad);
+                int note = midiNote_[pad];
+                float pitchSt = (float)(note - 60);
+                engine_.getSlot(pad).setPitchSemitones(pitchSt);
+                engine_.triggerWithChokeAndVelocity(pad, vel);
             }
         }
     }
@@ -109,6 +112,25 @@ void PluginProcessor::processBlock(juce::AudioBuffer<float>& buffer,
         float voct = buffer.getSample(ch, numSamples - 1);
         if (std::isfinite(voct) && std::abs(voct) > 0.01f)
             engine_.getSlot(pad).setPitchSemitones(voct * 12.0f);
+    }
+
+    // ── Filter CV — master strength for all pads ──────────────────────────
+    // 0V = 0% (no filtering), 1V = 100% (max filtering)
+    // Hz direction depends on per-pad filter type
+    if (I_FILTER_CV < numChannels && isInputEnabled(I_FILTER_CV)) {
+        float cv = buffer.getSample(I_FILTER_CV, numSamples - 1);
+        if (std::isfinite(cv)) {
+            float strength = juce::jlimit(0.0f, 1.0f, cv);
+            for (int pad = 0; pad < kNumPads; ++pad) {
+                auto& slot = engine_.getSlot(pad);
+                float hz;
+                if (slot.getFilterType() == FilterType::HPF)
+                    hz = 20.0f * std::pow(1000.0f, strength);       // 0%=20Hz, 100%=20kHz
+                else
+                    hz = 20.0f * std::pow(1000.0f, 1.0f - strength); // 0%=20kHz, 100%=20Hz
+                slot.setFilterCutoff(hz);
+            }
+        }
     }
 
     // ── Read clock input — track BPM (skipped when MIDI clock active) ────
@@ -172,7 +194,7 @@ void PluginProcessor::processBlock(juce::AudioBuffer<float>& buffer,
                 for (int pad = 0; pad < kNumPads; ++pad) {
                     auto& slot = engine_.getSlot(pad);
                     if (slot.isPlaying() &&
-                        (slot.getMode() == PadMode::ClockedLoop || slot.getMode() == PadMode::ClockedBar)) {
+                        (slot.getMode() == PadMode::ClockedLoop || slot.getMode() == PadMode::ClockedOneShot)) {
                         slot.trigger();  // retrigger = snap to start
                     }
                 }
@@ -189,7 +211,7 @@ void PluginProcessor::processBlock(juce::AudioBuffer<float>& buffer,
         auto& slot = engine_.getSlot(pad);
         PadMode mode = slot.getMode();
 
-        if ((mode != PadMode::ClockedLoop && mode != PadMode::ClockedBar) || !clockActive_ || bpm_ < 20.0f) {
+        if ((mode != PadMode::ClockedLoop && mode != PadMode::ClockedOneShot) || !clockActive_ || bpm_ < 20.0f) {
             slot.clearClockStretch();  // non-clocked pads = 1.0
             continue;
         }
@@ -201,13 +223,11 @@ void PluginProcessor::processBlock(juce::AudioBuffer<float>& buffer,
         if (regionFrac <= 0.01f) continue;
         float regionSamples = regionFrac * (float)slot.getNumSamples();
         if (regionSamples < 1.0f || sampleRate_ < 1.0) continue;
-        float regionSecs = regionSamples / (float)sampleRate_;
+        float regionSecs = regionSamples / (float)slot.getSampleRate();  // use FILE sample rate
 
-        // ClockedBar = 4 beats (1 bar in 4/4), ClockedLoop = 1 beat
-        // mult scales: *8 means sample represents 8 beats, /2 means half a beat
-        float targetSecs = (mode == PadMode::ClockedBar)
-            ? clockPeriodSecs * 4.0f * mult
-            : clockPeriodSecs * mult;
+        // Both CLK modes stretch to fit clockBeats_ × beat period
+        // mult scales: *8 means 8× faster playback, /2 means half speed
+        float targetSecs = clockPeriodSecs * (float)slot.getClockBeats() * mult;
 
         float stretch = targetSecs / regionSecs;
         if (std::isfinite(stretch))
@@ -489,6 +509,13 @@ void PluginProcessor::rebootPlugin()
 
 void PluginProcessor::commitBarMutes(int barsAhead)
 {
+    // Check if we have a clock running (either MIDI or CV)
+    if (!clockActive_ && !midiClockEnabled_) {
+        // No clock — can't count bars, flush immediately
+        flushBarMutes();
+        showTicker("No clock — mutes applied now");
+        return;
+    }
     pendingBarCountdown_ = juce::jlimit(1, 4, barsAhead);
     juce::String msg = "Mutes queued: " + juce::String(pendingBarCountdown_) + " bar";
     if (pendingBarCountdown_ > 1) msg += "s";
@@ -556,6 +583,11 @@ KitData PluginProcessor::captureCurrentState() const
         p.choke     = static_cast<int>(slot.getChokeGroup());
         p.reversed  = slot.isReversed();
         p.midiCh    = slot.getMidiChannel();
+        p.clockBeats = slot.getClockBeats();
+        p.voiceMode  = static_cast<int>(slot.getVoiceMode());
+        p.filterType = static_cast<int>(slot.getFilterType());
+        p.filterCutoff = slot.getFilterCutoff();
+        p.filterReso = slot.getFilterResonance();
     }
     return kit;
 }
@@ -590,6 +622,11 @@ void PluginProcessor::applyKitData(const KitData& kit)
         slot.setChokeGroup(static_cast<ChokeGroup>(p.choke));
         if (p.reversed != slot.isReversed()) slot.setReversed(p.reversed);
         slot.setMidiChannel(p.midiCh);
+        slot.setClockBeats(p.clockBeats);
+        slot.setVoiceMode(static_cast<VoiceMode>(p.voiceMode));
+        slot.setFilterType(static_cast<FilterType>(p.filterType));
+        slot.setFilterCutoff(p.filterCutoff);
+        slot.setFilterResonance(p.filterReso);
         engine_.setMuted(i, false);
     }
     showTicker("Kit: " + kit.name);
@@ -739,8 +776,21 @@ void PluginProcessor::handleIncomingMidiMessage(juce::MidiInput*, const juce::Mi
             if      (cc == ccMap.ccStart)   slot.setStartPos(val);
             else if (cc == ccMap.ccEnd)     slot.setEndPos(val);
             else if (cc == ccMap.ccVolume)  slot.setVolume(val);
-            else if (cc == ccMap.ccPan)     slot.setPan(val * 2.0f - 1.0f);
-            else if (cc == ccMap.ccStretch) slot.setTimeStretch(0.25f + val * 3.75f);
+            else if (cc == ccMap.ccPan) {
+                float p = val * 2.0f - 1.0f;
+                if (std::abs(p) < 0.02f) p = 0.0f;  // snap to center
+                slot.setPan(p);
+            }
+            else if (cc == ccMap.ccStretch) {
+                float s = 0.25f + val * 3.75f;
+                if (std::abs(s - 1.0f) < 0.04f) s = 1.0f;  // snap to 1.0x
+                slot.setTimeStretch(s);
+            }
+            else if (cc == ccMap.ccFilter) {
+                // Exponential mapping: CC 0 = 20Hz, CC 127 = 20kHz
+                float hz = 20.0f * std::pow(1000.0f, val);
+                slot.setFilterCutoff(hz);
+            }
         }
     }
 }
@@ -785,6 +835,12 @@ void PluginProcessor::getStateInformation(juce::MemoryBlock& destData)
         pad->setAttribute("ccVolume",  ccMap.ccVolume);
         pad->setAttribute("ccPan",     ccMap.ccPan);
         pad->setAttribute("ccStretch", ccMap.ccStretch);
+        pad->setAttribute("ccFilter", ccMap.ccFilter);
+        pad->setAttribute("clockBeats", slot.getClockBeats());
+        pad->setAttribute("voiceMode", static_cast<int>(slot.getVoiceMode()));
+        pad->setAttribute("filterType", static_cast<int>(slot.getFilterType()));
+        pad->setAttribute("filterCutoff", slot.getFilterCutoff());
+        pad->setAttribute("filterReso", slot.getFilterResonance());
     }
 
     // Global MIDI settings
@@ -797,6 +853,7 @@ void PluginProcessor::getStateInformation(juce::MemoryBlock& destData)
     xml->setAttribute("presetSwitchMode", static_cast<int>(presetSwitchMode_));
     xml->setAttribute("queueBars", queueBars_);
     xml->setAttribute("debugMidi", debugMsgs_ ? 1 : 0);
+    xml->setAttribute("encoderSpeed", encoderSpeed_);
 
     copyXmlToBinary(*xml, destData);
 }
@@ -850,6 +907,12 @@ void PluginProcessor::setStateInformation(const void* data, int sizeInBytes)
         ccMap.ccVolume  = pad->getIntAttribute("ccVolume",  7);
         ccMap.ccPan     = pad->getIntAttribute("ccPan",     10);
         ccMap.ccStretch = pad->getIntAttribute("ccStretch", 11);
+        ccMap.ccFilter  = pad->getIntAttribute("ccFilter", 74);
+        slot.setClockBeats(pad->getIntAttribute("clockBeats", 4));
+        slot.setVoiceMode(static_cast<VoiceMode>(pad->getIntAttribute("voiceMode", 0)));
+        slot.setFilterType(static_cast<FilterType>(pad->getIntAttribute("filterType", 0)));
+        slot.setFilterCutoff((float)pad->getDoubleAttribute("filterCutoff", 20000.0));
+        slot.setFilterResonance((float)pad->getDoubleAttribute("filterReso", 0.0));
     }
 
     // Global MIDI settings
@@ -879,6 +942,7 @@ void PluginProcessor::setStateInformation(const void* data, int sizeInBytes)
     presetSwitchMode_ = static_cast<PerfMode>(xml->getIntAttribute("presetSwitchMode", 0));
     queueBars_ = juce::jlimit(1, 4, xml->getIntAttribute("queueBars", 1));
     debugMsgs_ = xml->getIntAttribute("debugMidi", 0) != 0;
+    encoderSpeed_ = (float)xml->getDoubleAttribute("encoderSpeed", 1.0);
 }
 
 juce::AudioProcessorEditor* PluginProcessor::createEditor()

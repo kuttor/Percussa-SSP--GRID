@@ -8,7 +8,7 @@ namespace grid {
 static constexpr int kDisplayWidth  = 1600;
 static constexpr int kDisplayHeight = 480;
 static constexpr int kNumPads       = 8;
-static constexpr int kNumPages      = 7;
+static constexpr int kNumPages      = 8;
 static constexpr int kEncodersPerPage = 4;
 
 // -- I/O Channel Indices --
@@ -33,7 +33,8 @@ enum {
     I_REC_GATE,
     I_REC_L,
     I_REC_R,
-    I_MAX  // = 23 (+ 2 outputs = 25 total, under JUCE's 32-channel limit)
+    I_FILTER_CV,
+    I_MAX  // = 24 (SSP max: 24 inputs, 24 outputs)
 };
 
 // Helper: get channel for pad index 0-7
@@ -65,7 +66,8 @@ inline const char* inputBusName(int i) {
         "P8 Trig", "P8 Pitch",
         "Clock",
         "Reset", "Start CV", "End CV",
-        "Rec Gate", "Rec L", "Rec R"
+        "Rec Gate", "Rec L", "Rec R",
+        "Filter CV"
     };
     return (i >= 0 && i < I_MAX) ? n[i] : "?";
 }
@@ -79,10 +81,16 @@ inline const char* outputBusName(int i) {
 static constexpr float kTrigThreshold = 0.2f;
 
 // -- Pages --
-enum Page { PAGE_OVERVIEW = 0, PAGE_SAMPLE, PAGE_PLAY, PAGE_PITCH, PAGE_FADE, PAGE_MIDI, PAGE_OPTIONS };
+enum Page { PAGE_OVERVIEW = 0, PAGE_SAMPLE, PAGE_PLAY, PAGE_PITCH, PAGE_FADE, PAGE_FILTER, PAGE_MIDI, PAGE_OPTIONS };
 
 // -- Per-pad modes --
-enum class PadMode { OneShot = 0, Loop, ClockedLoop, ClockedBar };
+enum class PadMode { OneShot = 0, Loop, ClockedLoop, ClockedOneShot };
+
+// -- Voice modes (per-pad retrigger behavior) --
+enum class VoiceMode { Mono = 0, Gate, Legato, Poly };
+
+// -- Filter types (TPT SVF) --
+enum class FilterType { Off = 0, LPF, HPF, BPF, Notch, Formant, MS20 };
 
 // -- Choke groups --
 enum class ChokeGroup { None = 0, A, B, C, D, E, F, G, H };
@@ -97,8 +105,9 @@ struct PadCCMap {
     int ccVolume  = 7;
     int ccPan     = 10;
     int ccStretch = 11;
+    int ccFilter  = 74;
 
-    static constexpr int kNumCCs = 5;
+    static constexpr int kNumCCs = 6;
 
     int& byIndex(int i) {
         switch (i) {
@@ -106,7 +115,8 @@ struct PadCCMap {
             case 1: return ccEnd;
             case 2: return ccVolume;
             case 3: return ccPan;
-            default: return ccStretch;
+            case 4: return ccStretch;
+            default: return ccFilter;
         }
     }
     int byIndex(int i) const {
@@ -115,11 +125,12 @@ struct PadCCMap {
             case 1: return ccEnd;
             case 2: return ccVolume;
             case 3: return ccPan;
-            default: return ccStretch;
+            case 4: return ccStretch;
+            default: return ccFilter;
         }
     }
     static const char* ccName(int i) {
-        static const char* names[] = { "CC Start", "CC End", "CC Volume", "CC Pan", "CC Stretch" };
+        static const char* names[] = { "CC Start", "CC End", "CC Volume", "CC Pan", "CC Stretch", "CC Filter" };
         return (i >= 0 && i < kNumCCs) ? names[i] : "?";
     }
 };
@@ -180,6 +191,11 @@ struct KitPadSlot {
     int   choke     = 0;        // ChokeGroup
     bool  reversed  = false;
     int   midiCh    = 0;
+    int   clockBeats = 4;
+    int   voiceMode  = 0;      // VoiceMode enum (reserved)
+    int   filterType = 0;      // FilterType enum
+    float filterCutoff = 20000.0f;
+    float filterReso = 0.0f;
 };
 
 struct KitData {
@@ -204,6 +220,11 @@ struct KitData {
             pad->setAttribute("choke", pads[i].choke);
             pad->setAttribute("reversed", pads[i].reversed ? 1 : 0);
             pad->setAttribute("midiCh", pads[i].midiCh);
+            pad->setAttribute("clockBeats", pads[i].clockBeats);
+            pad->setAttribute("voiceMode", pads[i].voiceMode);
+            pad->setAttribute("filterType", pads[i].filterType);
+            pad->setAttribute("filterCutoff", pads[i].filterCutoff);
+            pad->setAttribute("filterReso", pads[i].filterReso);
         }
         return xml->writeTo(file);
     }
@@ -228,6 +249,11 @@ struct KitData {
             k.pads[i].choke     = pad->getIntAttribute("choke", 0);
             k.pads[i].reversed  = pad->getIntAttribute("reversed", 0) != 0;
             k.pads[i].midiCh    = pad->getIntAttribute("midiCh", 0);
+            k.pads[i].clockBeats = pad->getIntAttribute("clockBeats", 4);
+            k.pads[i].voiceMode  = pad->getIntAttribute("voiceMode", 0);
+            k.pads[i].filterType = pad->getIntAttribute("filterType", 0);
+            k.pads[i].filterCutoff = (float)pad->getDoubleAttribute("filterCutoff", 20000.0);
+            k.pads[i].filterReso = (float)pad->getDoubleAttribute("filterReso", 0.0);
         }
         return k;
     }

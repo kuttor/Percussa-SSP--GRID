@@ -70,16 +70,18 @@ void PluginProcessor::processBlock(juce::AudioBuffer<float>& buffer,
 
         if (triggered) {
             // Sample-and-hold: grab Start/End CV at trigger instant
+            // SSP CV range: -5V to +5V maps to -1.0 to +1.0
+            // Map to 0.0–1.0: -5V = start, 0V = midpoint, +5V = end
             auto& slot = engine_.getSlot(pad);
             if (hasStartCV) {
                 float sv = buffer.getSample(I_START_CV, triggerOffset);
                 if (std::isfinite(sv))
-                    slot.setStartPos(juce::jlimit(0.0f, 1.0f, sv));
+                    slot.setStartPos(juce::jlimit(0.0f, 1.0f, (sv + 1.0f) * 0.5f));
             }
             if (hasEndCV) {
                 float ev = buffer.getSample(I_END_CV, triggerOffset);
                 if (std::isfinite(ev))
-                    slot.setEndPos(juce::jlimit(0.0f, 1.0f, ev));
+                    slot.setEndPos(juce::jlimit(0.0f, 1.0f, (ev + 1.0f) * 0.5f));
             }
             engine_.triggerWithChokeAndOffset(pad, triggerOffset);
         }
@@ -588,6 +590,7 @@ KitData PluginProcessor::captureCurrentState() const
         p.filterType = static_cast<int>(slot.getFilterType());
         p.filterCutoff = slot.getFilterCutoff();
         p.filterReso = slot.getFilterResonance();
+        p.lofiMode = static_cast<int>(slot.getLofiMode());
     }
     return kit;
 }
@@ -627,6 +630,7 @@ void PluginProcessor::applyKitData(const KitData& kit)
         slot.setFilterType(static_cast<FilterType>(p.filterType));
         slot.setFilterCutoff(p.filterCutoff);
         slot.setFilterResonance(p.filterReso);
+        slot.setLofiMode(static_cast<LofiMode>(p.lofiMode));
         engine_.setMuted(i, false);
     }
     showTicker("Kit: " + kit.name);
@@ -637,8 +641,46 @@ void PluginProcessor::saveCurrentAsKit(const juce::String& name)
     auto kit = captureCurrentState();
     kit.name = name;
     currentKitName_ = name;
-    auto file = getKitsDir().getChildFile(name + ".kit");
-    kit.saveToFile(file);
+
+    auto kitFile = getKitsDir().getChildFile(name + ".kit");
+    auto wavFile = getKitsDir().getChildFile(name + ".kit.wav");
+
+    // Build companion WAV: concatenate all pad samples as stereo 32-bit float
+    int totalSamples = 0;
+    for (int i = 0; i < kNumPads; ++i) {
+        auto& slot = engine_.getSlot(i);
+        int ns = slot.getNumSamples();
+        kit.pads[i].bundleOffset = (ns > 0) ? totalSamples : -1;
+        kit.pads[i].bundleLength = ns;
+        kit.pads[i].bundleChannels = slot.getNumChannels();
+        totalSamples += ns;
+    }
+
+    if (totalSamples > 0) {
+        juce::AudioBuffer<float> bundle(2, totalSamples);
+        bundle.clear();
+        for (int i = 0; i < kNumPads; ++i) {
+            auto& slot = engine_.getSlot(i);
+            int ns = slot.getNumSamples();
+            if (ns == 0) continue;
+            int off = kit.pads[i].bundleOffset;
+            auto& buf = slot.getBuffer();
+            bundle.copyFrom(0, off, buf, 0, 0, ns);
+            bundle.copyFrom(1, off, buf, std::min(1, buf.getNumChannels() - 1), 0, ns);
+        }
+
+        // Write companion WAV
+        wavFile.deleteFile();
+        if (auto stream = wavFile.createOutputStream()) {
+            juce::WavAudioFormat wav;
+            if (auto* writer = wav.createWriterFor(stream.release(), 48000.0, 2, 32, {}, 0)) {
+                writer->writeFromAudioSampleBuffer(bundle, 0, totalSamples);
+                delete writer;
+            }
+        }
+    }
+
+    kit.saveToFile(kitFile);
     showTicker("Saved: " + name);
 }
 
@@ -646,7 +688,77 @@ void PluginProcessor::loadKit(const juce::File& kitFile)
 {
     auto kit = KitData::loadFromFile(kitFile);
     if (kit.name.isEmpty()) kit.name = kitFile.getFileNameWithoutExtension();
-    applyKitData(kit);
+
+    // Check for companion .kit.wav bundle
+    auto wavFile = juce::File(kitFile.getFullPathName() + ".wav");
+    juce::AudioBuffer<float> bundleBuffer;
+    bool hasBundle = false;
+
+    if (wavFile.existsAsFile()) {
+        juce::AudioFormatManager fmt;
+        fmt.registerBasicFormats();
+        if (auto* reader = fmt.createReaderFor(wavFile)) {
+            int ns = (int)reader->lengthInSamples;
+            bundleBuffer.setSize((int)reader->numChannels, ns);
+            reader->read(&bundleBuffer, 0, ns, 0, true, true);
+            delete reader;
+            hasBundle = true;
+        }
+    }
+
+    // Apply kit data — use bundle if available, else fall back to file paths
+    currentKitName_ = kit.name;
+    for (int i = 0; i < kNumPads; ++i) {
+        auto& slot = engine_.getSlot(i);
+        auto& p = kit.pads[i];
+
+        // Load sample: prefer bundle, fall back to file path
+        bool loaded = false;
+        if (hasBundle && p.bundleOffset >= 0 && p.bundleLength > 0
+            && p.bundleOffset + p.bundleLength <= bundleBuffer.getNumSamples()) {
+            // Slice from companion WAV
+            int nch = std::min(p.bundleChannels, bundleBuffer.getNumChannels());
+            juce::AudioBuffer<float> slice(nch, p.bundleLength);
+            for (int ch = 0; ch < nch; ++ch)
+                slice.copyFrom(ch, 0, bundleBuffer, ch, p.bundleOffset, p.bundleLength);
+            juce::String padName = p.filePath.isNotEmpty()
+                ? juce::File(p.filePath).getFileNameWithoutExtension()
+                : "Pad " + juce::String(i + 1);
+            loaded = slot.loadFromBuffer(slice, p.bundleLength, 48000.0, padName, p.filePath);
+        }
+        if (!loaded) {
+            if (p.filePath.isNotEmpty()) {
+                juce::File file(p.filePath);
+                if (!file.existsAsFile())
+                    file = juce::File(sampleRootPath_ + "/" + p.filePath);
+                if (file.existsAsFile())
+                    slot.loadFile(file);
+                else
+                    slot.clear();
+            } else {
+                slot.clear();
+            }
+        }
+
+        slot.setMode(static_cast<PadMode>(p.mode));
+        slot.setVolume(p.volume);
+        slot.setPan(p.pan);
+        slot.setStartPos(p.startPos);
+        slot.setEndPos(p.endPos);
+        slot.setPitchSemitones(p.pitch);
+        slot.setTimeStretch(p.stretch);
+        slot.setChokeGroup(static_cast<ChokeGroup>(p.choke));
+        if (p.reversed != slot.isReversed()) slot.setReversed(p.reversed);
+        slot.setMidiChannel(p.midiCh);
+        slot.setClockBeats(p.clockBeats);
+        slot.setVoiceMode(static_cast<VoiceMode>(p.voiceMode));
+        slot.setFilterType(static_cast<FilterType>(p.filterType));
+        slot.setFilterCutoff(p.filterCutoff);
+        slot.setFilterResonance(p.filterReso);
+        slot.setLofiMode(static_cast<LofiMode>(p.lofiMode));
+        engine_.setMuted(i, false);
+    }
+    showTicker("Kit: " + kit.name + (hasBundle ? " [bundled]" : ""));
 }
 
 void PluginProcessor::createStackFile(const juce::String& name, const juce::StringArray& layerPaths)
@@ -841,6 +953,7 @@ void PluginProcessor::getStateInformation(juce::MemoryBlock& destData)
         pad->setAttribute("filterType", static_cast<int>(slot.getFilterType()));
         pad->setAttribute("filterCutoff", slot.getFilterCutoff());
         pad->setAttribute("filterReso", slot.getFilterResonance());
+        pad->setAttribute("lofiMode", static_cast<int>(slot.getLofiMode()));
     }
 
     // Global MIDI settings
@@ -913,6 +1026,7 @@ void PluginProcessor::setStateInformation(const void* data, int sizeInBytes)
         slot.setFilterType(static_cast<FilterType>(pad->getIntAttribute("filterType", 0)));
         slot.setFilterCutoff((float)pad->getDoubleAttribute("filterCutoff", 20000.0));
         slot.setFilterResonance((float)pad->getDoubleAttribute("filterReso", 0.0));
+        slot.setLofiMode(static_cast<LofiMode>(pad->getIntAttribute("lofiMode", 0)));
     }
 
     // Global MIDI settings

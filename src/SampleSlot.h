@@ -126,6 +126,10 @@ public:
     void setFilterResonance(float r)     { filterReso_ = juce::jlimit(0.0f, 1.0f, r); }
     float getFilterResonance() const     { return filterReso_; }
 
+    // Lo-fi sampler emulation
+    void setLofiMode(LofiMode m)         { lofiMode_ = m; }
+    LofiMode getLofiMode() const         { return lofiMode_; }
+
     PadMode getMode() const     { return mode_; }
     float getVolume() const     { return volume_; }
     float getPan() const        { return pan_; }
@@ -202,6 +206,30 @@ private:
     // Formant state: 3 parallel BPF bands × stereo
     float fmtIc1L_[3] = {}, fmtIc2L_[3] = {};
     float fmtIc1R_[3] = {}, fmtIc2R_[3] = {};
+
+    // Lo-fi sampler emulation
+    LofiMode lofiMode_ = LofiMode::Off;
+    float lofiPhaseL_ = 0.0f, lofiPhaseR_ = 0.0f;
+    float lofiHeldL_ = 0.0f, lofiHeldR_ = 0.0f;
+
+    // Bit crush: quantize to N bits, no dither (authentic vintage)
+    static inline float bitCrush(float x, float levels, float invLevels) {
+        return invLevels * (float)((int)(x * levels));
+    }
+    // µ-law compress (for MPC-60 companding)
+    static inline float muCompress(float x) {
+        constexpr float mu = 255.0f;
+        constexpr float invLog = 1.0f / 5.5452f;  // 1/ln(256)
+        float s = (x >= 0.0f) ? 1.0f : -1.0f;
+        return s * std::log(1.0f + mu * std::abs(x)) * invLog;
+    }
+    // µ-law expand
+    static inline float muExpand(float x) {
+        constexpr float mu = 255.0f;
+        constexpr float logMu1 = 5.5452f;  // ln(256)
+        float s = (x >= 0.0f) ? 1.0f : -1.0f;
+        return s * (std::exp(std::abs(x) * logMu1) - 1.0f) / mu;
+    }
 
     // Fast tanh approximation (for MS20 feedback saturation)
     static inline float fastTanh(float x) {

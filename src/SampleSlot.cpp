@@ -168,6 +168,7 @@ void SampleSlot::triggerWithVelocity(float vel)
     for (int b = 0; b < 3; ++b) {
         fmtIc1L_[b] = fmtIc2L_[b] = fmtIc1R_[b] = fmtIc2R_[b] = 0.0f;
     }
+    lofiPhaseL_ = lofiPhaseR_ = lofiHeldL_ = lofiHeldR_ = 0.0f;
 }
 
 void SampleSlot::stop()
@@ -289,6 +290,23 @@ void SampleSlot::processVoice(Voice& v, float* outL, float* outR, int numSamples
     // Determine the fade-out length for this voice
     // Tail voices get a longer fade, normal voices get kFadeSamples
     const int voiceFadeSamples = (v.fadeOut > kFadeSamples) ? v.fadeOut : kFadeSamples;
+
+    // ── Lo-fi pre-computation (once per block) ─────────────────────────
+    const bool lofiActive = (lofiMode_ != LofiMode::Off);
+    float lofiBits = 0.0f, lofiLevels = 0.0f, lofiInvLevels = 0.0f;
+    float lofiRateRatio = 1.0f;
+    bool lofiCompand = false;
+    if (lofiActive) {
+        switch (lofiMode_) {
+            case LofiMode::Bit8:  lofiBits = 8.0f;  lofiRateRatio = 1.0f; break;
+            case LofiMode::Bit12: lofiBits = 12.0f; lofiRateRatio = 1.0f; break;
+            case LofiMode::SP1200: lofiBits = 12.0f; lofiRateRatio = 26040.0f / (float)outputSampleRate_; break;
+            case LofiMode::MPC60: lofiBits = 12.0f; lofiRateRatio = 40000.0f / (float)outputSampleRate_; lofiCompand = true; break;
+            default: break;
+        }
+        lofiLevels = std::pow(2.0f, lofiBits - 1.0f);
+        lofiInvLevels = 1.0f / lofiLevels;
+    }
 
     // ── Filter coefficients (computed once per block) ───────────────────
     const bool filterActive = (filterType_ != FilterType::Off);
@@ -439,6 +457,29 @@ void SampleSlot::processVoice(Voice& v, float* outL, float* outR, int numSamples
         if (fadeOutSamples > 0 && distFromEnd < fadeOutSamples) {
             float t = (float)distFromEnd * invFadeOut;
             fadeEnv *= (fadeOutCurve_ == 0) ? t : t * t;
+        }
+
+        // ── Lo-fi sampler emulation ──────────────────────────────────────
+        if (lofiActive) {
+            // Sample rate reduction via ZOH (zero-order hold)
+            if (lofiRateRatio < 0.999f) {
+                lofiPhaseL_ += lofiRateRatio;
+                if (lofiPhaseL_ >= 1.0f) {
+                    lofiPhaseL_ -= 1.0f;
+                    lofiHeldL_ = sL;
+                    lofiHeldR_ = sR;
+                }
+                sL = lofiHeldL_;
+                sR = lofiHeldR_;
+            }
+            // Bit crush (with optional µ-law companding for MPC-60)
+            if (lofiCompand) {
+                sL = muExpand(bitCrush(muCompress(sL), lofiLevels, lofiInvLevels));
+                sR = muExpand(bitCrush(muCompress(sR), lofiLevels, lofiInvLevels));
+            } else {
+                sL = bitCrush(sL, lofiLevels, lofiInvLevels);
+                sR = bitCrush(sR, lofiLevels, lofiInvLevels);
+            }
         }
 
         // ── Filter ─────────────────────────────────────────────────────────

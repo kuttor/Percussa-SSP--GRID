@@ -1417,7 +1417,7 @@ juce::String PluginEditor::getEncoderLabel(int page, int enc) const
             return l[enc];
         }
         case PAGE_SAMPLE: {
-            const char* l[] = { "", "START", "END", "---" };
+            const char* l[] = { "", "START", "END", "PITCH" };
             return l[enc];
         }
         case PAGE_PLAY: {
@@ -1425,7 +1425,7 @@ juce::String PluginEditor::getEncoderLabel(int page, int enc) const
             return l[enc];
         }
         case PAGE_PITCH: {
-            const char* l[] = { "", "PITCH", "TIME", "CLK M/D" };
+            const char* l[] = { "", "TIME", "CLK M/D", "---" };
             return l[enc];
         }
         case PAGE_FADE: {
@@ -1483,6 +1483,10 @@ juce::String PluginEditor::getEncoderValue(int page, int enc) const
         case PAGE_SAMPLE: {
             if (enc == 1) return juce::String(slot.getStartPos() * 100.0f, 1) + "%";
             if (enc == 2) return juce::String(slot.getEndPos() * 100.0f, 1) + "%";
+            if (enc == 3) {
+                float st = slot.getPitchSemitones();
+                return (st >= 0 ? "+" : "") + juce::String(st, 1) + "st";
+            }
             return "---";
         }
         case PAGE_PLAY: {
@@ -1497,20 +1501,18 @@ juce::String PluginEditor::getEncoderValue(int page, int enc) const
             return "---";
         }
         case PAGE_PITCH: {
-            float st = slot.getPitchSemitones();
-            if (enc == 1) return (st >= 0 ? "+" : "") + juce::String(st, 1) + "st";
-            if (enc == 2) {
+            if (enc == 1) {
                 bool clocked = (slot.getMode() == PadMode::ClockedLoop || slot.getMode() == PadMode::ClockedOneShot);
                 if (clocked && (processor_.hasClockInput() || processor_.isMidiClockEnabled())) {
                     return juce::String(slot.getTimeStretch(), 2) + "x CLK";
                 }
                 return juce::String(slot.getTimeStretch(), 2) + "x";
             }
-            if (enc == 3) {
+            if (enc == 2) {
                 int d = processor_.getClockDiv();
-                if (d < 0) return "*" + juce::String(1 << (-d));  // *2, *4, *8
+                if (d < 0) return "*" + juce::String(1 << (-d));
                 if (d == 0) return "/1";
-                return "/" + juce::String(1 << d);  // /2, /4, /8
+                return "/" + juce::String(1 << d);
             }
             return "---";
         }
@@ -2060,22 +2062,22 @@ void PluginEditor::onEncoder(int n, float delta)
         case PAGE_SAMPLE:
             if (n == 1) slot.setStartPos(slot.getStartPos() + delta * 0.015f);
             if (n == 2) slot.setEndPos(slot.getEndPos() + delta * 0.015f);
+            if (n == 3) slot.setPitchSemitones(slot.getPitchSemitones() + delta * 1.0f);
             break;
 
         case PAGE_PLAY:
             if (n == 1) {
                 int m = static_cast<int>(slot.getMode()) + (delta > 0 ? 1 : -1);
                 slot.setMode(static_cast<PadMode>(juce::jlimit(0, 3, m)));
-                slot.setTimeStretch(1.0f);  // reset stretch on mode change
+                slot.setTimeStretch(1.0f);
             }
             if (n == 2) slot.setVolume(juce::jlimit(0.0f, 1.0f, slot.getVolume() + delta * 0.02f));
             if (n == 3) slot.setPan(juce::jlimit(-1.0f, 1.0f, slot.getPan() + delta * 0.05f));
             break;
 
         case PAGE_PITCH:
-            if (n == 1) slot.setPitchSemitones(slot.getPitchSemitones() + delta * 1.0f);
-            if (n == 2) slot.setTimeStretch(slot.getTimeStretch() + delta * 0.01f);
-            if (n == 3) {
+            if (n == 1) slot.setTimeStretch(slot.getTimeStretch() + delta * 0.01f);
+            if (n == 2) {
                 int cur = processor_.getClockDiv();
                 processor_.setClockDiv(cur + (delta > 0 ? 1 : -1));
             }
@@ -2320,6 +2322,7 @@ void PluginEditor::onEncoderSwitch(int n, bool val)
         case PAGE_SAMPLE:
             if (n == 1) slot.setStartPos(0.0f);
             if (n == 2) slot.setEndPos(1.0f);
+            if (n == 3) slot.setPitchSemitones(0.0f);
             break;
         case PAGE_PLAY:
             if (n == 1) { slot.setMode(PadMode::OneShot); slot.setTimeStretch(1.0f); }
@@ -2327,9 +2330,8 @@ void PluginEditor::onEncoderSwitch(int n, bool val)
             if (n == 3) slot.setPan(0.0f);
             break;
         case PAGE_PITCH:
-            if (n == 1) slot.setPitchSemitones(0.0f);
-            if (n == 2) slot.setTimeStretch(1.0f);
-            if (n == 3) processor_.setClockDiv(0);
+            if (n == 1) slot.setTimeStretch(1.0f);
+            if (n == 2) processor_.setClockDiv(0);
             break;
         case PAGE_FADE:
             if (n == 1) slot.setFadeInCurve(slot.getFadeInCurve() == 0 ? 1 : 0);
@@ -2429,6 +2431,10 @@ void PluginEditor::buildConfigRows()
           r.padIndex = selectedPad_; r.paramIndex = 5; configRows_.add(r); }
     }
 
+    // Lo-Fi mode (paramIndex 8)
+    { ConfigRow r; r.type = ConfigRowType::Enum; r.label = "Lo-Fi";
+      r.padIndex = selectedPad_; r.paramIndex = 8; configRows_.add(r); }
+
     // Spacer before CC section
     { ConfigRow s; s.type = ConfigRowType::Spacer; s.padIndex = -1; s.paramIndex = -1;
       configRows_.add(s); }
@@ -2523,12 +2529,16 @@ juce::String configGetValueText(const PluginProcessor& proc, const ConfigRow& ro
         int cc = proc.getPadCCMap(row.padIndex).byIndex(row.paramIndex);
         return "CC " + juce::String(cc);
     }
-    // Per-pad enum (CLK Beats)
+    // Per-pad enum (CLK Beats, Lo-Fi)
     if (row.type == ConfigRowType::Enum && row.padIndex >= 0) {
         if (row.paramIndex == 5) {
             int beats = proc.getEngine().getSlot(row.padIndex).getClockBeats();
             if (beats < 4) return juce::String(beats) + (beats == 1 ? " Beat" : " Beats");
             return juce::String(beats / 4) + (beats == 4 ? " Bar" : " Bars") + " (" + juce::String(beats) + ")";
+        }
+        if (row.paramIndex == 8) {
+            const char* names[] = { "OFF", "8-Bit", "12-Bit", "SP-1200", "MPC-60" };
+            return names[static_cast<int>(proc.getEngine().getSlot(row.padIndex).getLofiMode())];
         }
     }
     if (row.type == ConfigRowType::Enum && row.padIndex < 0) {
@@ -2695,6 +2705,14 @@ void PluginEditor::configAdjustValue(int selIdx, int delta)
         for (int s = 0; s < 5; ++s) if (steps[s] == cur) { idx = s; break; }
         idx = juce::jlimit(0, 4, idx + delta);
         slot.setClockBeats(steps[idx]);
+        return;
+    }
+
+    // Per-pad Lo-Fi mode (paramIndex 8)
+    if (row.type == ConfigRowType::Enum && row.padIndex >= 0 && row.paramIndex == 8) {
+        auto& slot = processor_.getEngine().getSlot(row.padIndex);
+        int v = static_cast<int>(slot.getLofiMode()) + delta;
+        slot.setLofiMode(static_cast<LofiMode>(juce::jlimit(0, 4, v)));
         return;
     }
 

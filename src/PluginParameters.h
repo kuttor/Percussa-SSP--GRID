@@ -92,6 +92,9 @@ enum class VoiceMode { Mono = 0, Gate, Legato, Poly };
 // -- Filter types (TPT SVF) --
 enum class FilterType { Off = 0, LPF, HPF, BPF, Notch, Formant, MS20 };
 
+// -- Lo-fi sampler emulation modes --
+enum class LofiMode { Off = 0, Bit8, Bit12, SP1200, MPC60 };
+
 // -- Choke groups --
 enum class ChokeGroup { None = 0, A, B, C, D, E, F, G, H };
 
@@ -196,6 +199,11 @@ struct KitPadSlot {
     int   filterType = 0;      // FilterType enum
     float filterCutoff = 20000.0f;
     float filterReso = 0.0f;
+    int   lofiMode = 0;         // LofiMode enum
+    // Bundle (companion .kit.wav): -1 = not bundled, use filePath
+    int   bundleOffset   = -1;
+    int   bundleLength   = 0;
+    int   bundleChannels = 1;
 };
 
 struct KitData {
@@ -225,6 +233,12 @@ struct KitData {
             pad->setAttribute("filterType", pads[i].filterType);
             pad->setAttribute("filterCutoff", pads[i].filterCutoff);
             pad->setAttribute("filterReso", pads[i].filterReso);
+            pad->setAttribute("lofiMode", pads[i].lofiMode);
+            if (pads[i].bundleOffset >= 0) {
+                pad->setAttribute("bundleOffset", pads[i].bundleOffset);
+                pad->setAttribute("bundleLength", pads[i].bundleLength);
+                pad->setAttribute("bundleChannels", pads[i].bundleChannels);
+            }
         }
         return xml->writeTo(file);
     }
@@ -254,6 +268,10 @@ struct KitData {
             k.pads[i].filterType = pad->getIntAttribute("filterType", 0);
             k.pads[i].filterCutoff = (float)pad->getDoubleAttribute("filterCutoff", 20000.0);
             k.pads[i].filterReso = (float)pad->getDoubleAttribute("filterReso", 0.0);
+            k.pads[i].lofiMode = pad->getIntAttribute("lofiMode", 0);
+            k.pads[i].bundleOffset = pad->getIntAttribute("bundleOffset", -1);
+            k.pads[i].bundleLength = pad->getIntAttribute("bundleLength", 0);
+            k.pads[i].bundleChannels = pad->getIntAttribute("bundleChannels", 1);
         }
         return k;
     }

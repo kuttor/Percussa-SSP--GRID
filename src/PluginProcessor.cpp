@@ -21,6 +21,7 @@ void PluginProcessor::prepareToPlay(double sampleRate, int samplesPerBlock)
 {
     sampleRate_ = sampleRate;
     engine_.prepare(sampleRate, samplesPerBlock);
+    midiCollector_.reset(sampleRate);
     refreshMidiDevices();
 
     // Reopen MIDI device if name is set but device was killed
@@ -43,9 +44,9 @@ void PluginProcessor::processBlock(juce::AudioBuffer<float>& buffer,
     const int numSamples = buffer.getNumSamples();
     const int numChannels = buffer.getNumChannels();
 
-    // ── Read gate CVs + sample-and-hold Start/End CV on trigger ────────
-    bool hasStartCV = (I_START_CV < numChannels && isInputEnabled(I_START_CV));
-    bool hasEndCV   = (I_END_CV < numChannels && isInputEnabled(I_END_CV));
+    // ── Read gate CVs + Slice CV selection on trigger ─────────────────
+    bool hasSliceCV1 = (I_SLICE_CV1 < numChannels && isInputEnabled(I_SLICE_CV1));
+    bool hasSliceCV2 = (I_SLICE_CV2 < numChannels && isInputEnabled(I_SLICE_CV2));
 
     for (int pad = 0; pad < kNumPads; ++pad)
     {
@@ -69,35 +70,128 @@ void PluginProcessor::processBlock(juce::AudioBuffer<float>& buffer,
         gateHigh_[pad] = (buffer.getSample(ch, numSamples - 1) > kTrigThreshold);
 
         if (triggered) {
-            // Sample-and-hold: grab Start/End CV at trigger instant
-            // SSP CV range: -5V to +5V maps to -1.0 to +1.0
-            // Map to 0.0–1.0: -5V = start, 0V = midpoint, +5V = end
             auto& slot = engine_.getSlot(pad);
-            if (hasStartCV) {
-                float sv = buffer.getSample(I_START_CV, triggerOffset);
-                if (std::isfinite(sv))
-                    slot.setStartPos(juce::jlimit(0.0f, 1.0f, (sv + 1.0f) * 0.5f));
-            }
-            if (hasEndCV) {
-                float ev = buffer.getSample(I_END_CV, triggerOffset);
-                if (std::isfinite(ev))
-                    slot.setEndPos(juce::jlimit(0.0f, 1.0f, (ev + 1.0f) * 0.5f));
+
+            // Check if this pad is assigned to a Slice CV input
+            if (slot.isSliceMode() && slot.getSliceCount() > 0) {
+                int numRegions = slot.getSliceCount() + 1;
+                int sliceIdx = slot.getSelectedSlice();
+
+                // Check both Slice CVs — use whichever is assigned to this pad
+                for (int cv = 0; cv < 2; ++cv) {
+                    if (sliceCVPad_[cv] != pad) continue;
+                    bool hasCV = (cv == 0) ? hasSliceCV1 : hasSliceCV2;
+                    int cvChan = (cv == 0) ? I_SLICE_CV1 : I_SLICE_CV2;
+                    if (hasCV) {
+                        float sv = buffer.getSample(cvChan, triggerOffset);
+                        if (std::isfinite(sv)) {
+                            float norm = juce::jlimit(0.0f, 1.0f, (sv + 1.0f) * 0.5f);
+                            sliceIdx = juce::jlimit(0, numRegions - 1, (int)(norm * (float)numRegions));
+                        }
+                    }
+                }
+
+                float slStart, slEnd;
+                slot.getSliceRegion(sliceIdx, slStart, slEnd);
+                slot.setStartPos(slStart);
+                slot.setEndPos(slEnd);
+                slot.setSelectedSlice(sliceIdx);
+                // Apply per-slice pitch offset (adds to base pad pitch)
+                slot.setSlicePitchOffset(slot.getSlicePitch(sliceIdx));
             }
             engine_.triggerWithChokeAndOffset(pad, triggerOffset);
         }
     }
 
-    // ── Process pending MIDI triggers ──────────────────────────────────
-    for (int pad = 0; pad < kNumPads; ++pad)
+    // ── Process MIDI from collector (sample-accurate, thread-safe) ─────
     {
-        if (midiTrigPending_[pad]) {
-            midiTrigPending_[pad] = false;
-            if (!engine_.isMuted(pad)) {
-                float vel = midiVelocity_[pad];
-                int note = midiNote_[pad];
-                float pitchSt = (float)(note - 60);
-                engine_.getSlot(pad).setPitchSemitones(pitchSt);
-                engine_.triggerWithChokeAndVelocity(pad, vel);
+        juce::MidiBuffer midiMessages;
+        midiCollector_.removeNextBlockOfMessages(midiMessages, numSamples);
+
+        for (const auto metadata : midiMessages) {
+            auto msg = metadata.getMessage();
+            int samplePos = metadata.samplePosition;
+
+            if (msg.isNoteOn()) {
+                int ch = msg.getChannel();
+                int note = msg.getNoteNumber();
+                for (int pad = 0; pad < kNumPads; ++pad) {
+                    int padCh = engine_.getSlot(pad).getMidiChannel();
+                    if (padCh == 0) continue;
+                    if (padCh == ch || padCh == 17) {
+                        if (!engine_.isMuted(pad)) {
+                            auto& slot = engine_.getSlot(pad);
+                            if (slot.isSliceMode() && slot.getSliceCount() > 0) {
+                                // Slice mode: note selects slice (C2=36 = slice 0)
+                                int sliceIdx = juce::jlimit(0, slot.getSliceCount(),
+                                                             note - 36);
+                                float slStart, slEnd;
+                                slot.getSliceRegion(sliceIdx, slStart, slEnd);
+                                slot.setStartPos(slStart);
+                                slot.setEndPos(slEnd);
+                                slot.setSelectedSlice(sliceIdx);
+                                slot.setSlicePitchOffset(slot.getSlicePitch(sliceIdx));
+                            } else {
+                                // Normal mode: note controls pitch
+                                float pitchSt = (float)(note - 60);
+                                slot.setPitchSemitones(pitchSt);
+                            }
+                            engine_.triggerWithChokeAndVelocityAndOffset(
+                                pad, msg.getFloatVelocity(), samplePos);
+                        }
+                        break;
+                    }
+                }
+            }
+            else if (msg.isController()) {
+                int ch = msg.getChannel();
+                int cc = msg.getControllerNumber();
+                float val = (float)msg.getControllerValue() / 127.0f;
+
+                if (debugMsgs_)
+                    showTicker("CC" + juce::String(cc) + " v" + juce::String(msg.getControllerValue()) + " ch" + juce::String(ch));
+
+                for (int pad = 0; pad < kNumPads; ++pad) {
+                    int padCh = engine_.getSlot(pad).getMidiChannel();
+                    if (padCh == 0) continue;
+                    if (padCh != ch && padCh != 17) continue;
+
+                    auto& slot = engine_.getSlot(pad);
+                    auto& ccMap = padCCMaps_[pad];
+                    float val100 = juce::jlimit(0.0f, 1.0f, (float)msg.getControllerValue() / 100.0f);
+                    if (cc == ccMap.ccStart) {
+                        if (slot.isSliceMode() && slot.getSliceCount() > 0) {
+                            // Slice mode: CC 0-100 selects slice
+                            int numRegions = slot.getSliceCount() + 1;
+                            int sliceIdx = juce::jlimit(0, numRegions - 1,
+                                                         (int)(val100 * numRegions));
+                            slot.setSelectedSlice(sliceIdx);
+                            slot.setSlicePitchOffset(slot.getSlicePitch(sliceIdx));
+                            float slStart, slEnd;
+                            slot.getSliceRegion(sliceIdx, slStart, slEnd);
+                            slot.setStartPos(slStart);
+                            slot.setEndPos(slEnd);
+                        } else {
+                            slot.setStartPos(val100);
+                        }
+                    }
+                    else if (cc == ccMap.ccEnd)     slot.setEndPos(val100);
+                    else if (cc == ccMap.ccVolume)  slot.setVolume(val);
+                    else if (cc == ccMap.ccPan) {
+                        float p = val * 2.0f - 1.0f;
+                        if (std::abs(p) < 0.02f) p = 0.0f;
+                        slot.setPan(p);
+                    }
+                    else if (cc == ccMap.ccStretch) {
+                        float s = 0.25f + val * 3.75f;
+                        if (std::abs(s - 1.0f) < 0.04f) s = 1.0f;
+                        slot.setTimeStretch(s);
+                    }
+                    else if (cc == ccMap.ccFilter) {
+                        float hz = 20.0f * std::pow(1000.0f, val);
+                        slot.setFilterCutoff(hz);
+                    }
+                }
             }
         }
     }
@@ -591,6 +685,10 @@ KitData PluginProcessor::captureCurrentState() const
         p.filterCutoff = slot.getFilterCutoff();
         p.filterReso = slot.getFilterResonance();
         p.lofiMode = static_cast<int>(slot.getLofiMode());
+        p.sliceMode = slot.isSliceMode();
+        p.sliceCount = slot.getSliceCount();
+        for (int s = 0; s < p.sliceCount; ++s)
+            p.slicePoints[s] = slot.getSlicePoint(s);
     }
     return kit;
 }
@@ -631,6 +729,9 @@ void PluginProcessor::applyKitData(const KitData& kit)
         slot.setFilterCutoff(p.filterCutoff);
         slot.setFilterResonance(p.filterReso);
         slot.setLofiMode(static_cast<LofiMode>(p.lofiMode));
+        slot.setSliceMode(p.sliceMode);
+        slot.clearSlices();
+        for (int s = 0; s < p.sliceCount; ++s) slot.insertSlicePoint(p.slicePoints[s]);
         engine_.setMuted(i, false);
     }
     showTicker("Kit: " + kit.name);
@@ -756,6 +857,9 @@ void PluginProcessor::loadKit(const juce::File& kitFile)
         slot.setFilterCutoff(p.filterCutoff);
         slot.setFilterResonance(p.filterReso);
         slot.setLofiMode(static_cast<LofiMode>(p.lofiMode));
+        slot.setSliceMode(p.sliceMode);
+        slot.clearSlices();
+        for (int s = 0; s < p.sliceCount; ++s) slot.insertSlicePoint(p.slicePoints[s]);
         engine_.setMuted(i, false);
     }
     showTicker("Kit: " + kit.name + (hasBundle ? " [bundled]" : ""));
@@ -791,7 +895,7 @@ void PluginProcessor::setMidiClockEnabled(bool b)
     }
 }
 
-void PluginProcessor::handleIncomingMidiMessage(juce::MidiInput*, const juce::MidiMessage& msg)
+void PluginProcessor::handleIncomingMidiMessage(juce::MidiInput* source, const juce::MidiMessage& msg)
 {
     // ── MIDI Transport ──────────────────────────────────────────────────
     if (msg.isMidiStart()) {
@@ -813,20 +917,18 @@ void PluginProcessor::handleIncomingMidiMessage(juce::MidiInput*, const juce::Mi
         return;
     }
 
-    // ── MIDI Clock: 24 PPQN ─────────────────────────────────────────────
+    // ── MIDI Clock: 24 PPQN — wall-clock BPM detection stays on MIDI thread ─
     if (midiClockEnabled_ && msg.isMidiClock()) {
         midiClockCount_++;
         if (midiClockCount_ >= 24) {
-            // 24 pulses = 1 beat. Measure real wall-clock time.
             double nowMs = juce::Time::getMillisecondCounterHiRes();
             if (midiClockLastBeatMs_ > 0.0) {
                 double intervalMs = nowMs - midiClockLastBeatMs_;
-                if (intervalMs > 10.0 && intervalMs < 3000.0) {  // sane range: 20-6000 BPM
+                if (intervalMs > 10.0 && intervalMs < 3000.0) {
                     float newBPM = (float)(60000.0 / intervalMs);
                     newBPM = juce::jlimit(20.0f, 300.0f, newBPM);
-                    // 50/50 smoothing — settles in ~3 beats (~1 second)
                     if (bpm_ < 1.0f)
-                        bpm_ = newBPM;  // first reading: snap
+                        bpm_ = newBPM;
                     else
                         bpm_ = bpm_ * 0.5f + newBPM * 0.5f;
                 }
@@ -835,7 +937,6 @@ void PluginProcessor::handleIncomingMidiMessage(juce::MidiInput*, const juce::Mi
             midiClockCount_ = 0;
             clockActive_ = true;
 
-            // Beat/bar tracking
             beatCount_++;
             if (beatCount_ >= 4) {
                 beatCount_ = 0;
@@ -849,62 +950,9 @@ void PluginProcessor::handleIncomingMidiMessage(juce::MidiInput*, const juce::Mi
         return;
     }
 
-    // ── Note On → trigger pad ───────────────────────────────────────────
-    if (msg.isNoteOn()) {
-        int ch = msg.getChannel();
-        int note = msg.getNoteNumber();
-        bool matched = false;
-        for (int pad = 0; pad < kNumPads; ++pad) {
-            int padCh = engine_.getSlot(pad).getMidiChannel();
-            if (padCh == 0) continue;
-            if (padCh == ch || padCh == 17) {
-                midiTrigPending_[pad] = true;
-                midiVelocity_[pad] = msg.getFloatVelocity();
-                midiNote_[pad] = note;
-                matched = true;
-                break;
-            }
-        }
-        if (!matched && debugMsgs_)
-            showTicker("MIDI note " + juce::String(note) + " ch" + juce::String(ch) + " - no pad matched");
-    }
-
-    // ── CC handling (per-pad CC maps from config browser) ─────────────
-    if (msg.isController()) {
-        int ch = msg.getChannel();
-        int cc = msg.getControllerNumber();
-        float val = (float)msg.getControllerValue() / 127.0f;
-
-        if (debugMsgs_)
-            showTicker("CC" + juce::String(cc) + " v" + juce::String(msg.getControllerValue()) + " ch" + juce::String(ch));
-
-        for (int pad = 0; pad < kNumPads; ++pad) {
-            int padCh = engine_.getSlot(pad).getMidiChannel();
-            if (padCh == 0) continue;
-            if (padCh != ch && padCh != 17) continue;
-
-            auto& slot = engine_.getSlot(pad);
-            auto& ccMap = padCCMaps_[pad];
-            if      (cc == ccMap.ccStart)   slot.setStartPos(val);
-            else if (cc == ccMap.ccEnd)     slot.setEndPos(val);
-            else if (cc == ccMap.ccVolume)  slot.setVolume(val);
-            else if (cc == ccMap.ccPan) {
-                float p = val * 2.0f - 1.0f;
-                if (std::abs(p) < 0.02f) p = 0.0f;  // snap to center
-                slot.setPan(p);
-            }
-            else if (cc == ccMap.ccStretch) {
-                float s = 0.25f + val * 3.75f;
-                if (std::abs(s - 1.0f) < 0.04f) s = 1.0f;  // snap to 1.0x
-                slot.setTimeStretch(s);
-            }
-            else if (cc == ccMap.ccFilter) {
-                // Exponential mapping: CC 0 = 20Hz, CC 127 = 20kHz
-                float hz = 20.0f * std::pow(1000.0f, val);
-                slot.setFilterCutoff(hz);
-            }
-        }
-    }
+    // ── Everything else (Note On/Off, CC) → collector for sample-accurate
+    //    processing in processBlock. Thread-safe, timestamped. ────────────
+    midiCollector_.handleIncomingMidiMessage(source, msg);
 }
 
 void PluginProcessor::getStateInformation(juce::MemoryBlock& destData)
@@ -954,6 +1002,21 @@ void PluginProcessor::getStateInformation(juce::MemoryBlock& destData)
         pad->setAttribute("filterCutoff", slot.getFilterCutoff());
         pad->setAttribute("filterReso", slot.getFilterResonance());
         pad->setAttribute("lofiMode", static_cast<int>(slot.getLofiMode()));
+        pad->setAttribute("sliceMode", slot.isSliceMode() ? 1 : 0);
+        if (slot.getSliceCount() > 0) {
+            juce::String pts, pitches;
+            for (int s = 0; s < slot.getSliceCount(); ++s) {
+                if (s > 0) { pts += ","; pitches += ","; }
+                pts += juce::String(slot.getSlicePoint(s), 6);
+            }
+            pad->setAttribute("slicePoints", pts);
+            // Per-region pitch: sliceCount+1 regions
+            for (int s = 0; s <= slot.getSliceCount(); ++s) {
+                if (s > 0) pitches += ",";
+                pitches += juce::String(slot.getSlicePitch(s), 2);
+            }
+            pad->setAttribute("slicePitches", pitches);
+        }
     }
 
     // Global MIDI settings
@@ -967,6 +1030,9 @@ void PluginProcessor::getStateInformation(juce::MemoryBlock& destData)
     xml->setAttribute("queueBars", queueBars_);
     xml->setAttribute("debugMidi", debugMsgs_ ? 1 : 0);
     xml->setAttribute("encoderSpeed", encoderSpeed_);
+    xml->setAttribute("muteFadeMs", muteFadeMs_);
+    xml->setAttribute("sliceCVPad1", sliceCVPad_[0]);
+    xml->setAttribute("sliceCVPad2", sliceCVPad_[1]);
 
     copyXmlToBinary(*xml, destData);
 }
@@ -1027,6 +1093,23 @@ void PluginProcessor::setStateInformation(const void* data, int sizeInBytes)
         slot.setFilterCutoff((float)pad->getDoubleAttribute("filterCutoff", 20000.0));
         slot.setFilterResonance((float)pad->getDoubleAttribute("filterReso", 0.0));
         slot.setLofiMode(static_cast<LofiMode>(pad->getIntAttribute("lofiMode", 0)));
+        slot.setSliceMode(pad->getIntAttribute("sliceMode", 0) != 0);
+        slot.clearSlices();
+        auto ptsStr = pad->getStringAttribute("slicePoints", "");
+        if (ptsStr.isNotEmpty()) {
+            juce::StringArray tokens;
+            tokens.addTokens(ptsStr, ",", "");
+            for (int s = 0; s < tokens.size() && s < 64; ++s)
+                slot.insertSlicePoint(tokens[s].getFloatValue());
+        }
+        // Load per-region pitch offsets
+        auto pitchStr = pad->getStringAttribute("slicePitches", "");
+        if (pitchStr.isNotEmpty()) {
+            juce::StringArray ptokens;
+            ptokens.addTokens(pitchStr, ",", "");
+            for (int s = 0; s < ptokens.size() && s < 64; ++s)
+                slot.setSlicePitch(s, ptokens[s].getFloatValue());
+        }
     }
 
     // Global MIDI settings
@@ -1057,6 +1140,9 @@ void PluginProcessor::setStateInformation(const void* data, int sizeInBytes)
     queueBars_ = juce::jlimit(1, 4, xml->getIntAttribute("queueBars", 1));
     debugMsgs_ = xml->getIntAttribute("debugMidi", 0) != 0;
     encoderSpeed_ = (float)xml->getDoubleAttribute("encoderSpeed", 1.0);
+    setMuteFadeMs((float)xml->getDoubleAttribute("muteFadeMs", 0.0));
+    sliceCVPad_[0] = juce::jlimit(-1, 7, xml->getIntAttribute("sliceCVPad1", 0));
+    sliceCVPad_[1] = juce::jlimit(-1, 7, xml->getIntAttribute("sliceCVPad2", 1));
 }
 
 juce::AudioProcessorEditor* PluginProcessor::createEditor()

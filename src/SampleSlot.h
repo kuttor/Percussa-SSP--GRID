@@ -44,7 +44,8 @@ public:
     // Trigger / Stop
     void trigger();
     void triggerWithVelocity(float vel);
-    void triggerWithOffset(int sampleOffset);  // sample-accurate CV trigger
+    void triggerWithOffset(int sampleOffset);
+    void triggerWithVelocityAndOffset(float vel, int sampleOffset);
     void stop();
     void stopAll();
 
@@ -118,6 +119,13 @@ public:
     double getOutputSampleRate() const  { return outputSampleRate_; }
     double getSampleRateRatio() const   { return fileSampleRate_ / outputSampleRate_; }
 
+    // Mute fade (smooth gain ramp for mute/unmute/solo transitions)
+    void setMuteTarget(float t)          { muteTarget_ = t; }
+    float getMuteTarget() const          { return muteTarget_; }
+    float getMuteGain() const            { return muteGain_; }
+    void setMuteFadeMs(float ms)         { muteFadeMs_ = std::max(0.0f, ms); }
+    void snapMuteGain(float g)           { muteGain_ = g; muteTarget_ = g; }  // instant
+
     // Filter (TPT SVF)
     void setFilterType(FilterType t)     { filterType_ = t; }
     FilterType getFilterType() const     { return filterType_; }
@@ -129,6 +137,192 @@ public:
     // Lo-fi sampler emulation
     void setLofiMode(LofiMode m)         { lofiMode_ = m; }
     LofiMode getLofiMode() const         { return lofiMode_; }
+
+    // Slice system
+    static constexpr int kMaxSlicePoints = 64;
+    int getSliceCount() const            { return sliceCount_; }
+    float getSlicePoint(int i) const     { return (i >= 0 && i < sliceCount_) ? slicePoints_[i] : -1.0f; }
+    const float* getSlicePoints() const  { return slicePoints_; }
+    bool isSliceMode() const             { return sliceMode_; }
+    void setSliceMode(bool on)           { sliceMode_ = on; }
+    int getSelectedSlice() const         { return selectedSlice_; }
+    void setSelectedSlice(int s)         { selectedSlice_ = juce::jlimit(0, std::max(0, sliceCount_), s); }
+
+    // Per-slice pitch offset in semitones
+    float getSlicePitch(int regionIdx) const {
+        return (regionIdx >= 0 && regionIdx < kMaxSlicePoints) ? slicePitch_[regionIdx] : 0.0f;
+    }
+    void setSlicePitch(int regionIdx, float st) {
+        if (regionIdx >= 0 && regionIdx < kMaxSlicePoints)
+            slicePitch_[regionIdx] = juce::jlimit(-48.0f, 48.0f, st);
+    }
+    // Active slice pitch offset (applied during playback, set on trigger)
+    float getSlicePitchOffset() const     { return slicePitchOffset_; }
+    void setSlicePitchOffset(float st)    { slicePitchOffset_ = st; }
+
+    // Insert a slice point at normalized position. Returns index, or -1 if full.
+    int insertSlicePoint(float pos) {
+        if (sliceCount_ >= kMaxSlicePoints) return -1;
+        pos = juce::jlimit(0.0f, 1.0f, pos);
+        int idx = 0;
+        while (idx < sliceCount_ && slicePoints_[idx] < pos) idx++;
+        if (idx > 0 && std::abs(slicePoints_[idx - 1] - pos) < 0.005f) return -1;
+        if (idx < sliceCount_ && std::abs(slicePoints_[idx] - pos) < 0.005f) return -1;
+        // Shift right (points AND pitch — pitch is per-region, region idx+1 gets split)
+        for (int i = sliceCount_; i > idx; --i) {
+            slicePoints_[i] = slicePoints_[i - 1];
+            slicePitch_[i + 1] = slicePitch_[i];  // shift region pitches right
+        }
+        slicePoints_[idx] = pos;
+        slicePitch_[idx + 1] = slicePitch_[idx];  // new region inherits pitch from parent
+        sliceCount_++;
+        return idx;
+    }
+
+    // Remove slice point nearest to pos (within tolerance). Returns true if removed.
+    bool removeSlicePoint(float pos, float tolerance = 0.01f) {
+        int best = -1;
+        float bestDist = tolerance;
+        for (int i = 0; i < sliceCount_; ++i) {
+            float d = std::abs(slicePoints_[i] - pos);
+            if (d < bestDist) { bestDist = d; best = i; }
+        }
+        if (best < 0) return false;
+        // Shift left — merge region pitch (keep the earlier region's pitch)
+        for (int i = best; i < sliceCount_ - 1; ++i) {
+            slicePoints_[i] = slicePoints_[i + 1];
+            slicePitch_[i + 1] = slicePitch_[i + 2];
+        }
+        sliceCount_--;
+        return true;
+    }
+
+    // Remove all slice points
+    void clearSlices() {
+        sliceCount_ = 0; selectedSlice_ = 0;
+        for (int i = 0; i < kMaxSlicePoints; ++i) slicePitch_[i] = 0.0f;
+    }
+
+    // Auto-slice: evenly divide the start→end region
+    void autoSlice(int numSlices) {
+        clearSlices();
+        if (numSlices < 2) return;
+        float s = startPos_, e = endPos_;
+        for (int i = 1; i < numSlices; ++i) {
+            float pos = s + (e - s) * ((float)i / (float)numSlices);
+            insertSlicePoint(pos);
+        }
+    }
+
+    // Transient detection: energy-based onset detector with zero-crossing snap
+    // sensitivity: 0.0 = few (only loud hits), 1.0 = many (catches ghost notes)
+    void detectTransients(float sensitivity = 0.5f) {
+        clearSlices();
+        int ns = numSamples_.load();
+        if (ns == 0) return;
+        const float* data = buffer_.getReadPointer(0);
+        int startSamp = (int)(startPos_ * ns);
+        int endSamp = (int)(endPos_ * ns);
+        int regionLen = endSamp - startSamp;
+        if (regionLen < 1024) return;
+
+        // Map sensitivity to detector params
+        float inv = 1.0f - sensitivity;
+        float threshMult = 1.0f + 7.0f * inv * inv;   // 8→1
+        int minInterOnset = (int)((80.0f - 60.0f * sensitivity) * 0.001f * (float)getSampleRate());
+        float silenceGateDb = -30.0f - 60.0f * sensitivity;
+        float silenceGate = std::pow(10.0f, silenceGateDb / 10.0f);  // power threshold
+
+        // Pass 1: compute windowed energy
+        constexpr int kWin = 512;
+        constexpr int kHop = 128;
+        int numFrames = (regionLen - kWin) / kHop + 1;
+        if (numFrames < 3) return;
+
+        // Use stack-friendly fixed buffer (max ~3000 frames for 4 bars at 48k)
+        constexpr int kMaxFrames = 4096;
+        if (numFrames > kMaxFrames) numFrames = kMaxFrames;
+        float energy[kMaxFrames];
+
+        for (int f = 0; f < numFrames; ++f) {
+            float sum = 0.0f;
+            const float* ptr = data + startSamp + f * kHop;
+            for (int i = 0; i < kWin; ++i) sum += ptr[i] * ptr[i];
+            energy[f] = sum / kWin;
+        }
+
+        // Pass 2: half-wave rectified first-difference + adaptive threshold + peak pick
+        float prevE = energy[0];
+        float emaThresh = energy[0];
+        int lastOnsetFrame = -minInterOnset / kHop;
+
+        for (int f = 1; f < numFrames - 1; ++f) {
+            float odf = std::max(0.0f, energy[f] - prevE);
+            emaThresh = 0.1f * odf + 0.9f * emaThresh;
+            float thresh = emaThresh * threshMult;
+
+            float odfNext = std::max(0.0f, energy[f + 1] - energy[f]);
+
+            if (odf > thresh && odf > odfNext && energy[f] > silenceGate
+                && (f - lastOnsetFrame) >= (minInterOnset / kHop)) {
+                // Backtrack to energy minimum in previous 10 frames
+                int bestFrame = f;
+                float bestEnergy = energy[f];
+                for (int b = f - 1; b >= std::max(0, f - 10); --b) {
+                    if (energy[b] < bestEnergy) { bestEnergy = energy[b]; bestFrame = b; }
+                }
+                int onsetSamp = startSamp + bestFrame * kHop;
+
+                // Snap backward to nearest zero crossing (max 256 samples)
+                for (int s = onsetSamp; s > std::max(startSamp + 1, onsetSamp - 256); --s) {
+                    if ((data[s] >= 0.0f) != (data[s - 1] >= 0.0f)) {
+                        onsetSamp = s;
+                        break;
+                    }
+                }
+
+                float pos = (float)onsetSamp / (float)ns;
+                if (pos > startPos_ + 0.005f && pos < endPos_ - 0.005f) {
+                    insertSlicePoint(pos);
+                    if (sliceCount_ >= kMaxSlicePoints) break;
+                }
+                lastOnsetFrame = f;
+            }
+            prevE = energy[f];
+        }
+    }
+
+    // Find nearest zero crossing to pos (searches ±512 samples)
+    float findNearestZeroCrossing(float pos) const {
+        int ns = numSamples_.load();
+        if (ns == 0) return pos;
+        const float* data = buffer_.getReadPointer(0);
+        int center = (int)(pos * ns);
+        int best = center;
+        float bestDist = 999999.0f;
+        for (int offset = 0; offset < 512; ++offset) {
+            for (int dir = -1; dir <= 1; dir += 2) {
+                int idx = center + dir * offset;
+                if (idx < 1 || idx >= ns) continue;
+                // Zero crossing = sign change between adjacent samples
+                if ((data[idx - 1] >= 0.0f) != (data[idx] >= 0.0f)) {
+                    float dist = (float)std::abs(idx - center);
+                    if (dist < bestDist) { bestDist = dist; best = idx; }
+                }
+            }
+            if (bestDist < 999998.0f) break;  // found one, stop
+        }
+        return (float)best / (float)ns;
+    }
+
+    // Get the start/end positions for a given slice index
+    // Slice 0 = startPos→first point, slice N = last point→endPos
+    void getSliceRegion(int sliceIdx, float& outStart, float& outEnd) const {
+        float s = startPos_, e = endPos_;
+        if (sliceCount_ == 0 || sliceIdx < 0) { outStart = s; outEnd = e; return; }
+        outStart = (sliceIdx == 0) ? s : slicePoints_[std::min(sliceIdx - 1, sliceCount_ - 1)];
+        outEnd = (sliceIdx >= sliceCount_) ? e : slicePoints_[std::min(sliceIdx, sliceCount_ - 1)];
+    }
 
     PadMode getMode() const     { return mode_; }
     float getVolume() const     { return volume_; }
@@ -190,6 +384,11 @@ private:
     int   midiChannel_    = 0;
     double outputSampleRate_ = 48000.0;
 
+    // Mute fade
+    float muteGain_    = 1.0f;   // current gain (0=silent, 1=full)
+    float muteTarget_  = 1.0f;   // where to ramp to
+    float muteFadeMs_  = 0.0f;   // 0 = instant
+
     // Cached pan (avoid cos/sin per process call)
     float cachedPanL_ = 0.707f;
     float cachedPanR_ = 0.707f;
@@ -211,6 +410,14 @@ private:
     LofiMode lofiMode_ = LofiMode::Off;
     float lofiPhaseL_ = 0.0f, lofiPhaseR_ = 0.0f;
     float lofiHeldL_ = 0.0f, lofiHeldR_ = 0.0f;
+
+    // Slice system
+    float slicePoints_[kMaxSlicePoints] = {};  // sorted normalized positions
+    float slicePitch_[kMaxSlicePoints] = {};   // per-region pitch offset (semitones)
+    int sliceCount_ = 0;
+    bool sliceMode_ = false;
+    int selectedSlice_ = 0;  // which slice plays on next trigger
+    float slicePitchOffset_ = 0.0f;  // active pitch offset from current slice
 
     // Bit crush: quantize to N bits, no dither (authentic vintage)
     static inline float bitCrush(float x, float levels, float invLevels) {
@@ -238,32 +445,52 @@ private:
     }
 
     // Standard SVF filter — one sample (LPF/HPF/BPF/Notch)
+    // With resonance-dependent input drive (analog warmth) and per-type output compensation
     inline float filterSVF(float input, float& ic1, float& ic2,
                             float g, float k, float a1, float a2, float a3) const {
-        float v3 = input - ic2;
+        // Subtle analog drive: signal gets slightly fatter with resonance
+        // Mimics the gentle compression of analog integrators under feedback
+        float driven = input * (1.0f + filterReso_ * 0.2f);
+
+        float v3 = driven - ic2;
         float v1 = a1 * ic1 + a2 * v3;
         float v2 = ic2 + a2 * ic1 + a3 * v3;
         ic1 = 2.0f * v1 - ic1;
         ic2 = 2.0f * v2 - ic2;
         switch (filterType_) {
-            case FilterType::LPF:   return v2;
+            case FilterType::LPF: {
+                // Bass compensation: resonance steals energy from the passband.
+                // Scale output to restore body. Quadratic curve: gentle at low reso, strong at high.
+                float comp = 1.0f + filterReso_ * filterReso_ * 0.6f;
+                return v2 * comp;
+            }
             case FilterType::HPF:   return input - k * v1 - v2;
-            case FilterType::BPF:   return v1;
+            case FilterType::BPF: {
+                // BPF is naturally quieter — boost proportional to Q
+                float bpGain = 1.0f + filterReso_ * 0.4f + 0.3f;
+                return v1 * bpGain;
+            }
             case FilterType::Notch: return input - k * v1;
             default:                return input;
         }
     }
 
     // MS20 filter — SVF with tanh saturation in feedback path
+    // Drive into saturation for harmonics, soft clip output for safety
     inline float filterMS20(float input, float& ic1, float& ic2,
                              float g, float k, float a1, float a2, float a3) const {
-        float drive = 1.0f + filterReso_ * 4.0f;
-        float v3 = input - fastTanh(ic2 * drive);
+        // Drive: 1.0 at zero reso → 3.0 at full reso. Warm growl, not harsh clip.
+        float drive = 1.0f + filterReso_ * 2.0f;
+        // Input drive for fatness
+        float driven = input * (1.0f + filterReso_ * 0.3f);
+        float v3 = driven - fastTanh(ic2 * drive);
         float v1 = a1 * ic1 + a2 * v3;
         float v2 = ic2 + a2 * ic1 + a3 * v3;
         ic1 = 2.0f * v1 - ic1;
         ic2 = 2.0f * v2 - ic2;
-        return v2;  // LP output with harmonic saturation
+        // Bass compensation + soft clip
+        float comp = 1.0f + filterReso_ * filterReso_ * 0.5f;
+        return fastTanh(v2 * comp);
     }
 
     // Formant BPF — one band, one sample

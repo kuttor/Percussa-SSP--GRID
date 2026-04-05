@@ -61,8 +61,13 @@ private:
     // ── File Browser ─────────────────────────────────────────────────────
     bool browseMode_ = false;
     bool muteMode_ = false;
+    bool soloMode_ = false;          // double-tap RS
     bool muteToggled_ = false;
-    bool pendingMute_[kNumPads] = {};  // queued mute toggles (On Release / On Bar)
+    bool pendingMute_[kNumPads] = {};
+    bool soloActive_[kNumPads] = {}; // which pads are soloed
+    bool preSoloMute_[kNumPads] = {}; // mute state before entering solo (to restore)
+    double lastRSTapTime_ = 0.0;     // for double-tap detection
+    static constexpr double kDoubleTapMs = 350.0;  // queued mute toggles (On Release / On Bar)
     int browseIndex_ = 0;
     int browseScrollOffset_ = 0;
     juce::File browseCurrentDir_;
@@ -151,6 +156,28 @@ private:
     void paintKeyboard(juce::Graphics& g, juce::Rectangle<int> area);
     char keyboardCharAt(int row, int col) const;
     int keyboardRowLen(int row) const;
+
+    // ── Slice Editor (full-screen overlay) ──────────────────────────────
+    bool sliceEditorMode_ = false;
+    float sliceCursorPos_ = 0.0f;    // normalized 0-1 within sample
+    float sliceZoom_ = 1.0f;         // 1x = full sample, 32x = zoomed
+    float sliceViewCenter_ = 0.5f;   // center of zoomed view (normalized)
+    int sliceAutoPreset_ = 0;        // index into auto values
+    static constexpr int kSliceAutoCount = 6;
+
+    // 0=OFF, 1=8, 2=16, 3=24, 4=32, 5=Zero-X (-1)
+    static int sliceAutoValue(int idx) {
+        static const int vals[] = { 0, 8, 16, 24, 32, -1 };
+        return vals[juce::jlimit(0, kSliceAutoCount - 1, idx)];
+    }
+    static juce::String sliceAutoName(int idx) {
+        static const char* names[] = { "OFF", "8", "16", "24", "32", "Transient" };
+        return names[juce::jlimit(0, kSliceAutoCount - 1, idx)];
+    }
+
+    void enterSliceEditor();
+    void exitSliceEditor();
+    void paintSliceEditor(juce::Graphics& g, juce::Rectangle<int> area);
 
     // ── Layout constants ─────────────────────────────────────────────────
     static constexpr int kTabHeight       = 36;

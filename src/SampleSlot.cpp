@@ -147,7 +147,12 @@ void SampleSlot::trigger()
 void SampleSlot::triggerWithOffset(int sampleOffset)
 {
     triggerWithVelocity(volume_);
-    // Set offset on the newly started voice so processVoice skips those samples
+    voices_[0].startOffset = sampleOffset;
+}
+
+void SampleSlot::triggerWithVelocityAndOffset(float vel, int sampleOffset)
+{
+    triggerWithVelocity(vel);
     voices_[0].startOffset = sampleOffset;
 }
 
@@ -280,8 +285,9 @@ void SampleSlot::processVoice(Voice& v, float* outL, float* outR, int numSamples
                                int fadeInSamples, int fadeOutSamples)
 {
     const bool useGranular = (effStretch < 0.99f || effStretch > 1.01f);
-    // Slot-level pitch (same for all voices)
-    const double rateStep = static_cast<double>(pitchRate_) * sampleRateRatio;
+    // Slot-level pitch + per-slice pitch offset
+    const float combinedPitchRate = pitchRate_ * std::pow(2.0f, slicePitchOffset_ / 12.0f);
+    const double rateStep = static_cast<double>(combinedPitchRate) * sampleRateRatio;
     const double rateStepStretched = (effStretch > 0.001f)
         ? rateStep / static_cast<double>(effStretch) : rateStep;
     const float invFadeIn = (fadeInSamples > 0) ? 1.0f / (float)fadeInSamples : 0.0f;
@@ -350,7 +356,9 @@ void SampleSlot::processVoice(Voice& v, float* outL, float* outR, int numSamples
         } else {
             // Standard SVF coefficients (LPF, HPF, BPF, Notch, MS20)
             fG = std::tan(juce::MathConstants<float>::pi * fc / sr);
-            fK = 2.0f - 2.0f * filterReso_;
+            // Resonance: k=2 (no reso) → k=0.15 (screaming). Floor prevents self-oscillation.
+            // Soft clip on output keeps it safe at high Q.
+            fK = std::max(0.15f, 2.0f - 1.85f * filterReso_);
             fA1 = 1.0f / (1.0f + fG * (fG + fK));
             fA2 = fG * fA1;
             fA3 = fG * fA2;
@@ -485,16 +493,19 @@ void SampleSlot::processVoice(Voice& v, float* outL, float* outR, int numSamples
         // ── Filter ─────────────────────────────────────────────────────────
         if (filterActive) {
             if (filterType_ == FilterType::Formant) {
-                // Sum 3 parallel BPF bands (vowel formants)
+                // Input drive for vocal presence
+                float fmtDrive = 1.0f + filterReso_ * 0.4f;
+                float dL = sL * fmtDrive, dR = sR * fmtDrive;
                 float sumL = 0.0f, sumR = 0.0f;
                 for (int b = 0; b < 3; ++b) {
-                    sumL += filterBPF(sL, fmtIc1L_[b], fmtIc2L_[b],
+                    sumL += filterBPF(dL, fmtIc1L_[b], fmtIc2L_[b],
                                        fmtG[b], fmtA1[b], fmtA2[b], fmtA3[b]) * fmtAmp[b];
-                    sumR += filterBPF(sR, fmtIc1R_[b], fmtIc2R_[b],
+                    sumR += filterBPF(dR, fmtIc1R_[b], fmtIc2R_[b],
                                        fmtG[b], fmtA1[b], fmtA2[b], fmtA3[b]) * fmtAmp[b];
                 }
-                sL = sumL;
-                sR = sumR;
+                // Formant gain: 3 BPFs sum to ~0.3-0.5 of input level. Boost to match.
+                sL = sumL * 2.2f;
+                sR = sumR * 2.2f;
             } else if (filterType_ == FilterType::MS20) {
                 sL = filterMS20(sL, svfIc1L_, svfIc2L_, fG, fK, fA1, fA2, fA3);
                 sR = filterMS20(sR, svfIc1R_, svfIc2R_, fG, fK, fA1, fA2, fA3);
@@ -502,10 +513,26 @@ void SampleSlot::processVoice(Voice& v, float* outL, float* outR, int numSamples
                 sL = filterSVF(sL, svfIc1L_, svfIc2L_, fG, fK, fA1, fA2, fA3);
                 sR = filterSVF(sR, svfIc1R_, svfIc2R_, fG, fK, fA1, fA2, fA3);
             }
+            // Soft clip: tame resonance peaks without hard clipping
+            sL = fastTanh(sL);
+            sR = fastTanh(sR);
         }
 
-        outL[i] += sL * v.velocity * panL * env * fadeEnv;
-        outR[i] += sR * v.velocity * panR * env * fadeEnv;
+        // ── Mute fade ramp ────────────────────────────────────────────────
+        if (muteGain_ != muteTarget_) {
+            if (muteFadeMs_ < 0.5f) {
+                muteGain_ = muteTarget_;  // instant
+            } else {
+                float rate = 1.0f / (muteFadeMs_ * 0.001f * (float)outputSampleRate_);
+                if (muteTarget_ > muteGain_)
+                    muteGain_ = std::min(muteTarget_, muteGain_ + rate);
+                else
+                    muteGain_ = std::max(muteTarget_, muteGain_ - rate);
+            }
+        }
+
+        outL[i] += sL * v.velocity * panL * env * fadeEnv * muteGain_;
+        outR[i] += sR * v.velocity * panR * env * fadeEnv * muteGain_;
     }
 }
 

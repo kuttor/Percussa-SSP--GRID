@@ -40,7 +40,7 @@ void PluginEditor::resized()
     // 4 encoders across ~800px (200px each), with per-encoder nudge
     static constexpr int kEncZoneW = 800;
     const int encW = kEncZoneW / kEncodersPerPage;
-    static constexpr int nudge[] = { -14, 0, 52, 60 };
+    static constexpr int nudge[] = { -14, 0, 52, 86 };
 
     for (int i = 0; i < kEncodersPerPage; ++i)
     {
@@ -278,6 +278,12 @@ void PluginEditor::paint(juce::Graphics& g)
     if (keyboardMode_) {
         auto fullArea = juce::Rectangle<int>(0, 0, w, h);
         paintKeyboard(g, fullArea);
+    }
+
+    // ── Slice editor overlay ─────────────────────────────────────────
+    if (sliceEditorMode_) {
+        auto fullArea = juce::Rectangle<int>(0, 0, w, h);
+        paintSliceEditor(g, fullArea);
     }
 }
 
@@ -622,6 +628,36 @@ void PluginEditor::paintPadBox(juce::Graphics& g, juce::Rectangle<int> box, int 
 
         g.setColour(borderCol.withAlpha(0.8f));
         g.drawRoundedRectangle(box.toFloat().reduced(1.0f), 6.0f, isPending ? 3.0f : 2.5f);
+    }
+
+    // Solo mode visuals
+    if (soloMode_) {
+        if (soloActive_[padIndex]) {
+            // Soloed pad: bright yellow border + SOLO text
+            g.setColour(juce::Colour(0xFFFFD600).withAlpha(0.9f));
+            g.drawRoundedRectangle(box.toFloat().reduced(1.0f), 6.0f, 3.0f);
+            g.setFont(14.0f);
+            g.drawText("SOLO", box.getX() + 4, box.getBottom() - 20, 50, 16,
+                       juce::Justification::bottomLeft);
+        } else {
+            // Not soloed: dim overlay
+            bool anySoloed = false;
+            for (int i = 0; i < kNumPads; ++i) if (soloActive_[i]) { anySoloed = true; break; }
+            if (anySoloed) {
+                g.saveState();
+                g.reduceClipRegion(box);
+                g.setColour(juce::Colour(0xBB0D0D0D));
+                g.fillRoundedRectangle(box.toFloat(), 6.0f);
+                g.restoreState();
+                g.setColour(juce::Colour(0xFF888888).withAlpha(0.6f));
+                g.setFont(16.0f);
+                g.drawText("SOLO", box, juce::Justification::centred);
+            } else {
+                // No solos — show border indicating solo mode active
+                g.setColour(juce::Colour(0xFFFFD600).withAlpha(0.3f));
+                g.drawRoundedRectangle(box.toFloat().reduced(1.0f), 6.0f, 2.0f);
+            }
+        }
     }
 }
 
@@ -1425,7 +1461,7 @@ juce::String PluginEditor::getEncoderLabel(int page, int enc) const
             return l[enc];
         }
         case PAGE_PITCH: {
-            const char* l[] = { "", "TIME", "CLK M/D", "---" };
+            const char* l[] = { "", "TIME", "CLK M/D", "SLICE" };
             return l[enc];
         }
         case PAGE_FADE: {
@@ -1513,6 +1549,11 @@ juce::String PluginEditor::getEncoderValue(int page, int enc) const
                 if (d < 0) return "*" + juce::String(1 << (-d));
                 if (d == 0) return "/1";
                 return "/" + juce::String(1 << d);
+            }
+            if (enc == 3) {
+                int sc = slot.getSliceCount();
+                if (sc == 0) return "[PUSH]";
+                return juce::String(sc) + " pts";
             }
             return "---";
         }
@@ -1616,6 +1657,7 @@ void PluginEditor::timerCallback()
     }
 
     if (browseMode_) { repaint(); return; }
+    if (sliceEditorMode_) { repaint(); return; }  // encoder labels managed by paintSliceEditor
     updateEncoderDisplay();
     repaint();
 }
@@ -1650,6 +1692,23 @@ void PluginEditor::onButton(int n, bool val)
         processor_.getEngine().setMuted(n, false);
         selectedPad_ = n;
         processor_.showTickerPublic("Pad " + juce::String(n + 1) + " cleared");
+        repaint();
+        return;
+    }
+
+    // Solo mode: double-tap RS held, buttons toggle solo
+    if (soloMode_) {
+        soloActive_[n] = !soloActive_[n];
+        // Apply: mute everything except soloed pads
+        bool anySoloed = false;
+        for (int i = 0; i < kNumPads; ++i) if (soloActive_[i]) anySoloed = true;
+        if (anySoloed) {
+            processor_.getEngine().applySolo(soloActive_);
+        } else {
+            // No solos active — restore pre-solo state
+            for (int i = 0; i < kNumPads; ++i)
+                processor_.getEngine().setMuted(i, preSoloMute_[i]);
+        }
         repaint();
         return;
     }
@@ -1706,7 +1765,29 @@ void PluginEditor::onLeftButton(bool val)
         keyboardCol_ = std::max(0, keyboardCol_ - 1);
         repaint(); return;
     }
-    if (popupMode_) { closePopup(-1); return; }  // cancel
+    if (sliceEditorMode_) {
+        // Left arrow = previous slice boundary (includes start, wraps)
+        auto& slot = processor_.getEngine().getSlot(selectedPad_);
+        // Build full nav list: start + all slice points + end
+        float navPts[66];
+        int navCount = 0;
+        navPts[navCount++] = slot.getStartPos();
+        for (int i = 0; i < slot.getSliceCount(); ++i) navPts[navCount++] = slot.getSlicePoint(i);
+        navPts[navCount++] = slot.getEndPos();
+
+        // Find previous position
+        int found = -1;
+        for (int i = navCount - 1; i >= 0; --i) {
+            if (navPts[i] < sliceCursorPos_ - 0.001f) { found = i; break; }
+        }
+        if (found < 0) found = navCount - 1;  // wrap to end
+        sliceCursorPos_ = navPts[found];
+        sliceViewCenter_ = sliceCursorPos_;
+        float halfSpan = 0.5f / sliceZoom_;
+        sliceViewCenter_ = juce::jlimit(halfSpan, 1.0f - halfSpan, sliceViewCenter_);
+        repaint(); return;
+    }
+    if (popupMode_) { closePopup(-1); return; }
     if (configMode_) {
         configAdjustValue(configIndex_, -1);
         configEditMode_ = true;
@@ -1722,6 +1803,26 @@ void PluginEditor::onRightButton(bool val)
     if (!val) return;
     if (keyboardMode_) {
         keyboardCol_ = std::min(keyboardRowLen(keyboardRow_) - 1, keyboardCol_ + 1);
+        repaint(); return;
+    }
+    if (sliceEditorMode_) {
+        // Right arrow = next slice boundary (includes end, wraps)
+        auto& slot = processor_.getEngine().getSlot(selectedPad_);
+        float navPts[66];
+        int navCount = 0;
+        navPts[navCount++] = slot.getStartPos();
+        for (int i = 0; i < slot.getSliceCount(); ++i) navPts[navCount++] = slot.getSlicePoint(i);
+        navPts[navCount++] = slot.getEndPos();
+
+        int found = -1;
+        for (int i = 0; i < navCount; ++i) {
+            if (navPts[i] > sliceCursorPos_ + 0.001f) { found = i; break; }
+        }
+        if (found < 0) found = 0;  // wrap to start
+        sliceCursorPos_ = navPts[found];
+        sliceViewCenter_ = sliceCursorPos_;
+        float halfSpan = 0.5f / sliceZoom_;
+        sliceViewCenter_ = juce::jlimit(halfSpan, 1.0f - halfSpan, sliceViewCenter_);
         repaint(); return;
     }
     if (configMode_) {
@@ -1741,6 +1842,9 @@ void PluginEditor::onUpButton(bool val)
         keyboardRow_ = std::max(0, keyboardRow_ - 1);
         keyboardCol_ = std::min(keyboardCol_, keyboardRowLen(keyboardRow_) - 1);
         repaint(); return;
+    }
+    if (sliceEditorMode_) {
+        repaint(); return;  // up/down unused in slice editor
     }
     if (popupMode_) {
         popupIndex_ = std::max(0, popupIndex_ - 1);
@@ -1789,6 +1893,9 @@ void PluginEditor::onDownButton(bool val)
         keyboardRow_ = std::min(3, keyboardRow_ + 1);
         keyboardCol_ = std::min(keyboardCol_, keyboardRowLen(keyboardRow_) - 1);
         repaint(); return;
+    }
+    if (sliceEditorMode_) {
+        repaint(); return;  // up/down unused in slice editor
     }
     if (popupMode_) {
         popupIndex_ = std::min(popupOptions_.size() - 1, popupIndex_ + 1);
@@ -1847,6 +1954,23 @@ void PluginEditor::onLeftShiftButton(bool val)
     // Keyboard: left shift types character or triggers button
     if (keyboardMode_) {
         keyboardAction();
+        return;
+    }
+
+    // Slice editor: LS hold = audition current slice
+    if (sliceEditorMode_) {
+        auto& slot = processor_.getEngine().getSlot(selectedPad_);
+        if (slot.isLoaded() && slot.getSliceCount() > 0) {
+            int curSlice = 0;
+            for (int i = 0; i < slot.getSliceCount(); ++i)
+                if (sliceCursorPos_ >= slot.getSlicePoint(i)) curSlice = i + 1;
+            float slStart, slEnd;
+            slot.getSliceRegion(curSlice, slStart, slEnd);
+            slot.setStartPos(slStart);
+            slot.setEndPos(slEnd);
+            processor_.getEngine().trigger(selectedPad_);
+        }
+        repaint();
         return;
     }
 
@@ -1919,6 +2043,12 @@ void PluginEditor::onRightShiftButton(bool val)
         return;
     }
 
+    // Right shift = exit slice editor
+    if (val && sliceEditorMode_) {
+        exitSliceEditor();
+        return;
+    }
+
     if (val && leftShiftHeld_) {
         if (configMode_) exitConfigMode();
         else enterConfigMode();
@@ -1928,42 +2058,65 @@ void PluginEditor::onRightShiftButton(bool val)
     // Config mode: don't enter mute mode
     if (configMode_) return;
 
-    // Pure mute mode — hold to enter, release to exit.
+    // ── RS PRESS ─────────────────────────────────────────────────────────
     if (val) {
-        muteMode_ = true;
-        for (int i = 0; i < kNumPads; ++i) pendingMute_[i] = false;
-        repaint();
-    } else {
-        muteMode_ = false;
-        PerfMode mode = processor_.getPerfMode();
+        double nowMs = juce::Time::getMillisecondCounterHiRes();
+        bool doubleTap = (nowMs - lastRSTapTime_ < kDoubleTapMs);
+        lastRSTapTime_ = nowMs;
 
-        if (mode == PerfMode::OnRelease) {
-            // Commit all pending mutes immediately
+        if (doubleTap && !soloMode_) {
+            // Double-tap: enter SOLO mode
+            muteMode_ = false;
+            soloMode_ = true;
+            // Save current mute state so we can restore on exit
             for (int i = 0; i < kNumPads; ++i) {
-                if (pendingMute_[i]) {
-                    processor_.getEngine().toggleMute(i);
+                preSoloMute_[i] = processor_.getEngine().isMuted(i);
+                soloActive_[i] = false;
+            }
+            processor_.showTickerPublic("SOLO MODE");
+        } else if (!soloMode_) {
+            // Single tap: enter MUTE mode
+            muteMode_ = true;
+            for (int i = 0; i < kNumPads; ++i) pendingMute_[i] = false;
+        }
+        repaint();
+    }
+    // ── RS RELEASE ───────────────────────────────────────────────────────
+    else {
+        if (soloMode_) {
+            // Exit solo: restore pre-solo mute state
+            soloMode_ = false;
+            for (int i = 0; i < kNumPads; ++i)
+                processor_.getEngine().setMuted(i, preSoloMute_[i]);
+            processor_.showTickerPublic("Solo off");
+        }
+        else if (muteMode_) {
+            muteMode_ = false;
+            PerfMode mode = processor_.getPerfMode();
+
+            if (mode == PerfMode::OnRelease) {
+                for (int i = 0; i < kNumPads; ++i) {
+                    if (pendingMute_[i]) {
+                        processor_.getEngine().toggleMute(i);
+                        pendingMute_[i] = false;
+                    }
+                }
+            }
+            else if (mode == PerfMode::OnBar) {
+                for (int i = 0; i < kNumPads; ++i)
+                    processor_.setPendingBarMute(i, false);
+                bool anyPending = false;
+                for (int i = 0; i < kNumPads; ++i) {
+                    if (pendingMute_[i]) {
+                        processor_.setPendingBarMute(i, true);
+                        anyPending = true;
+                    }
                     pendingMute_[i] = false;
                 }
+                if (anyPending)
+                    processor_.commitBarMutes(processor_.getQueueBars());
             }
         }
-        else if (mode == PerfMode::OnBar) {
-            // Clear any old pending bar mutes first
-            for (int i = 0; i < kNumPads; ++i)
-                processor_.setPendingBarMute(i, false);
-
-            // Transfer new pending mutes to processor and start countdown
-            bool anyPending = false;
-            for (int i = 0; i < kNumPads; ++i) {
-                if (pendingMute_[i]) {
-                    processor_.setPendingBarMute(i, true);
-                    anyPending = true;
-                }
-                pendingMute_[i] = false;
-            }
-            if (anyPending)
-                processor_.commitBarMutes(processor_.getQueueBars());
-        }
-        // Immediate mode: already committed in onButton
         repaint();
     }
 }
@@ -1986,6 +2139,49 @@ void PluginEditor::onEncoder(int n, float delta)
     if (keyboardMode_) {
         int d = (delta > 0) ? 1 : -1;
         keyboardCol_ = juce::jlimit(0, keyboardRowLen(keyboardRow_) - 1, keyboardCol_ + d);
+        repaint();
+        return;
+    }
+
+    // Slice editor: cursor, zoom, auto-slice
+    if (sliceEditorMode_) {
+        auto& slot = processor_.getEngine().getSlot(selectedPad_);
+        if (n == 0) {
+            // Cursor with momentum: slow turn = micro precision, fast turn = big jumps
+            float absDelta = std::abs(delta);
+            float speed = absDelta < 1.5f ? absDelta : absDelta * absDelta * 0.5f;
+            float step = (delta > 0 ? 1.0f : -1.0f) * speed * 0.003f / sliceZoom_;
+            sliceCursorPos_ = juce::jlimit(0.0f, 1.0f, sliceCursorPos_ + step);
+            // Keep cursor visible: pan view to follow
+            float halfSpan = 0.5f / sliceZoom_;
+            if (sliceCursorPos_ < sliceViewCenter_ - halfSpan * 0.85f)
+                sliceViewCenter_ = sliceCursorPos_ + halfSpan * 0.85f;
+            if (sliceCursorPos_ > sliceViewCenter_ + halfSpan * 0.85f)
+                sliceViewCenter_ = sliceCursorPos_ - halfSpan * 0.85f;
+            sliceViewCenter_ = juce::jlimit(halfSpan, 1.0f - halfSpan, sliceViewCenter_);
+        }
+        else if (n == 1) {
+            // Zoom: 1x to 32x, centered on cursor
+            float zoomDelta = delta * 0.3f;
+            sliceZoom_ = juce::jlimit(1.0f, 32.0f, sliceZoom_ + zoomDelta * sliceZoom_ * 0.1f);
+            sliceViewCenter_ = sliceCursorPos_;  // re-center on cursor
+            float halfSpan = 0.5f / sliceZoom_;
+            sliceViewCenter_ = juce::jlimit(halfSpan, 1.0f - halfSpan, sliceViewCenter_);
+        }
+        else if (n == 2) {
+            // Auto-slice preset selector
+            int d = (delta > 0) ? 1 : -1;
+            sliceAutoPreset_ = juce::jlimit(0, kSliceAutoCount - 1, sliceAutoPreset_ + d);
+        }
+        else if (n == 3) {
+            // Per-slice pitch: adjust pitch for the slice the cursor is in
+            auto& slot = processor_.getEngine().getSlot(selectedPad_);
+            int curSlice = 0;
+            for (int i = 0; i < slot.getSliceCount(); ++i)
+                if (sliceCursorPos_ >= slot.getSlicePoint(i)) curSlice = i + 1;
+            float cur = slot.getSlicePitch(curSlice);
+            slot.setSlicePitch(curSlice, cur + delta * 1.0f);
+        }
         repaint();
         return;
     }
@@ -2169,7 +2365,61 @@ void PluginEditor::onEncoderSwitch(int n, bool val)
 
     // Popup: push selects current option
     if (popupMode_) {
-        // Encoder push does nothing in popup — left shift selects
+        return;
+    }
+
+    // Slice editor: push actions
+    if (sliceEditorMode_) {
+        auto& slot = processor_.getEngine().getSlot(selectedPad_);
+        if (n == 0) {
+            // Push cursor = insert or remove slice at cursor position
+            if (!slot.removeSlicePoint(sliceCursorPos_, 0.01f / sliceZoom_)) {
+                int idx = slot.insertSlicePoint(sliceCursorPos_);
+                if (idx >= 0) {
+                    int regions = slot.getSliceCount() + 1;
+                    processor_.showTickerPublic("Cut — " + juce::String(regions) + " slices");
+                } else {
+                    processor_.showTickerPublic("64 slice limit reached");
+                }
+            } else {
+                int regions = slot.getSliceCount() + 1;
+                if (slot.getSliceCount() == 0)
+                    processor_.showTickerPublic("All cuts removed");
+                else
+                    processor_.showTickerPublic("Cut removed — " + juce::String(regions) + " slices");
+            }
+        }
+        else if (n == 1) {
+            // Push zoom = snap cursor to nearest zero crossing
+            float before = sliceCursorPos_;
+            sliceCursorPos_ = slot.findNearestZeroCrossing(sliceCursorPos_);
+            float movedMs = std::abs(sliceCursorPos_ - before) * (float)slot.getNumSamples() / (float)slot.getSampleRate() * 1000.0f;
+            processor_.showTickerPublic("Zero crossing — moved " + juce::String(movedMs, 1) + "ms");
+        }
+        else if (n == 2) {
+            // Push auto = apply instantly (no popup)
+            int val = sliceAutoValue(sliceAutoPreset_);
+            if (val == 0) {
+                slot.clearSlices();
+                processor_.showTickerPublic("All slices cleared");
+            } else if (val == -1) {
+                // Transient detection
+                slot.detectTransients(0.5f);
+                processor_.showTickerPublic("Transients: " + juce::String(slot.getSliceCount()) + " cuts");
+            } else {
+                slot.autoSlice(val);
+                processor_.showTickerPublic("Auto-sliced into " + juce::String(val));
+            }
+        }
+        else if (n == 3) {
+            // Push pitch = reset pitch for current slice to 0
+            int curSlice = 0;
+            for (int i = 0; i < slot.getSliceCount(); ++i)
+                if (sliceCursorPos_ >= slot.getSlicePoint(i)) curSlice = i + 1;
+            slot.setSlicePitch(curSlice, 0.0f);
+            processor_.showTickerPublic("Slice " + juce::String(curSlice + 1) + " pitch reset");
+        }
+        repaint();
         return;
     }
 
@@ -2332,6 +2582,7 @@ void PluginEditor::onEncoderSwitch(int n, bool val)
         case PAGE_PITCH:
             if (n == 1) slot.setTimeStretch(1.0f);
             if (n == 2) processor_.setClockDiv(0);
+            if (n == 3) enterSliceEditor();
             break;
         case PAGE_FADE:
             if (n == 1) slot.setFadeInCurve(slot.getFadeInCurve() == 0 ? 1 : 0);
@@ -2463,6 +2714,21 @@ void PluginEditor::buildConfigRows()
     // 2 = Queue Bars (grouped with Mute Mode)
     { ConfigRow r; r.type = ConfigRowType::Enum; r.label = "Queue Bars";
       r.padIndex = -1; r.paramIndex = 2; configRows_.add(r); }
+    // 6 = Mute Fade
+    { ConfigRow r; r.type = ConfigRowType::Enum; r.label = "Mute Fade";
+      r.padIndex = -1; r.paramIndex = 6; configRows_.add(r); }
+
+    // ── Spacer between groups ──
+    { ConfigRow s; s.type = ConfigRowType::Spacer; s.padIndex = -1; s.paramIndex = -1;
+      configRows_.add(s); }
+
+    // ── Slice CV group ──
+    // 7 = Slice CV 1
+    { ConfigRow r; r.type = ConfigRowType::Enum; r.label = "Slice CV 1";
+      r.padIndex = -1; r.paramIndex = 7; configRows_.add(r); }
+    // 8 = Slice CV 2
+    { ConfigRow r; r.type = ConfigRowType::Enum; r.label = "Slice CV 2";
+      r.padIndex = -1; r.paramIndex = 8; configRows_.add(r); }
 
     // ── Spacer between groups ──
     { ConfigRow s; s.type = ConfigRowType::Spacer; s.padIndex = -1; s.paramIndex = -1;
@@ -2557,6 +2823,19 @@ juce::String configGetValueText(const PluginProcessor& proc, const ConfigRow& ro
                 return proc.getDebugMsgs() ? "ON" : "OFF";
             case 5:  // Encoder Speed
                 return juce::String(proc.getEncoderSpeed(), 2) + "x";
+            case 6: {  // Mute Fade
+                float ms = proc.getMuteFadeMs();
+                if (ms < 0.5f) return "OFF";
+                return juce::String((int)ms) + "ms";
+            }
+            case 7: {  // Slice CV 1
+                int p = proc.getSliceCVPad(0);
+                return (p < 0) ? "OFF" : "Pad " + juce::String(p + 1);
+            }
+            case 8: {  // Slice CV 2
+                int p = proc.getSliceCVPad(1);
+                return (p < 0) ? "OFF" : "Pad " + juce::String(p + 1);
+            }
             default: return "?";
         }
     }
@@ -2739,6 +3018,21 @@ void PluginEditor::configAdjustValue(int selIdx, int delta)
             case 5: {  // Encoder Speed
                 float s = processor_.getEncoderSpeed() + (float)delta * 0.25f;
                 processor_.setEncoderSpeed(s);
+                break;
+            }
+            case 6: {  // Mute Fade
+                float ms = processor_.getMuteFadeMs() + (float)delta * 25.0f;
+                processor_.setMuteFadeMs(ms);
+                break;
+            }
+            case 7: {  // Slice CV 1
+                int p = processor_.getSliceCVPad(0) + delta;
+                processor_.setSliceCVPad(0, juce::jlimit(-1, 7, p));
+                break;
+            }
+            case 8: {  // Slice CV 2
+                int p = processor_.getSliceCVPad(1) + delta;
+                processor_.setSliceCVPad(1, juce::jlimit(-1, 7, p));
                 break;
             }
             default: break;
@@ -3069,6 +3363,328 @@ void PluginEditor::paintKeyboard(juce::Graphics& g, juce::Rectangle<int> area)
             }
         }
     }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Slice Editor (full-screen overlay, Octatrack-style)
+// ═══════════════════════════════════════════════════════════════════════════
+
+void PluginEditor::enterSliceEditor()
+{
+    auto& slot = processor_.getEngine().getSlot(selectedPad_);
+    if (!slot.isLoaded()) {
+        processor_.showTickerPublic("No sample loaded");
+        return;
+    }
+    sliceEditorMode_ = true;
+    sliceCursorPos_ = slot.getStartPos();
+    sliceZoom_ = 1.0f;
+    sliceViewCenter_ = 0.5f;
+    sliceAutoPreset_ = 0;
+    // Encoder bar shows slice editor controls
+    encoderSlots_[0].nameLabel.setText("CURSOR", juce::dontSendNotification);
+    encoderSlots_[0].valueLabel.setText("[CUT]", juce::dontSendNotification);
+    encoderSlots_[1].nameLabel.setText("ZOOM", juce::dontSendNotification);
+    encoderSlots_[1].valueLabel.setText("1x", juce::dontSendNotification);
+    encoderSlots_[2].nameLabel.setText("AUTO", juce::dontSendNotification);
+    encoderSlots_[2].valueLabel.setText("OFF", juce::dontSendNotification);
+    encoderSlots_[3].nameLabel.setText("PITCH", juce::dontSendNotification);
+    encoderSlots_[3].valueLabel.setText("0st", juce::dontSendNotification);
+    processor_.showTickerPublic("Slice Editor - Pad " + juce::String(selectedPad_ + 1));
+    repaint();
+}
+
+void PluginEditor::exitSliceEditor()
+{
+    sliceEditorMode_ = false;
+    leftShiftHeld_ = false;
+    updateEncoderDisplay();
+    repaint();
+}
+
+void PluginEditor::paintSliceEditor(juce::Graphics& g, juce::Rectangle<int> area)
+{
+    auto& slot = processor_.getEngine().getSlot(selectedPad_);
+    if (!slot.isLoaded()) { exitSliceEditor(); return; }
+
+    const int w = area.getWidth(), h = area.getHeight();
+
+    // ── Semi-transparent backdrop (tabs still visible) ──────────────────
+    g.setColour(juce::Colour(0xCC000000));
+    g.fillRect(area);
+
+    // ── Popup box: compact, well-proportioned ─────────────────────────
+    const int boxL = 60, boxR = 60;
+    const int boxT = kTabHeight + 6;
+    const int boxB = kEncoderBarH + 6;
+    auto box = juce::Rectangle<int>(boxL, boxT, w - boxL - boxR, h - boxT - boxB);
+
+    // Box background + border
+    g.setColour(juce::Colour(0xFF1A1A1A));
+    g.fillRoundedRectangle(box.toFloat(), 8.0f);
+    g.setColour(juce::Colour(0xFF333333));
+    g.drawRoundedRectangle(box.toFloat(), 8.0f, 1.5f);
+
+    auto inner = box.reduced(12, 4);
+
+    // ── Single-line header: all info on one row at 18pt ─────────────────
+    juce::String fname = slot.getFileName();
+    if (fname.contains(".")) fname = fname.upToLastOccurrenceOf(".", false, false);
+
+    int sc = slot.getSliceCount();
+    int totalReg = sc + 1;
+    int hdrCursorSlice = 0;
+    for (int i = 0; i < sc; ++i)
+        if (sliceCursorPos_ >= slot.getSlicePoint(i)) hdrCursorSlice = i + 1;
+    float cvNorm = (totalReg > 1) ? (float)hdrCursorSlice / (float)(totalReg - 1) : 0.0f;
+    float cvVolts = cvNorm * 10.0f - 5.0f;
+    int ccNum = processor_.getPadCCMap(selectedPad_).ccStart;
+
+    // Left: pad + slice info
+    g.setColour(juce::Colour(0xFFDDDDDD));
+    g.setFont(18.0f);
+    juce::String leftInfo = "P" + juce::String(selectedPad_ + 1) + "  "
+        + juce::String(hdrCursorSlice + 1) + "/" + juce::String(totalReg)
+        + "  CV" + (cvVolts >= 0 ? "+" : "") + juce::String(cvVolts, 1)
+        + "  CC" + juce::String(ccNum);
+    g.drawText(leftInfo, inner.getX() + 4, inner.getY(), inner.getWidth() / 2, 24,
+               juce::Justification::centredLeft);
+
+    // Right: filename + count
+    g.setColour(juce::Colour(0xFF999999));
+    g.setFont(16.0f);
+    g.drawText(fname + "  " + juce::String(totalReg) + " slices",
+               inner.getX() + inner.getWidth() / 2, inner.getY(),
+               inner.getWidth() / 2 - 4, 24, juce::Justification::centredRight);
+
+    // Separator
+    g.setColour(juce::Colour(0xFF2A2A2A));
+    g.fillRect(inner.getX(), inner.getY() + 26, inner.getWidth(), 1);
+
+    // ── Waveform area ───────────────────────────────────────────────────
+    auto wfArea = inner.withTrimmedTop(30).withTrimmedBottom(20);
+
+    // Waveform background
+    g.setColour(juce::Colour(0xFF0E0E0E));
+    g.fillRoundedRectangle(wfArea.toFloat(), 4.0f);
+
+    // Compute visible range
+    float halfSpan = 0.5f / sliceZoom_;
+    float viewStart = juce::jlimit(0.0f, std::max(0.0f, 1.0f - 2.0f * halfSpan), sliceViewCenter_ - halfSpan);
+    float viewEnd = viewStart + 2.0f * halfSpan;
+    float viewSpan = viewEnd - viewStart;
+
+    // ── Overview strip (when zoomed) ────────────────────────────────────
+    if (sliceZoom_ > 1.5f) {
+        int overH = 14;
+        auto overArea = juce::Rectangle<int>(wfArea.getX(), wfArea.getY(), wfArea.getWidth(), overH);
+        const float* data = slot.getBuffer().getReadPointer(0);
+        int total = slot.getNumSamples();
+        float cy = (float)overArea.getCentreY();
+        float amp = (float)overArea.getHeight() * 0.4f;
+        for (int px = 0; px < overArea.getWidth(); ++px) {
+            float norm = (float)px / (float)overArea.getWidth();
+            int s0 = (int)(norm * total);
+            int s1 = std::min(s0 + std::max(1, total / overArea.getWidth()), total);
+            float mn = 0, mx = 0;
+            for (int s = s0; s < s1; ++s) { if (data[s] < mn) mn = data[s]; if (data[s] > mx) mx = data[s]; }
+            g.setColour(juce::Colour(0xFF1A2A1A));
+            float ty = cy - mx * amp, by = cy - mn * amp;
+            if (by - ty < 1) { ty = cy - 0.5f; by = cy + 0.5f; }
+            g.fillRect((float)(overArea.getX() + px), ty, 1.0f, by - ty);
+        }
+        // Slice lines on overview (thin white)
+        for (int i = 0; i < slot.getSliceCount(); ++i) {
+            float pt = slot.getSlicePoint(i);
+            float px = (float)overArea.getX() + pt * (float)overArea.getWidth();
+            g.setColour(juce::Colour(0x55FFFFFF));
+            g.fillRect(px, (float)overArea.getY(), 1.0f, (float)overH);
+        }
+        // Viewport indicator
+        int vpX = overArea.getX() + (int)(viewStart * overArea.getWidth());
+        int vpW = std::max(4, (int)(viewSpan * overArea.getWidth()));
+        g.setColour(juce::Colour(0x22FFFFFF));
+        g.fillRect(vpX, overArea.getY(), vpW, overH);
+        g.setColour(juce::Colour(0x44FFFFFF));
+        g.drawRect(vpX, overArea.getY(), vpW, overH, 1);
+
+        wfArea = wfArea.withTrimmedTop(overH + 3);
+    }
+
+    // ── Main waveform ───────────────────────────────────────────────────
+    {
+        const float* data = slot.getBuffer().getReadPointer(0);
+        int total = slot.getNumSamples();
+        float cy = (float)wfArea.getCentreY();
+        float amp = (float)wfArea.getHeight() * 0.43f;
+        float wfW = (float)wfArea.getWidth();
+
+        // Center line
+        g.setColour(juce::Colour(0xFF1A1A1A));
+        g.drawHorizontalLine((int)cy, (float)wfArea.getX(), (float)wfArea.getRight());
+
+        for (int px = 0; px < (int)wfW; ++px) {
+            float norm = viewStart + ((float)px / wfW) * viewSpan;
+            int s0 = juce::jlimit(0, total - 1, (int)(norm * total));
+            int s1 = juce::jlimit(s0 + 1, total, (int)((norm + viewSpan / wfW) * total));
+            float mn = 0, mx = 0;
+            for (int s = s0; s < s1; ++s) { if (data[s] < mn) mn = data[s]; if (data[s] > mx) mx = data[s]; }
+
+            bool inside = (norm >= slot.getStartPos() && norm <= slot.getEndPos());
+            float peak = std::max(std::abs(mx), std::abs(mn));
+            juce::Colour col;
+            if (!inside) {
+                col = juce::Colour(0xFF0A0A0A);
+            } else {
+                col = juce::Colour(kWfGreen);
+                if (peak > 0.20f) col = col.interpolatedWith(juce::Colour(kWfYellow), std::min((peak - 0.20f) / 0.35f, 1.0f));
+                if (peak > 0.55f) col = col.interpolatedWith(juce::Colour(kWfRed), std::min((peak - 0.55f) / 0.30f, 1.0f));
+            }
+            g.setColour(col);
+            float ty = cy - mx * amp, by = cy - mn * amp;
+            if (by - ty < 1) { ty = cy - 0.5f; by = cy + 0.5f; }
+            g.fillRect((float)(wfArea.getX() + px), ty, 1.0f, by - ty);
+        }
+    }
+
+    // Helper: normalize-to-pixel
+    auto normToPx = [&](float n) -> float {
+        return (float)wfArea.getX() + ((n - viewStart) / viewSpan) * (float)wfArea.getWidth();
+    };
+
+    // ── Determine which slice region the cursor is in ─────────────────
+    int cursorSlice = 0;
+    for (int i = 0; i < slot.getSliceCount(); ++i)
+        if (sliceCursorPos_ >= slot.getSlicePoint(i)) cursorSlice = i + 1;
+    int totalRegions = slot.getSliceCount() + 1;
+
+    // ── Slice region rendering: active = white wash + dark numbers ───
+    //    inactive = no wash, white numbers at top ─────────────────────
+    {
+        g.saveState();
+        g.reduceClipRegion(wfArea);
+
+        float prevPt = slot.getStartPos();
+        for (int i = 0; i <= slot.getSliceCount(); ++i) {
+            float nextPt = (i < slot.getSliceCount()) ? slot.getSlicePoint(i) : slot.getEndPos();
+            if (nextPt < viewStart || prevPt > viewEnd) { prevPt = nextPt; continue; }
+
+            float x1 = normToPx(std::max(prevPt, viewStart));
+            float x2 = normToPx(std::min(nextPt, viewEnd));
+            float regionW = x2 - x1;
+            bool active = (i == cursorSlice);
+
+            if (active) {
+                // Active region: softer white wash — visible but not blinding
+                g.setColour(juce::Colour(0xFFFFFFFF).withAlpha(0.15f));
+                g.fillRect(x1, (float)wfArea.getY(), regionW, (float)wfArea.getHeight());
+
+                // Dark cutout number at top — BIG and readable, with pitch arrow
+                if (regionW > 12.0f) {
+                    float fontSize = juce::jlimit(16.0f, 32.0f, regionW * 0.5f);
+                    g.setColour(juce::Colour(0xFF0D0D0D).withAlpha(0.8f));
+                    g.setFont(fontSize);
+                    juce::String numStr = juce::String(i + 1);
+                    float p = slot.getSlicePitch(i);
+                    if (p > 0.1f) numStr += juce::String(juce::CharPointer_UTF8("\xe2\x86\x91"));  // ↑
+                    else if (p < -0.1f) numStr += juce::String(juce::CharPointer_UTF8("\xe2\x86\x93"));  // ↓
+                    g.drawText(numStr,
+                               (int)x1, wfArea.getY() + 3, (int)regionW, (int)fontSize + 4,
+                               juce::Justification::centred);
+                }
+            } else {
+                // Inactive: no fill, white number at top — with pitch arrow
+                if (regionW > 12.0f) {
+                    float fontSize = juce::jlimit(14.0f, 26.0f, regionW * 0.45f);
+                    g.setColour(juce::Colour(0xFFFFFFFF).withAlpha(0.3f));
+                    g.setFont(fontSize);
+                    juce::String numStr = juce::String(i + 1);
+                    float p = slot.getSlicePitch(i);
+                    if (p > 0.1f) numStr += juce::String(juce::CharPointer_UTF8("\xe2\x86\x91"));
+                    else if (p < -0.1f) numStr += juce::String(juce::CharPointer_UTF8("\xe2\x86\x93"));
+                    g.drawText(numStr,
+                               (int)x1, wfArea.getY() + 3, (int)regionW, (int)fontSize + 4,
+                               juce::Justification::centred);
+                }
+            }
+
+            prevPt = nextPt;
+        }
+        g.restoreState();
+    }
+
+    // ── Slice lines (white, clean) ──────────────────────────────────────
+    for (int i = 0; i < slot.getSliceCount(); ++i) {
+        float pt = slot.getSlicePoint(i);
+        if (pt < viewStart || pt > viewEnd) continue;
+        float px = normToPx(pt);
+
+        // Vertical line
+        g.setColour(juce::Colour(0xBBFFFFFF));
+        g.fillRect(px - 0.5f, (float)wfArea.getY(), 1.5f, (float)wfArea.getHeight());
+
+        // Small notch at top
+        g.setColour(juce::Colour(0xDDFFFFFF));
+        g.fillRect(px - 3.0f, (float)wfArea.getY(), 7.0f, 2.0f);
+    }
+
+    // ── Start/End markers (subtle blue) ─────────────────────────────────
+    auto drawMarker = [&](float pos) {
+        if (pos < viewStart || pos > viewEnd) return;
+        float px = normToPx(pos);
+        g.setColour(juce::Colour(0xFF42A5F5).withAlpha(0.5f));
+        g.fillRect(px - 0.5f, (float)wfArea.getY(), 1.5f, (float)wfArea.getHeight());
+    };
+    drawMarker(slot.getStartPos());
+    drawMarker(slot.getEndPos());
+
+    // ── Playhead (green) ────────────────────────────────────────────────
+    if (slot.isPlaying()) {
+        float pos = slot.getPlaybackPosition();
+        if (pos >= viewStart && pos <= viewEnd) {
+            float px = normToPx(pos);
+            g.setColour(juce::Colour(kPadPlaying).withAlpha(0.8f));
+            g.fillRect(px - 0.5f, (float)wfArea.getY(), 2.0f, (float)wfArea.getHeight());
+        }
+    }
+
+    // ── Cursor (bright white, thin, with diamond head) ──────────────────
+    if (sliceCursorPos_ >= viewStart && sliceCursorPos_ <= viewEnd) {
+        float px = normToPx(sliceCursorPos_);
+        float top = (float)wfArea.getY();
+        float bot = (float)wfArea.getBottom();
+
+        // Thin cursor line
+        g.setColour(juce::Colour(0xFFFFFFFF));
+        g.fillRect(px - 0.5f, top + 8.0f, 1.0f, bot - top - 8.0f);
+
+        // Diamond head at top
+        juce::Path diamond;
+        diamond.addTriangle(px - 5.0f, top + 8.0f, px + 5.0f, top + 8.0f, px, top);
+        diamond.addTriangle(px - 5.0f, top + 8.0f, px + 5.0f, top + 8.0f, px, top + 16.0f);
+        g.fillPath(diamond);
+    }
+
+    // ── Footer hints (clean, no symbols) ────────────────────────────────
+    auto footerArea = inner.withTop(inner.getBottom() - 18);
+    g.setColour(juce::Colour(0xFF444444));
+    g.setFont(12.0f);
+    g.drawText("PUSH cut    L/R slices    LS audition    RS exit",
+               footerArea, juce::Justification::centred);
+
+    // ── Update encoder bar values ───────────────────────────────────────
+    encoderSlots_[0].valueLabel.setText(juce::String(sliceCursorPos_ * 100.0f, 1) + "%", juce::dontSendNotification);
+    encoderSlots_[1].valueLabel.setText(juce::String(sliceZoom_, 1) + "x", juce::dontSendNotification);
+    if (sliceAutoPreset_ == 0)
+        encoderSlots_[2].valueLabel.setText("OFF", juce::dontSendNotification);
+    else
+        encoderSlots_[2].valueLabel.setText(sliceAutoName(sliceAutoPreset_), juce::dontSendNotification);
+    // Per-slice pitch for current region
+    float curPitch = slot.getSlicePitch(cursorSlice);
+    if (std::abs(curPitch) < 0.05f)
+        encoderSlots_[3].valueLabel.setText("0st", juce::dontSendNotification);
+    else
+        encoderSlots_[3].valueLabel.setText((curPitch > 0 ? "+" : "") + juce::String(curPitch, 1) + "st", juce::dontSendNotification);
 }
 
 } // namespace grid

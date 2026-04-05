@@ -28,8 +28,8 @@ enum {
     I_P8_TRIG,     I_P8_PITCH,
     I_CLOCK,
     I_RESET,
-    I_START_CV,
-    I_END_CV,
+    I_SLICE_CV1,    // was I_START_CV — selects slice on assigned pad
+    I_SLICE_CV2,    // was I_END_CV — selects slice on assigned pad
     I_REC_GATE,
     I_REC_L,
     I_REC_R,
@@ -65,7 +65,7 @@ inline const char* inputBusName(int i) {
         "P7 Trig", "P7 Pitch",
         "P8 Trig", "P8 Pitch",
         "Clock",
-        "Reset", "Start CV", "End CV",
+        "Reset", "Slice CV1", "Slice CV2",
         "Rec Gate", "Rec L", "Rec R",
         "Filter CV"
     };
@@ -200,6 +200,10 @@ struct KitPadSlot {
     float filterCutoff = 20000.0f;
     float filterReso = 0.0f;
     int   lofiMode = 0;         // LofiMode enum
+    // Slice system
+    bool  sliceMode = false;
+    int   sliceCount = 0;
+    float slicePoints[64] = {};
     // Bundle (companion .kit.wav): -1 = not bundled, use filePath
     int   bundleOffset   = -1;
     int   bundleLength   = 0;
@@ -234,6 +238,15 @@ struct KitData {
             pad->setAttribute("filterCutoff", pads[i].filterCutoff);
             pad->setAttribute("filterReso", pads[i].filterReso);
             pad->setAttribute("lofiMode", pads[i].lofiMode);
+            pad->setAttribute("sliceMode", pads[i].sliceMode ? 1 : 0);
+            if (pads[i].sliceCount > 0) {
+                juce::String pts;
+                for (int s = 0; s < pads[i].sliceCount; ++s) {
+                    if (s > 0) pts += ",";
+                    pts += juce::String(pads[i].slicePoints[s], 6);
+                }
+                pad->setAttribute("slicePoints", pts);
+            }
             if (pads[i].bundleOffset >= 0) {
                 pad->setAttribute("bundleOffset", pads[i].bundleOffset);
                 pad->setAttribute("bundleLength", pads[i].bundleLength);
@@ -269,6 +282,17 @@ struct KitData {
             k.pads[i].filterCutoff = (float)pad->getDoubleAttribute("filterCutoff", 20000.0);
             k.pads[i].filterReso = (float)pad->getDoubleAttribute("filterReso", 0.0);
             k.pads[i].lofiMode = pad->getIntAttribute("lofiMode", 0);
+            k.pads[i].sliceMode = pad->getIntAttribute("sliceMode", 0) != 0;
+            k.pads[i].sliceCount = 0;
+            auto ptsStr = pad->getStringAttribute("slicePoints", "");
+            if (ptsStr.isNotEmpty()) {
+                juce::StringArray tokens;
+                tokens.addTokens(ptsStr, ",", "");
+                for (int s = 0; s < tokens.size() && s < 64; ++s) {
+                    k.pads[i].slicePoints[s] = tokens[s].getFloatValue();
+                    k.pads[i].sliceCount++;
+                }
+            }
             k.pads[i].bundleOffset = pad->getIntAttribute("bundleOffset", -1);
             k.pads[i].bundleLength = pad->getIntAttribute("bundleLength", 0);
             k.pads[i].bundleChannels = pad->getIntAttribute("bundleChannels", 1);

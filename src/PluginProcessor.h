@@ -164,6 +164,8 @@ private:
     int queueBars_ = 1;  // 1-4 bars ahead for OnBar mode
     bool debugMsgs_ = false;
     float encoderSpeed_ = 1.0f;
+    float muteFadeMs_ = 0.0f;   // 0 = instant mute/unmute
+    int sliceCVPad_[2] = { 0, 1 };  // which pad each Slice CV controls (-1=OFF, 0-7=pad)
 
 public:
     PadCCMap& getPadCCMap(int pad) { return padCCMaps_[juce::jlimit(0, kNumPads - 1, pad)]; }
@@ -183,6 +185,10 @@ public:
     void setDebugMsgs(bool b) { debugMsgs_ = b; }
     float getEncoderSpeed() const { return encoderSpeed_; }
     void setEncoderSpeed(float s) { encoderSpeed_ = juce::jlimit(1.0f, 3.0f, s); }
+    float getMuteFadeMs() const { return muteFadeMs_; }
+    void setMuteFadeMs(float ms) { muteFadeMs_ = juce::jlimit(0.0f, 500.0f, ms); engine_.setMuteFadeMs(ms); }
+    int getSliceCVPad(int cv) const { return sliceCVPad_[juce::jlimit(0, 1, cv)]; }
+    void setSliceCVPad(int cv, int pad) { sliceCVPad_[juce::jlimit(0, 1, cv)] = juce::jlimit(-1, 7, pad); }
     void rebootPlugin();
 private:
 
@@ -205,12 +211,12 @@ private:
     juce::String midiDeviceName_;
     juce::StringArray cachedMidiDeviceNames_ { "None" };
     bool midiClockEnabled_ = false;
-    bool midiTransportRunning_ = false;  // MIDI Start/Stop state
-    int midiClockCount_ = 0;             // counts 24 PPQN pulses
-    double midiClockLastBeatMs_ = 0.0;   // hi-res time of last beat
-    bool midiTrigPending_[kNumPads] = {};
-    float midiVelocity_[kNumPads] = {};
-    int midiNote_[kNumPads] = {};
+    bool midiTransportRunning_ = false;
+    int midiClockCount_ = 0;
+    double midiClockLastBeatMs_ = 0.0;
+    // Thread-safe MIDI collector: messages are timestamped on MIDI thread,
+    // delivered sample-accurately in processBlock. Replaces atomic flag pattern.
+    juce::MidiMessageCollector midiCollector_;
 
     // Ticker message system
     juce::String tickerMessage_;

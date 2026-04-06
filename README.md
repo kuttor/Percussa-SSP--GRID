@@ -185,11 +185,11 @@ Output: `GRID_artefacts/GRID.so` copy to SSP SD card `/plugins/`.
 
 ## Credits
 
-TheTechnobear — SSP SDK architecture and open source plugin reference.
-wavejockey — primary hardware tester.
-Handsonicsuki — CV and CC testing.
-Signalsmith Stretch — MIT licensed stretch library.
-Percussa — SSP hardware and SDK.
+- TheTechnobear — SSP SDK architecture and open source plugin reference.
+- wavejockey — primary hardware tester.
+- Handsonicsuki — CV and CC testing.
+- Signalsmith Stretch — MIT licensed stretch library.
+- Percussa — SSP hardware and SDK.
 
 ## License
 

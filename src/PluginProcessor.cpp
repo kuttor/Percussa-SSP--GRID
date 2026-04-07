@@ -123,9 +123,16 @@ void PluginProcessor::processBlock(juce::AudioBuffer<float>& buffer,
                         if (!engine_.isMuted(pad)) {
                             auto& slot = engine_.getSlot(pad);
                             if (slot.isSliceMode() && slot.getSliceCount() > 0) {
-                                // Slice mode: note selects slice (C2=36 = slice 0)
-                                int sliceIdx = juce::jlimit(0, std::max(0, slot.getSliceCount() - 1),
+                                // Slice mode: use currently selected slice
+                                // (set by CC Slice, CV, or note-based mapping)
+                                int sliceIdx = slot.getSelectedSlice();
+                                // Note-based slice mapping: if note is in
+                                // chromatic range (C2+), override selection
+                                // ONLY if no CC slice is assigned for this pad
+                                if (padCCMaps_[pad].ccStart == 0) {
+                                    sliceIdx = juce::jlimit(0, std::max(0, slot.getSliceCount() - 1),
                                                              note - 36);
+                                }
                                 float slStart, slEnd;
                                 slot.getSliceRegion(sliceIdx, slStart, slEnd);
                                 slot.setStartPos(slStart);

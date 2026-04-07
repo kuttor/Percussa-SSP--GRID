@@ -43,7 +43,9 @@ inline int pitchChannel(int pad) { return pad * 2 + 1; }
 
 enum {
     O_LEFT = 0, O_RIGHT,
-    O_MAX
+    O_PAD1, O_PAD2, O_PAD3, O_PAD4,
+    O_PAD5, O_PAD6, O_PAD7, O_PAD8,
+    O_MAX  // = 10
 };
 
 // -- Recording modes --
@@ -73,7 +75,9 @@ inline const char* inputBusName(int i) {
 }
 
 inline const char* outputBusName(int i) {
-    static const char* n[] = { "Left", "Right" };
+    static const char* n[] = { "Left", "Right",
+        "Pad 1", "Pad 2", "Pad 3", "Pad 4",
+        "Pad 5", "Pad 6", "Pad 7", "Pad 8" };
     return (i >= 0 && i < O_MAX) ? n[i] : "?";
 }
 
@@ -133,7 +137,7 @@ struct PadCCMap {
         }
     }
     static const char* ccName(int i) {
-        static const char* names[] = { "CC Start", "CC End", "CC Volume", "CC Pan", "CC Stretch", "CC Filter" };
+        static const char* names[] = { "CC Slice", "CC End", "CC Volume", "CC Pan", "CC Stretch", "CC Filter" };
         return (i >= 0 && i < kNumCCs) ? names[i] : "?";
     }
 };
@@ -200,10 +204,15 @@ struct KitPadSlot {
     float filterCutoff = 20000.0f;
     float filterReso = 0.0f;
     int   lofiMode = 0;         // LofiMode enum
-    // Slice system
+    float compSend = 0.0f;
+    int   outputChannel = -1;  // -1 = default
+    bool  sendToMix = true;
+    // Slice system — paired regions
     bool  sliceMode = false;
     int   sliceCount = 0;
-    float slicePoints[64] = {};
+    float sliceStarts[64] = {};
+    float sliceEnds[64] = {};
+    float slicePitches[64] = {};
     // Bundle (companion .kit.wav): -1 = not bundled, use filePath
     int   bundleOffset   = -1;
     int   bundleLength   = 0;
@@ -238,14 +247,21 @@ struct KitData {
             pad->setAttribute("filterCutoff", pads[i].filterCutoff);
             pad->setAttribute("filterReso", pads[i].filterReso);
             pad->setAttribute("lofiMode", pads[i].lofiMode);
+            pad->setAttribute("compSend", pads[i].compSend);
+            pad->setAttribute("outputChannel", pads[i].outputChannel);
+            pad->setAttribute("sendToMix", pads[i].sendToMix ? 1 : 0);
             pad->setAttribute("sliceMode", pads[i].sliceMode ? 1 : 0);
             if (pads[i].sliceCount > 0) {
-                juce::String pts;
+                juce::String starts, ends, pitches;
                 for (int s = 0; s < pads[i].sliceCount; ++s) {
-                    if (s > 0) pts += ",";
-                    pts += juce::String(pads[i].slicePoints[s], 6);
+                    if (s > 0) { starts += ","; ends += ","; pitches += ","; }
+                    starts += juce::String(pads[i].sliceStarts[s], 6);
+                    ends += juce::String(pads[i].sliceEnds[s], 6);
+                    pitches += juce::String(pads[i].slicePitches[s], 2);
                 }
-                pad->setAttribute("slicePoints", pts);
+                pad->setAttribute("sliceStarts", starts);
+                pad->setAttribute("sliceEnds", ends);
+                pad->setAttribute("slicePitches", pitches);
             }
             if (pads[i].bundleOffset >= 0) {
                 pad->setAttribute("bundleOffset", pads[i].bundleOffset);
@@ -282,16 +298,30 @@ struct KitData {
             k.pads[i].filterCutoff = (float)pad->getDoubleAttribute("filterCutoff", 20000.0);
             k.pads[i].filterReso = (float)pad->getDoubleAttribute("filterReso", 0.0);
             k.pads[i].lofiMode = pad->getIntAttribute("lofiMode", 0);
+            k.pads[i].compSend = (float)pad->getDoubleAttribute("compSend", 0.0);
+            k.pads[i].outputChannel = pad->getIntAttribute("outputChannel", -1);
+            k.pads[i].sendToMix = pad->getIntAttribute("sendToMix", 1) != 0;
             k.pads[i].sliceMode = pad->getIntAttribute("sliceMode", 0) != 0;
             k.pads[i].sliceCount = 0;
-            auto ptsStr = pad->getStringAttribute("slicePoints", "");
-            if (ptsStr.isNotEmpty()) {
-                juce::StringArray tokens;
-                tokens.addTokens(ptsStr, ",", "");
-                for (int s = 0; s < tokens.size() && s < 64; ++s) {
-                    k.pads[i].slicePoints[s] = tokens[s].getFloatValue();
+            auto startsStr = pad->getStringAttribute("sliceStarts", "");
+            auto endsStr = pad->getStringAttribute("sliceEnds", "");
+            if (startsStr.isNotEmpty() && endsStr.isNotEmpty()) {
+                juce::StringArray sTok, eTok;
+                sTok.addTokens(startsStr, ",", "");
+                eTok.addTokens(endsStr, ",", "");
+                int cnt = std::min(sTok.size(), eTok.size());
+                for (int s = 0; s < cnt && s < 64; ++s) {
+                    k.pads[i].sliceStarts[s] = sTok[s].getFloatValue();
+                    k.pads[i].sliceEnds[s] = eTok[s].getFloatValue();
                     k.pads[i].sliceCount++;
                 }
+            }
+            auto pitchStr = pad->getStringAttribute("slicePitches", "");
+            if (pitchStr.isNotEmpty()) {
+                juce::StringArray ptok;
+                ptok.addTokens(pitchStr, ",", "");
+                for (int s = 0; s < ptok.size() && s < 64; ++s)
+                    k.pads[i].slicePitches[s] = ptok[s].getFloatValue();
             }
             k.pads[i].bundleOffset = pad->getIntAttribute("bundleOffset", -1);
             k.pads[i].bundleLength = pad->getIntAttribute("bundleLength", 0);

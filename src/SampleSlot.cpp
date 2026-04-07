@@ -33,6 +33,9 @@ bool SampleSlot::loadFile(const juce::File& file)
     fileName_ = file.getFileName();
     filePath_ = file.getFullPathName();
     numSamples_.store(newSamples);
+    clearSlices();
+    startPos_ = 0.0f;
+    endPos_ = 1.0f;
 
     return true;
 }
@@ -55,6 +58,9 @@ bool SampleSlot::loadFromBuffer(const juce::AudioBuffer<float>& src, int numSamp
     fileName_ = name;
     filePath_ = path;
     numSamples_.store(numSamps);
+    clearSlices();
+    startPos_ = 0.0f;
+    endPos_ = 1.0f;
 
     return true;
 }
@@ -71,6 +77,9 @@ void SampleSlot::clear()
     normalizeGain_ = 1.0f;
     chokeGroup_ = ChokeGroup::None;
     midiChannel_ = 0;
+    clearSlices();
+    startPos_ = 0.0f;
+    endPos_ = 1.0f;
 }
 
 void SampleSlot::setReversed(bool r)

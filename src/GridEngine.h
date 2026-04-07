@@ -52,10 +52,23 @@ public:
     SampleSlot& getSlot(int index) { return slots_[juce::jlimit(0, kNumPads - 1, index)]; }
     const SampleSlot& getSlot(int index) const { return slots_[juce::jlimit(0, kNumPads - 1, index)]; }
 
+    // Per-pad output routing: set pointers before calling process()
+    // If set, pad renders into these buffers AND optionally into the stereo mix
+    void setPadOutputBuffers(int pad, float* l, float* r) {
+        int i = juce::jlimit(0, kNumPads - 1, pad);
+        padOutL_[i] = l;
+        padOutR_[i] = r;
+    }
+    void clearPadOutputBuffers() {
+        for (int i = 0; i < kNumPads; ++i) padOutL_[i] = padOutR_[i] = nullptr;
+    }
+
 private:
     SampleSlot slots_[kNumPads];
     bool muted_[kNumPads] = {};
     double sampleRate_ = 48000.0;
+    float* padOutL_[kNumPads] = {};
+    float* padOutR_[kNumPads] = {};
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(GridEngine)
 };

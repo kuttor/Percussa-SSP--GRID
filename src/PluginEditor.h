@@ -3,6 +3,7 @@
 #include <juce_audio_processors/juce_audio_processors.h>
 #include "PluginProcessor.h"
 #include <functional>
+#include <vector>
 
 namespace grid {
 
@@ -163,6 +164,10 @@ private:
     float sliceZoom_ = 1.0f;         // 1x = full sample, 32x = zoomed
     float sliceViewCenter_ = 0.5f;   // center of zoomed view (normalized)
     int sliceAutoPreset_ = 0;        // index into auto values
+
+    // Save user's trim positions — restored on exit so audition doesn't wreck them
+    float preSliceStartPos_ = 0.0f;
+    float preSliceEndPos_ = 1.0f;
     static constexpr int kSliceAutoCount = 6;
 
     // 0=OFF, 1=8, 2=16, 3=24, 4=32, 5=Zero-X (-1)
@@ -178,6 +183,52 @@ private:
     void enterSliceEditor();
     void exitSliceEditor();
     void paintSliceEditor(juce::Graphics& g, juce::Rectangle<int> area);
+
+    // ── Slice visual effects (arcade-style) ─────────────────────────────
+    // Splice impact animation
+    double spliceAnimStartMs_ = 0.0;
+    float spliceAnimPos_ = 0.5f;        // normalized position of the splice
+    bool spliceAnimActive_ = false;
+
+    // Stitch marks: where tape was cut and joined (persistent)
+    static constexpr int kMaxStitches = 32;
+    float stitchPositions_[kMaxStitches] = {};
+    int stitchCount_ = 0;
+    void addStitch(float normPos) {
+        if (stitchCount_ < kMaxStitches)
+            stitchPositions_[stitchCount_++] = normPos;
+    }
+    void clearStitches() { stitchCount_ = 0; }
+
+    // Action flash (brief full-screen tint on big actions)
+    double actionFlashStartMs_ = 0.0;
+    juce::Colour actionFlashColour_ { 0x00000000 };
+
+    void triggerSpliceAnim(float pos) {
+        spliceAnimActive_ = true;
+        spliceAnimPos_ = pos;
+        spliceAnimStartMs_ = juce::Time::getMillisecondCounterHiRes();
+    }
+    void triggerActionFlash(juce::Colour c) {
+        actionFlashStartMs_ = juce::Time::getMillisecondCounterHiRes();
+        actionFlashColour_ = c;
+    }
+
+    // Slice editor undo (multi-level stack, up to 16 levels)
+    struct SliceUndoState {
+        float sliceStarts[64] = {};
+        float sliceEnds[64] = {};
+        float slicePitch[64] = {};
+        int sliceCount = 0;
+        float startPos = 0.0f, endPos = 1.0f;
+        juce::AudioBuffer<float> audioBackup;
+        int numSamples = 0;
+    };
+    static constexpr int kMaxUndoLevels = 16;
+    std::vector<SliceUndoState> undoStack_;
+    void sliceSaveUndo();
+    void slicePerformUndo();
+    void sliceDeleteRegion();  // destructive: remove audio in cursor's region
 
     // ── Layout constants ─────────────────────────────────────────────────
     static constexpr int kTabHeight       = 36;

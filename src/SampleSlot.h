@@ -138,80 +138,118 @@ public:
     void setLofiMode(LofiMode m)         { lofiMode_ = m; }
     LofiMode getLofiMode() const         { return lofiMode_; }
 
-    // Slice system
-    static constexpr int kMaxSlicePoints = 64;
+    // Compressor send (0.0 = dry, 1.0 = full send to bus compressor)
+    void setCompSend(float s)            { compSend_ = juce::jlimit(0.0f, 1.0f, s); }
+    float getCompSend() const            { return compSend_; }
+
+    // Output routing
+    int getOutputChannel() const         { return outputChannel_; }
+    void setOutputChannel(int ch)        { outputChannel_ = juce::jlimit(0, 7, ch); }
+    bool getSendToMix() const            { return sendToMix_; }
+    void setSendToMix(bool b)            { sendToMix_ = b; }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // Slice system — paired start/end regions
+    // Only completed pairs are playable. First tap = start, second = end.
+    // ══════════════════════════════════════════════════════════════════════
+    static constexpr int kMaxSlices = 64;
     int getSliceCount() const            { return sliceCount_; }
-    float getSlicePoint(int i) const     { return (i >= 0 && i < sliceCount_) ? slicePoints_[i] : -1.0f; }
-    const float* getSlicePoints() const  { return slicePoints_; }
+    float getSliceStart(int i) const     { return (i >= 0 && i < sliceCount_) ? sliceStarts_[i] : 0.0f; }
+    float getSliceEnd(int i) const       { return (i >= 0 && i < sliceCount_) ? sliceEnds_[i] : 1.0f; }
     bool isSliceMode() const             { return sliceMode_; }
     void setSliceMode(bool on)           { sliceMode_ = on; }
     int getSelectedSlice() const         { return selectedSlice_; }
-    void setSelectedSlice(int s)         { selectedSlice_ = juce::jlimit(0, std::max(0, sliceCount_), s); }
+    void setSelectedSlice(int s)         { selectedSlice_ = juce::jlimit(0, std::max(0, sliceCount_ - 1), s); }
+    bool isSlicePending() const          { return slicePending_; }
+    float getSlicePendingStart() const   { return slicePendingStart_; }
 
-    // Per-slice pitch offset in semitones
-    float getSlicePitch(int regionIdx) const {
-        return (regionIdx >= 0 && regionIdx < kMaxSlicePoints) ? slicePitch_[regionIdx] : 0.0f;
-    }
-    void setSlicePitch(int regionIdx, float st) {
-        if (regionIdx >= 0 && regionIdx < kMaxSlicePoints)
-            slicePitch_[regionIdx] = juce::jlimit(-48.0f, 48.0f, st);
-    }
-    // Active slice pitch offset (applied during playback, set on trigger)
-    float getSlicePitchOffset() const     { return slicePitchOffset_; }
-    void setSlicePitchOffset(float st)    { slicePitchOffset_ = st; }
+    float getSlicePitch(int i) const     { return (i >= 0 && i < kMaxSlices) ? slicePitch_[i] : 0.0f; }
+    void setSlicePitch(int i, float st)  { if (i >= 0 && i < kMaxSlices) slicePitch_[i] = juce::jlimit(-48.0f, 48.0f, st); }
+    float getSlicePitchOffset() const    { return slicePitchOffset_; }
+    void setSlicePitchOffset(float st)   { slicePitchOffset_ = st; }
 
-    // Insert a slice point at normalized position. Returns index, or -1 if full.
-    int insertSlicePoint(float pos) {
-        if (sliceCount_ >= kMaxSlicePoints) return -1;
+    // First tap: begin a slice at cursor
+    bool beginSlice(float pos) {
+        if (slicePending_) return false;
+        slicePending_ = true;
+        slicePendingStart_ = juce::jlimit(0.0f, 1.0f, pos);
+        return true;
+    }
+    // Second tap: complete the slice
+    int completeSlice(float pos) {
+        if (!slicePending_ || sliceCount_ >= kMaxSlices) return -1;
         pos = juce::jlimit(0.0f, 1.0f, pos);
+        float s = std::min(slicePendingStart_, pos);
+        float e = std::max(slicePendingStart_, pos);
+        if (e - s < 0.005f) return -1;
         int idx = 0;
-        while (idx < sliceCount_ && slicePoints_[idx] < pos) idx++;
-        if (idx > 0 && std::abs(slicePoints_[idx - 1] - pos) < 0.005f) return -1;
-        if (idx < sliceCount_ && std::abs(slicePoints_[idx] - pos) < 0.005f) return -1;
-        // Shift right (points AND pitch — pitch is per-region, region idx+1 gets split)
+        while (idx < sliceCount_ && sliceStarts_[idx] < s) idx++;
         for (int i = sliceCount_; i > idx; --i) {
-            slicePoints_[i] = slicePoints_[i - 1];
-            slicePitch_[i + 1] = slicePitch_[i];  // shift region pitches right
+            sliceStarts_[i] = sliceStarts_[i - 1];
+            sliceEnds_[i] = sliceEnds_[i - 1];
+            slicePitch_[i] = slicePitch_[i - 1];
         }
-        slicePoints_[idx] = pos;
-        slicePitch_[idx + 1] = slicePitch_[idx];  // new region inherits pitch from parent
+        sliceStarts_[idx] = s;
+        sliceEnds_[idx] = e;
+        slicePitch_[idx] = 0.0f;
         sliceCount_++;
+        slicePending_ = false;
+        sliceMode_ = true;  // auto-enable when slices exist
+        return idx;
+    }
+    void cancelSlice() { slicePending_ = false; }
+
+    // Remove slice region containing pos, or by index
+    bool removeSlice(int idx) {
+        if (idx < 0 || idx >= sliceCount_) return false;
+        for (int i = idx; i < sliceCount_ - 1; ++i) {
+            sliceStarts_[i] = sliceStarts_[i + 1];
+            sliceEnds_[i] = sliceEnds_[i + 1];
+            slicePitch_[i] = slicePitch_[i + 1];
+        }
+        sliceCount_--;
+        if (sliceCount_ == 0) sliceMode_ = false;
+        return true;
+    }
+    int findSliceAt(float pos) const {
+        for (int i = 0; i < sliceCount_; ++i)
+            if (pos >= sliceStarts_[i] - 0.002f && pos <= sliceEnds_[i] + 0.002f) return i;
+        return -1;
+    }
+
+    void clearSlices() {
+        sliceCount_ = 0; selectedSlice_ = 0; slicePending_ = false;
+        sliceMode_ = false;  // no slices = no slice mode
+        for (int i = 0; i < kMaxSlices; ++i) slicePitch_[i] = 0.0f;
+    }
+    void getSliceRegion(int idx, float& outStart, float& outEnd) const {
+        if (idx >= 0 && idx < sliceCount_) { outStart = sliceStarts_[idx]; outEnd = sliceEnds_[idx]; }
+        else { outStart = startPos_; outEnd = endPos_; }
+    }
+
+    // Direct pair insertion (for auto-slice and state load)
+    int addSlicePair(float s, float e, float pitch = 0.0f) {
+        if (sliceCount_ >= kMaxSlices) return -1;
+        int idx = 0;
+        while (idx < sliceCount_ && sliceStarts_[idx] < s) idx++;
+        for (int i = sliceCount_; i > idx; --i) {
+            sliceStarts_[i] = sliceStarts_[i - 1];
+            sliceEnds_[i] = sliceEnds_[i - 1];
+            slicePitch_[i] = slicePitch_[i - 1];
+        }
+        sliceStarts_[idx] = s; sliceEnds_[idx] = e; slicePitch_[idx] = pitch;
+        sliceCount_++;
+        sliceMode_ = true;  // auto-enable
         return idx;
     }
 
-    // Remove slice point nearest to pos (within tolerance). Returns true if removed.
-    bool removeSlicePoint(float pos, float tolerance = 0.01f) {
-        int best = -1;
-        float bestDist = tolerance;
-        for (int i = 0; i < sliceCount_; ++i) {
-            float d = std::abs(slicePoints_[i] - pos);
-            if (d < bestDist) { bestDist = d; best = i; }
-        }
-        if (best < 0) return false;
-        // Shift left — merge region pitch (keep the earlier region's pitch)
-        for (int i = best; i < sliceCount_ - 1; ++i) {
-            slicePoints_[i] = slicePoints_[i + 1];
-            slicePitch_[i + 1] = slicePitch_[i + 2];
-        }
-        sliceCount_--;
-        return true;
-    }
-
-    // Remove all slice points
-    void clearSlices() {
-        sliceCount_ = 0; selectedSlice_ = 0;
-        for (int i = 0; i < kMaxSlicePoints; ++i) slicePitch_[i] = 0.0f;
-    }
-
-    // Auto-slice: evenly divide the start→end region
+    // Auto-slice: create N pairs covering start→end
     void autoSlice(int numSlices) {
         clearSlices();
-        if (numSlices < 2) return;
-        float s = startPos_, e = endPos_;
-        for (int i = 1; i < numSlices; ++i) {
-            float pos = s + (e - s) * ((float)i / (float)numSlices);
-            insertSlicePoint(pos);
-        }
+        if (numSlices < 1) return;
+        float s = startPos_, e = endPos_, w = (e - s) / (float)numSlices;
+        for (int i = 0; i < numSlices && i < kMaxSlices; ++i)
+            addSlicePair(s + (float)i * w, s + (float)(i + 1) * w);
     }
 
     // Transient detection: energy-based onset detector with zero-crossing snap
@@ -226,20 +264,19 @@ public:
         int regionLen = endSamp - startSamp;
         if (regionLen < 1024) return;
 
-        // Map sensitivity to detector params
+        // Map sensitivity to detector params — conservative by default
         float inv = 1.0f - sensitivity;
-        float threshMult = 1.0f + 7.0f * inv * inv;   // 8→1
-        int minInterOnset = (int)((80.0f - 60.0f * sensitivity) * 0.001f * (float)getSampleRate());
-        float silenceGateDb = -30.0f - 60.0f * sensitivity;
-        float silenceGate = std::pow(10.0f, silenceGateDb / 10.0f);  // power threshold
+        float threshMult = 2.0f + 12.0f * inv * inv;   // 14→2 (much higher floor)
+        int minInterOnsetSamples = (int)((120.0f - 80.0f * sensitivity) * 0.001f * (float)getSampleRate());
+        float silenceGateDb = -40.0f - 30.0f * sensitivity;
+        float silenceGate = std::pow(10.0f, silenceGateDb / 10.0f);
 
         // Pass 1: compute windowed energy
-        constexpr int kWin = 512;
-        constexpr int kHop = 128;
+        constexpr int kWin = 1024;   // wider window = smoother, less false positives
+        constexpr int kHop = 256;
         int numFrames = (regionLen - kWin) / kHop + 1;
         if (numFrames < 3) return;
 
-        // Use stack-friendly fixed buffer (max ~3000 frames for 4 bars at 48k)
         constexpr int kMaxFrames = 4096;
         if (numFrames > kMaxFrames) numFrames = kMaxFrames;
         float energy[kMaxFrames];
@@ -251,20 +288,35 @@ public:
             energy[f] = sum / kWin;
         }
 
-        // Pass 2: half-wave rectified first-difference + adaptive threshold + peak pick
+        // Compute peak energy for absolute threshold
+        float peakEnergy = 0.0f;
+        for (int f = 0; f < numFrames; ++f)
+            if (energy[f] > peakEnergy) peakEnergy = energy[f];
+        float absThreshold = peakEnergy * 0.02f;  // ignore anything below 2% of peak
+
+        // Pass 2: collect onset positions
+        float onsetPositions[kMaxSlices];
+        int numOnsets = 0;
         float prevE = energy[0];
-        float emaThresh = energy[0];
-        int lastOnsetFrame = -minInterOnset / kHop;
+        // Warm up EMA with first 10 frames average
+        float emaThresh = 0.0f;
+        int warmup = std::min(10, numFrames);
+        for (int f = 0; f < warmup; ++f) emaThresh += energy[f];
+        emaThresh /= (float)warmup;
+        int lastOnsetFrame = -minInterOnsetSamples / kHop;
 
         for (int f = 1; f < numFrames - 1; ++f) {
             float odf = std::max(0.0f, energy[f] - prevE);
-            emaThresh = 0.1f * odf + 0.9f * emaThresh;
+
+            // Slow adaptive threshold — doesn't chase the signal down
+            emaThresh = 0.03f * odf + 0.97f * emaThresh;
             float thresh = emaThresh * threshMult;
 
             float odfNext = std::max(0.0f, energy[f + 1] - energy[f]);
 
-            if (odf > thresh && odf > odfNext && energy[f] > silenceGate
-                && (f - lastOnsetFrame) >= (minInterOnset / kHop)) {
+            if (odf > thresh && odf > odfNext
+                && energy[f] > silenceGate && energy[f] > absThreshold
+                && (f - lastOnsetFrame) >= (minInterOnsetSamples / kHop)) {
                 // Backtrack to energy minimum in previous 10 frames
                 int bestFrame = f;
                 float bestEnergy = energy[f];
@@ -283,12 +335,22 @@ public:
 
                 float pos = (float)onsetSamp / (float)ns;
                 if (pos > startPos_ + 0.005f && pos < endPos_ - 0.005f) {
-                    insertSlicePoint(pos);
-                    if (sliceCount_ >= kMaxSlicePoints) break;
+                    onsetPositions[numOnsets++] = pos;
+                    if (numOnsets >= kMaxSlices) break;
                 }
                 lastOnsetFrame = f;
             }
             prevE = energy[f];
+        }
+
+        // Create pairs: each onset starts a region, next onset (or sample end) ends it
+        for (int i = 0; i < numOnsets; ++i) {
+            float pairEnd = (i + 1 < numOnsets) ? onsetPositions[i + 1] : endPos_;
+            addSlicePair(onsetPositions[i], pairEnd);
+        }
+        // If first onset isn't at the very start, add the initial region too
+        if (numOnsets > 0 && onsetPositions[0] > startPos_ + 0.01f) {
+            addSlicePair(startPos_, onsetPositions[0]);
         }
     }
 
@@ -315,13 +377,64 @@ public:
         return (float)best / (float)ns;
     }
 
-    // Get the start/end positions for a given slice index
-    // Slice 0 = startPos→first point, slice N = last point→endPos
-    void getSliceRegion(int sliceIdx, float& outStart, float& outEnd) const {
-        float s = startPos_, e = endPos_;
-        if (sliceCount_ == 0 || sliceIdx < 0) { outStart = s; outEnd = e; return; }
-        outStart = (sliceIdx == 0) ? s : slicePoints_[std::min(sliceIdx - 1, sliceCount_ - 1)];
-        outEnd = (sliceIdx >= sliceCount_) ? e : slicePoints_[std::min(sliceIdx, sliceCount_ - 1)];
+    // Delete a slice region and splice the buffer (tape-cut)
+    bool deleteSliceRegion(int sliceIdx, float& cursorPos) {
+        int ns = numSamples_.load();
+        if (ns == 0 || sliceIdx < 0 || sliceIdx >= sliceCount_) return false;
+
+        float regStart = sliceStarts_[sliceIdx];
+        float regEnd = sliceEnds_[sliceIdx];
+        int sampStart = (int)(regStart * ns);
+        int sampEnd = (int)(regEnd * ns);
+        int deleteLen = sampEnd - sampStart;
+        if (deleteLen <= 0 || deleteLen >= ns) return false;
+
+        int newLen = ns - deleteLen;
+        int numCh = buffer_.getNumChannels();
+
+        juce::AudioBuffer<float> newBuf(numCh, newLen);
+        for (int ch = 0; ch < numCh; ++ch) {
+            const float* src = buffer_.getReadPointer(ch);
+            float* dst = newBuf.getWritePointer(ch);
+            if (sampStart > 0)
+                std::memcpy(dst, src, sizeof(float) * sampStart);
+            if (sampEnd < ns)
+                std::memcpy(dst + sampStart, src + sampEnd, sizeof(float) * (ns - sampEnd));
+        }
+        buffer_ = std::move(newBuf);
+        numSamples_.store(newLen);
+
+        // Remove the deleted slice
+        removeSlice(sliceIdx);
+
+        // Rescale remaining slices to new buffer length
+        for (int i = 0; i < sliceCount_; ++i) {
+            if (sliceStarts_[i] * ns >= sampEnd)
+                sliceStarts_[i] = (sliceStarts_[i] * ns - deleteLen) / (float)newLen;
+            else
+                sliceStarts_[i] = (sliceStarts_[i] * ns) / (float)newLen;
+            if (sliceEnds_[i] * ns >= sampEnd)
+                sliceEnds_[i] = (sliceEnds_[i] * ns - deleteLen) / (float)newLen;
+            else
+                sliceEnds_[i] = (sliceEnds_[i] * ns) / (float)newLen;
+            sliceStarts_[i] = juce::jlimit(0.0f, 1.0f, sliceStarts_[i]);
+            sliceEnds_[i] = juce::jlimit(sliceStarts_[i], 1.0f, sliceEnds_[i]);
+        }
+
+        if (startPos_ * ns >= sampEnd)
+            startPos_ = (startPos_ * ns - deleteLen) / (float)newLen;
+        else
+            startPos_ = (startPos_ * ns) / (float)newLen;
+        if (endPos_ * ns >= sampEnd)
+            endPos_ = (endPos_ * ns - deleteLen) / (float)newLen;
+        else
+            endPos_ = (endPos_ * ns) / (float)newLen;
+        startPos_ = juce::jlimit(0.0f, 1.0f, startPos_);
+        endPos_ = juce::jlimit(startPos_, 1.0f, endPos_);
+
+        cursorPos = (float)sampStart / (float)newLen;
+        cursorPos = juce::jlimit(0.0f, 1.0f, cursorPos);
+        return true;
     }
 
     PadMode getMode() const     { return mode_; }
@@ -334,10 +447,12 @@ public:
     const juce::String& getFileName() const { return fileName_; }
     const juce::String& getFilePath() const { return filePath_; }
     int getNumSamples() const { return numSamples_.load(); }
+    void setNumSamplesFromUndo(int n) { numSamples_.store(n); }
     int getNumChannels() const { return numChannels_; }
     double getSampleRate() const { return fileSampleRate_; }
     float getPlaybackPosition() const;
     const juce::AudioBuffer<float>& getBuffer() const { return buffer_; }
+    juce::AudioBuffer<float>& getBuffer() { return buffer_; }  // mutable for undo
 
     // Voice access (for UI display)
     const Voice& getVoice(int i) const { return voices_[juce::jlimit(0, kMaxVoices - 1, i)]; }
@@ -410,14 +525,20 @@ private:
     LofiMode lofiMode_ = LofiMode::Off;
     float lofiPhaseL_ = 0.0f, lofiPhaseR_ = 0.0f;
     float lofiHeldL_ = 0.0f, lofiHeldR_ = 0.0f;
+    float compSend_ = 0.0f;  // compressor send amount
+    int outputChannel_ = -1;  // -1 = use default (pad index), 0-7 = specific output
+    bool sendToMix_ = true;   // send to stereo mix (L/R)
 
-    // Slice system
-    float slicePoints_[kMaxSlicePoints] = {};  // sorted normalized positions
-    float slicePitch_[kMaxSlicePoints] = {};   // per-region pitch offset (semitones)
+    // Slice system — paired regions
+    float sliceStarts_[kMaxSlices] = {};
+    float sliceEnds_[kMaxSlices] = {};
+    float slicePitch_[kMaxSlices] = {};
     int sliceCount_ = 0;
     bool sliceMode_ = false;
-    int selectedSlice_ = 0;  // which slice plays on next trigger
-    float slicePitchOffset_ = 0.0f;  // active pitch offset from current slice
+    int selectedSlice_ = 0;
+    float slicePitchOffset_ = 0.0f;
+    bool slicePending_ = false;
+    float slicePendingStart_ = 0.0f;
 
     // Bit crush: quantize to N bits, no dither (authentic vintage)
     static inline float bitCrush(float x, float levels, float invLevels) {

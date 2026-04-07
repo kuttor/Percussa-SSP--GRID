@@ -167,6 +167,34 @@ private:
     float muteFadeMs_ = 0.0f;   // 0 = instant mute/unmute
     int sliceCVPad_[2] = { 0, 1 };  // which pad each Slice CV controls (-1=OFF, 0-7=pad)
 
+    // Bus compressor (feedback topology, dual-time-constant release, soft knee)
+    float compThreshDb_  = -12.0f;  // dB
+    float compRatio_     = 4.0f;    // :1
+    float compAttackMs_  = 10.0f;   // ms (SSL default: 10ms lets transients through)
+    float compReleaseMs_ = 100.0f;  // ms (fast time constant for auto-release)
+    float compMakeupDb_  = 0.0f;    // dB
+    float compKneeDb_    = 6.0f;    // dB (soft knee width, 0=hard)
+    bool  compEnabled_   = false;
+    bool  compAutoRelease_ = true;  // dual-time-constant auto-release
+    int   compSCHpfHz_   = 80;     // sidechain HPF frequency (0=off, 60/80/120/150)
+    int   compSCSrc_     = -1;     // sidechain source pad (-1=bus, 0-7=pad)
+    float compDrive_     = 1.03f;  // subtle output saturation (1.0=off, 1.05=warm)
+
+    // Envelope state (dual-time-constant)
+    float compEnvFast_ = 0.0f;     // fast release envelope
+    float compEnvSlow_ = 0.0f;     // slow release envelope
+    float compPrevOutL_ = 0.0f;    // feedback: previous output sample
+    float compPrevOutR_ = 0.0f;
+
+    // Sidechain HPF state (2nd order Butterworth)
+    float scHpfX1_ = 0.0f, scHpfX2_ = 0.0f;
+    float scHpfY1_ = 0.0f, scHpfY2_ = 0.0f;
+    float scHpfB0_ = 1.0f, scHpfB1_ = 0.0f, scHpfB2_ = 0.0f;
+    float scHpfA1_ = 0.0f, scHpfA2_ = 0.0f;
+    int   scHpfLastHz_ = 0;  // recalc coeffs when changed
+
+    void updateSCHpfCoeffs();
+
 public:
     PadCCMap& getPadCCMap(int pad) { return padCCMaps_[juce::jlimit(0, kNumPads - 1, pad)]; }
     const PadCCMap& getPadCCMap(int pad) const { return padCCMaps_[juce::jlimit(0, kNumPads - 1, pad)]; }
@@ -189,6 +217,30 @@ public:
     void setMuteFadeMs(float ms) { muteFadeMs_ = juce::jlimit(0.0f, 500.0f, ms); engine_.setMuteFadeMs(ms); }
     int getSliceCVPad(int cv) const { return sliceCVPad_[juce::jlimit(0, 1, cv)]; }
     void setSliceCVPad(int cv, int pad) { sliceCVPad_[juce::jlimit(0, 1, cv)] = juce::jlimit(-1, 7, pad); }
+
+    // Bus compressor
+    bool  getCompEnabled() const     { return compEnabled_; }
+    void  setCompEnabled(bool b)     { compEnabled_ = b; }
+    float getCompThreshDb() const    { return compThreshDb_; }
+    void  setCompThreshDb(float db)  { compThreshDb_ = juce::jlimit(-60.0f, 0.0f, db); }
+    float getCompRatio() const       { return compRatio_; }
+    void  setCompRatio(float r)      { compRatio_ = juce::jlimit(1.0f, 20.0f, r); }
+    float getCompAttackMs() const    { return compAttackMs_; }
+    void  setCompAttackMs(float ms)  { compAttackMs_ = juce::jlimit(0.1f, 100.0f, ms); }
+    float getCompReleaseMs() const   { return compReleaseMs_; }
+    void  setCompReleaseMs(float ms) { compReleaseMs_ = juce::jlimit(10.0f, 500.0f, ms); }
+    float getCompMakeupDb() const    { return compMakeupDb_; }
+    void  setCompMakeupDb(float db)  { compMakeupDb_ = juce::jlimit(0.0f, 24.0f, db); }
+    float getCompKneeDb() const      { return compKneeDb_; }
+    void  setCompKneeDb(float db)    { compKneeDb_ = juce::jlimit(0.0f, 12.0f, db); }
+    bool  getCompAutoRelease() const { return compAutoRelease_; }
+    void  setCompAutoRelease(bool b) { compAutoRelease_ = b; }
+    int   getCompSCHpfHz() const     { return compSCHpfHz_; }
+    void  setCompSCHpfHz(int hz)     { compSCHpfHz_ = juce::jlimit(0, 200, hz); }
+    int   getCompSCSrc() const       { return compSCSrc_; }
+    void  setCompSCSrc(int p)        { compSCSrc_ = juce::jlimit(-1, 7, p); }
+    float getCompDrive() const       { return compDrive_; }
+    void  setCompDrive(float d)      { compDrive_ = juce::jlimit(1.0f, 1.15f, d); }
     void rebootPlugin();
 private:
 

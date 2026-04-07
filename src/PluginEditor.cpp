@@ -1,4 +1,5 @@
 #include "PluginEditor.h"
+#include <algorithm>
 
 namespace grid {
 
@@ -265,7 +266,7 @@ void PluginEditor::paint(juce::Graphics& g)
     // Version (bottom-right corner, small)
     g.setColour(juce::Colour(0xFF555555));
     g.setFont(14.0f);
-    g.drawText("0.1.9.1", w - 100, encY, 90, kEncoderBarH,
+    g.drawText("2.1.0-beta", w - 120, encY, 110, kEncoderBarH,
                juce::Justification::centredRight);
 
     // ── Popup overlay (renders on top of everything) ─────────────────
@@ -1465,7 +1466,7 @@ juce::String PluginEditor::getEncoderLabel(int page, int enc) const
             return l[enc];
         }
         case PAGE_FADE: {
-            const char* l[] = { "", "FADE IN", "FADE OUT", "---" };
+            const char* l[] = { "", "FADE IN", "FADE OUT", "COMP" };
             return l[enc];
         }
         case PAGE_FILTER: {
@@ -1570,6 +1571,11 @@ juce::String PluginEditor::getEncoderValue(int page, int enc) const
             };
             if (enc == 1) return fmtFade(slot.getFadeInMs(), slot.getFadeInCurve());
             if (enc == 2) return fmtFade(slot.getFadeOutMs(), slot.getFadeOutCurve());
+            if (enc == 3) {
+                float send = slot.getCompSend();
+                if (send < 0.01f) return "OFF";
+                return juce::String((int)(send * 100)) + "%";
+            }
             return "---";
         }
         case PAGE_FILTER: {
@@ -1766,25 +1772,28 @@ void PluginEditor::onLeftButton(bool val)
         repaint(); return;
     }
     if (sliceEditorMode_) {
-        // Left arrow = previous slice boundary (includes start, wraps)
+        // Left arrow = previous slice boundary (wraps)
         auto& slot = processor_.getEngine().getSlot(selectedPad_);
-        // Build full nav list: start + all slice points + end
-        float navPts[66];
+        float navPts[130];
         int navCount = 0;
-        navPts[navCount++] = slot.getStartPos();
-        for (int i = 0; i < slot.getSliceCount(); ++i) navPts[navCount++] = slot.getSlicePoint(i);
-        navPts[navCount++] = slot.getEndPos();
+        for (int i = 0; i < slot.getSliceCount(); ++i) {
+            navPts[navCount++] = slot.getSliceStart(i);
+            navPts[navCount++] = slot.getSliceEnd(i);
+        }
+        // Sort (already mostly sorted but ends might interleave)
+        std::sort(navPts, navPts + navCount);
 
-        // Find previous position
         int found = -1;
         for (int i = navCount - 1; i >= 0; --i) {
             if (navPts[i] < sliceCursorPos_ - 0.001f) { found = i; break; }
         }
-        if (found < 0) found = navCount - 1;  // wrap to end
-        sliceCursorPos_ = navPts[found];
-        sliceViewCenter_ = sliceCursorPos_;
-        float halfSpan = 0.5f / sliceZoom_;
-        sliceViewCenter_ = juce::jlimit(halfSpan, 1.0f - halfSpan, sliceViewCenter_);
+        if (found < 0 && navCount > 0) found = navCount - 1;  // wrap
+        if (found >= 0) {
+            sliceCursorPos_ = navPts[found];
+            sliceViewCenter_ = sliceCursorPos_;
+            float halfSpan = 0.5f / sliceZoom_;
+            sliceViewCenter_ = juce::jlimit(halfSpan, 1.0f - halfSpan, sliceViewCenter_);
+        }
         repaint(); return;
     }
     if (popupMode_) { closePopup(-1); return; }
@@ -1806,23 +1815,27 @@ void PluginEditor::onRightButton(bool val)
         repaint(); return;
     }
     if (sliceEditorMode_) {
-        // Right arrow = next slice boundary (includes end, wraps)
+        // Right arrow = next slice boundary (wraps)
         auto& slot = processor_.getEngine().getSlot(selectedPad_);
-        float navPts[66];
+        float navPts[130];
         int navCount = 0;
-        navPts[navCount++] = slot.getStartPos();
-        for (int i = 0; i < slot.getSliceCount(); ++i) navPts[navCount++] = slot.getSlicePoint(i);
-        navPts[navCount++] = slot.getEndPos();
+        for (int i = 0; i < slot.getSliceCount(); ++i) {
+            navPts[navCount++] = slot.getSliceStart(i);
+            navPts[navCount++] = slot.getSliceEnd(i);
+        }
+        std::sort(navPts, navPts + navCount);
 
         int found = -1;
         for (int i = 0; i < navCount; ++i) {
             if (navPts[i] > sliceCursorPos_ + 0.001f) { found = i; break; }
         }
-        if (found < 0) found = 0;  // wrap to start
-        sliceCursorPos_ = navPts[found];
-        sliceViewCenter_ = sliceCursorPos_;
-        float halfSpan = 0.5f / sliceZoom_;
-        sliceViewCenter_ = juce::jlimit(halfSpan, 1.0f - halfSpan, sliceViewCenter_);
+        if (found < 0 && navCount > 0) found = 0;  // wrap
+        if (found >= 0) {
+            sliceCursorPos_ = navPts[found];
+            sliceViewCenter_ = sliceCursorPos_;
+            float halfSpan = 0.5f / sliceZoom_;
+            sliceViewCenter_ = juce::jlimit(halfSpan, 1.0f - halfSpan, sliceViewCenter_);
+        }
         repaint(); return;
     }
     if (configMode_) {
@@ -1844,7 +1857,8 @@ void PluginEditor::onUpButton(bool val)
         repaint(); return;
     }
     if (sliceEditorMode_) {
-        repaint(); return;  // up/down unused in slice editor
+        slicePerformUndo();
+        repaint(); return;
     }
     if (popupMode_) {
         popupIndex_ = std::max(0, popupIndex_ - 1);
@@ -1895,7 +1909,8 @@ void PluginEditor::onDownButton(bool val)
         repaint(); return;
     }
     if (sliceEditorMode_) {
-        repaint(); return;  // up/down unused in slice editor
+        exitSliceEditor();
+        return;
     }
     if (popupMode_) {
         popupIndex_ = std::min(popupOptions_.size() - 1, popupIndex_ + 1);
@@ -1957,17 +1972,20 @@ void PluginEditor::onLeftShiftButton(bool val)
         return;
     }
 
-    // Slice editor: LS hold = audition current slice
+    // Slice editor: LS = audition current slice
     if (sliceEditorMode_) {
         auto& slot = processor_.getEngine().getSlot(selectedPad_);
-        if (slot.isLoaded() && slot.getSliceCount() > 0) {
-            int curSlice = 0;
-            for (int i = 0; i < slot.getSliceCount(); ++i)
-                if (sliceCursorPos_ >= slot.getSlicePoint(i)) curSlice = i + 1;
-            float slStart, slEnd;
-            slot.getSliceRegion(curSlice, slStart, slEnd);
-            slot.setStartPos(slStart);
-            slot.setEndPos(slEnd);
+        if (slot.isLoaded()) {
+            int curSlice = slot.findSliceAt(sliceCursorPos_);
+            if (curSlice >= 0) {
+                float slStart, slEnd;
+                slot.getSliceRegion(curSlice, slStart, slEnd);
+                slot.setStartPos(slStart);
+                slot.setEndPos(slEnd);
+                slot.setSelectedSlice(curSlice);
+                slot.setSlicePitchOffset(slot.getSlicePitch(curSlice));
+            }
+            slot.stop();
             processor_.getEngine().trigger(selectedPad_);
         }
         repaint();
@@ -2147,10 +2165,14 @@ void PluginEditor::onEncoder(int n, float delta)
     if (sliceEditorMode_) {
         auto& slot = processor_.getEngine().getSlot(selectedPad_);
         if (n == 0) {
-            // Cursor with momentum: slow turn = micro precision, fast turn = big jumps
+            // Cursor with momentum: slow turn = precise, fast turn = crosses whole sample
             float absDelta = std::abs(delta);
-            float speed = absDelta < 1.5f ? absDelta : absDelta * absDelta * 0.5f;
-            float step = (delta > 0 ? 1.0f : -1.0f) * speed * 0.003f / sliceZoom_;
+            float speed;
+            if (absDelta < 1.5f)
+                speed = absDelta * 0.008f;           // slow: fine control
+            else
+                speed = absDelta * absDelta * 0.006f; // fast: quadratic, covers ground
+            float step = (delta > 0 ? 1.0f : -1.0f) * speed / sliceZoom_;
             sliceCursorPos_ = juce::jlimit(0.0f, 1.0f, sliceCursorPos_ + step);
             // Keep cursor visible: pan view to follow
             float halfSpan = 0.5f / sliceZoom_;
@@ -2176,11 +2198,11 @@ void PluginEditor::onEncoder(int n, float delta)
         else if (n == 3) {
             // Per-slice pitch: adjust pitch for the slice the cursor is in
             auto& slot = processor_.getEngine().getSlot(selectedPad_);
-            int curSlice = 0;
-            for (int i = 0; i < slot.getSliceCount(); ++i)
-                if (sliceCursorPos_ >= slot.getSlicePoint(i)) curSlice = i + 1;
-            float cur = slot.getSlicePitch(curSlice);
-            slot.setSlicePitch(curSlice, cur + delta * 1.0f);
+            int curSlice = slot.findSliceAt(sliceCursorPos_);
+            if (curSlice >= 0) {
+                float cur = slot.getSlicePitch(curSlice);
+                slot.setSlicePitch(curSlice, cur + delta * 1.0f);
+            }
         }
         repaint();
         return;
@@ -2291,6 +2313,9 @@ void PluginEditor::onEncoder(int n, float delta)
             if (n == 2) {
                 slot.setFadeOutMs(slot.getFadeOutMs() - delta * fadeStep(slot.getFadeOutMs()));
             }
+            if (n == 3) {
+                slot.setCompSend(slot.getCompSend() + delta * 0.05f);
+            }
             break;
         }
 
@@ -2372,21 +2397,24 @@ void PluginEditor::onEncoderSwitch(int n, bool val)
     if (sliceEditorMode_) {
         auto& slot = processor_.getEngine().getSlot(selectedPad_);
         if (n == 0) {
-            // Push cursor = insert or remove slice at cursor position
-            if (!slot.removeSlicePoint(sliceCursorPos_, 0.01f / sliceZoom_)) {
-                int idx = slot.insertSlicePoint(sliceCursorPos_);
+            // Two-tap slicing: first push = start, second = complete
+            // If cursor is inside existing slice, remove it instead
+            int existing = slot.findSliceAt(sliceCursorPos_);
+            if (existing >= 0) {
+                slot.removeSlice(existing);
+                triggerActionFlash(juce::Colour(0xFFFF4444));
+                processor_.showTickerPublic("Slice removed — " + juce::String(slot.getSliceCount()) + " remain");
+            } else if (slot.isSlicePending()) {
+                int idx = slot.completeSlice(sliceCursorPos_);
                 if (idx >= 0) {
-                    int regions = slot.getSliceCount() + 1;
-                    processor_.showTickerPublic("Cut — " + juce::String(regions) + " slices");
-                } else {
-                    processor_.showTickerPublic("64 slice limit reached");
+                    triggerActionFlash(juce::Colour(0xFF4CAF50));
+                    processor_.showTickerPublic("Slice " + juce::String(idx + 1) + " completed — " + juce::String(slot.getSliceCount()) + " total");
                 }
-            } else {
-                int regions = slot.getSliceCount() + 1;
-                if (slot.getSliceCount() == 0)
-                    processor_.showTickerPublic("All cuts removed");
                 else
-                    processor_.showTickerPublic("Cut removed — " + juce::String(regions) + " slices");
+                    processor_.showTickerPublic("Too close — move cursor");
+            } else {
+                slot.beginSlice(sliceCursorPos_);
+                processor_.showTickerPublic("Slice start set — push again for end");
             }
         }
         else if (n == 1) {
@@ -2401,23 +2429,25 @@ void PluginEditor::onEncoderSwitch(int n, bool val)
             int val = sliceAutoValue(sliceAutoPreset_);
             if (val == 0) {
                 slot.clearSlices();
+                clearStitches();
                 processor_.showTickerPublic("All slices cleared");
             } else if (val == -1) {
-                // Transient detection
-                slot.detectTransients(0.5f);
+                slot.detectTransients(0.3f);
+                triggerActionFlash(juce::Colour(0xFF42A5F5));
                 processor_.showTickerPublic("Transients: " + juce::String(slot.getSliceCount()) + " cuts");
             } else {
                 slot.autoSlice(val);
+                triggerActionFlash(juce::Colour(0xFF42A5F5));
                 processor_.showTickerPublic("Auto-sliced into " + juce::String(val));
             }
         }
         else if (n == 3) {
             // Push pitch = reset pitch for current slice to 0
-            int curSlice = 0;
-            for (int i = 0; i < slot.getSliceCount(); ++i)
-                if (sliceCursorPos_ >= slot.getSlicePoint(i)) curSlice = i + 1;
-            slot.setSlicePitch(curSlice, 0.0f);
-            processor_.showTickerPublic("Slice " + juce::String(curSlice + 1) + " pitch reset");
+            int curSlice = slot.findSliceAt(sliceCursorPos_);
+            if (curSlice >= 0) {
+                slot.setSlicePitch(curSlice, 0.0f);
+                processor_.showTickerPublic("Slice " + juce::String(curSlice + 1) + " pitch reset");
+            }
         }
         repaint();
         return;
@@ -2587,6 +2617,7 @@ void PluginEditor::onEncoderSwitch(int n, bool val)
         case PAGE_FADE:
             if (n == 1) slot.setFadeInCurve(slot.getFadeInCurve() == 0 ? 1 : 0);
             if (n == 2) slot.setFadeOutCurve(slot.getFadeOutCurve() == 0 ? 1 : 0);
+            if (n == 3) slot.setCompSend(0.0f);
             break;
         case PAGE_FILTER:
             if (n == 1) slot.setFilterType(FilterType::Off);
@@ -2699,6 +2730,16 @@ void PluginEditor::buildConfigRows()
         configRows_.add(row);
     }
 
+    // ── Spacer before routing ──
+    { ConfigRow s; s.type = ConfigRowType::Spacer; s.padIndex = -1; s.paramIndex = -1;
+      configRows_.add(s); }
+
+    // Per-pad output routing
+    { ConfigRow r; r.type = ConfigRowType::Enum; r.label = "Output Ch";
+      r.padIndex = selectedPad_; r.paramIndex = 9; configRows_.add(r); }
+    { ConfigRow r; r.type = ConfigRowType::Enum; r.label = "Send to Mix";
+      r.padIndex = selectedPad_; r.paramIndex = 10; configRows_.add(r); }
+
     // ── Divider ──
     ConfigRow div;
     div.type = ConfigRowType::Divider;
@@ -2729,6 +2770,34 @@ void PluginEditor::buildConfigRows()
     // 8 = Slice CV 2
     { ConfigRow r; r.type = ConfigRowType::Enum; r.label = "Slice CV 2";
       r.padIndex = -1; r.paramIndex = 8; configRows_.add(r); }
+
+    // ── Spacer ──
+    { ConfigRow s; s.type = ConfigRowType::Spacer; s.padIndex = -1; s.paramIndex = -1;
+      configRows_.add(s); }
+
+    // ── Compressor group ──
+    { ConfigRow r; r.type = ConfigRowType::Enum; r.label = "Compressor";
+      r.padIndex = -1; r.paramIndex = 9; configRows_.add(r); }
+    { ConfigRow r; r.type = ConfigRowType::Enum; r.label = "Threshold";
+      r.padIndex = -1; r.paramIndex = 10; configRows_.add(r); }
+    { ConfigRow r; r.type = ConfigRowType::Enum; r.label = "Ratio";
+      r.padIndex = -1; r.paramIndex = 11; configRows_.add(r); }
+    { ConfigRow r; r.type = ConfigRowType::Enum; r.label = "Attack";
+      r.padIndex = -1; r.paramIndex = 12; configRows_.add(r); }
+    { ConfigRow r; r.type = ConfigRowType::Enum; r.label = "Release";
+      r.padIndex = -1; r.paramIndex = 13; configRows_.add(r); }
+    { ConfigRow r; r.type = ConfigRowType::Enum; r.label = "Makeup";
+      r.padIndex = -1; r.paramIndex = 14; configRows_.add(r); }
+    { ConfigRow r; r.type = ConfigRowType::Enum; r.label = "Knee";
+      r.padIndex = -1; r.paramIndex = 15; configRows_.add(r); }
+    { ConfigRow r; r.type = ConfigRowType::Enum; r.label = "Auto Rel";
+      r.padIndex = -1; r.paramIndex = 16; configRows_.add(r); }
+    { ConfigRow r; r.type = ConfigRowType::Enum; r.label = "SC HPF";
+      r.padIndex = -1; r.paramIndex = 17; configRows_.add(r); }
+    { ConfigRow r; r.type = ConfigRowType::Enum; r.label = "SC Source";
+      r.padIndex = -1; r.paramIndex = 18; configRows_.add(r); }
+    { ConfigRow r; r.type = ConfigRowType::Enum; r.label = "Drive";
+      r.padIndex = -1; r.paramIndex = 19; configRows_.add(r); }
 
     // ── Spacer between groups ──
     { ConfigRow s; s.type = ConfigRowType::Spacer; s.padIndex = -1; s.paramIndex = -1;
@@ -2806,6 +2875,13 @@ juce::String configGetValueText(const PluginProcessor& proc, const ConfigRow& ro
             const char* names[] = { "OFF", "8-Bit", "12-Bit", "SP-1200", "MPC-60" };
             return names[static_cast<int>(proc.getEngine().getSlot(row.padIndex).getLofiMode())];
         }
+        if (row.paramIndex == 9) {
+            int ch = proc.getEngine().getSlot(row.padIndex).getOutputChannel();
+            return (ch < 0) ? "Default" : "Out " + juce::String(ch + 1);
+        }
+        if (row.paramIndex == 10) {
+            return proc.getEngine().getSlot(row.padIndex).getSendToMix() ? "ON" : "OFF";
+        }
     }
     if (row.type == ConfigRowType::Enum && row.padIndex < 0) {
         switch (row.paramIndex) {
@@ -2835,6 +2911,27 @@ juce::String configGetValueText(const PluginProcessor& proc, const ConfigRow& ro
             case 8: {  // Slice CV 2
                 int p = proc.getSliceCVPad(1);
                 return (p < 0) ? "OFF" : "Pad " + juce::String(p + 1);
+            }
+            case 9:   return proc.getCompEnabled() ? "ON" : "OFF";
+            case 10:  return juce::String((int)proc.getCompThreshDb()) + " dB";
+            case 11:  return juce::String(proc.getCompRatio(), 1) + ":1";
+            case 12:  return juce::String(proc.getCompAttackMs(), 1) + "ms";
+            case 13:  return juce::String((int)proc.getCompReleaseMs()) + "ms";
+            case 14:  return juce::String(proc.getCompMakeupDb(), 1) + " dB";
+            case 15:  return juce::String(proc.getCompKneeDb(), 0) + " dB";
+            case 16:  return proc.getCompAutoRelease() ? "ON" : "OFF";
+            case 17: {
+                int hz = proc.getCompSCHpfHz();
+                return (hz <= 0) ? "OFF" : juce::String(hz) + " Hz";
+            }
+            case 18: {
+                int src = proc.getCompSCSrc();
+                return (src < 0) ? "Bus" : "Pad " + juce::String(src + 1);
+            }
+            case 19: {
+                float d = proc.getCompDrive();
+                if (d < 1.005f) return "OFF";
+                return juce::String((d - 1.0f) * 100.0f, 0) + "%";
             }
             default: return "?";
         }
@@ -2995,6 +3092,20 @@ void PluginEditor::configAdjustValue(int selIdx, int delta)
         return;
     }
 
+    // Per-pad Output Channel (paramIndex 9)
+    if (row.type == ConfigRowType::Enum && row.padIndex >= 0 && row.paramIndex == 9) {
+        auto& slot = processor_.getEngine().getSlot(row.padIndex);
+        slot.setOutputChannel(slot.getOutputChannel() + delta);
+        return;
+    }
+
+    // Per-pad Send to Mix (paramIndex 10)
+    if (row.type == ConfigRowType::Enum && row.padIndex >= 0 && row.paramIndex == 10) {
+        auto& slot = processor_.getEngine().getSlot(row.padIndex);
+        slot.setSendToMix(delta > 0);
+        return;
+    }
+
     if (row.type == ConfigRowType::Enum && row.padIndex < 0) {
         switch (row.paramIndex) {
             case 0: {  // Mute Mode
@@ -3035,6 +3146,26 @@ void PluginEditor::configAdjustValue(int selIdx, int delta)
                 processor_.setSliceCVPad(1, juce::jlimit(-1, 7, p));
                 break;
             }
+            case 9:  processor_.setCompEnabled(delta > 0); break;
+            case 10: processor_.setCompThreshDb(processor_.getCompThreshDb() + (float)delta * 2.0f); break;
+            case 11: processor_.setCompRatio(processor_.getCompRatio() + (float)delta * 0.5f); break;
+            case 12: processor_.setCompAttackMs(processor_.getCompAttackMs() + (float)delta * 1.0f); break;
+            case 13: processor_.setCompReleaseMs(processor_.getCompReleaseMs() + (float)delta * 10.0f); break;
+            case 14: processor_.setCompMakeupDb(processor_.getCompMakeupDb() + (float)delta * 0.5f); break;
+            case 15: processor_.setCompKneeDb(processor_.getCompKneeDb() + (float)delta * 1.0f); break;
+            case 16: processor_.setCompAutoRelease(delta > 0); break;
+            case 17: {
+                // Step through HPF presets: 0, 60, 80, 120, 150
+                const int steps[] = { 0, 60, 80, 120, 150 };
+                int cur = processor_.getCompSCHpfHz();
+                int idx = 0;
+                for (int i = 0; i < 5; ++i) if (steps[i] == cur) { idx = i; break; }
+                idx = juce::jlimit(0, 4, idx + delta);
+                processor_.setCompSCHpfHz(steps[idx]);
+                break;
+            }
+            case 18: processor_.setCompSCSrc(processor_.getCompSCSrc() + delta); break;
+            case 19: processor_.setCompDrive(processor_.getCompDrive() + (float)delta * 0.01f); break;
             default: break;
         }
     }
@@ -3381,6 +3512,12 @@ void PluginEditor::enterSliceEditor()
     sliceZoom_ = 1.0f;
     sliceViewCenter_ = 0.5f;
     sliceAutoPreset_ = 0;
+    spliceAnimActive_ = false;
+    clearStitches();
+    undoStack_.clear();
+    // Save user's trim so audition/triggers don't permanently mutate them
+    preSliceStartPos_ = slot.getStartPos();
+    preSliceEndPos_ = slot.getEndPos();
     // Encoder bar shows slice editor controls
     encoderSlots_[0].nameLabel.setText("CURSOR", juce::dontSendNotification);
     encoderSlots_[0].valueLabel.setText("[CUT]", juce::dontSendNotification);
@@ -3397,9 +3534,98 @@ void PluginEditor::enterSliceEditor()
 void PluginEditor::exitSliceEditor()
 {
     sliceEditorMode_ = false;
+    undoStack_.clear();
     leftShiftHeld_ = false;
+    // Restore user's trim positions (audition may have changed them)
+    auto& slot = processor_.getEngine().getSlot(selectedPad_);
+    slot.setStartPos(preSliceStartPos_);
+    slot.setEndPos(preSliceEndPos_);
+    slot.cancelSlice();  // clear any pending slice start
     updateEncoderDisplay();
     repaint();
+}
+
+void PluginEditor::sliceSaveUndo()
+{
+    auto& slot = processor_.getEngine().getSlot(selectedPad_);
+    if (!slot.isLoaded()) return;
+
+    // Cap stack size
+    if ((int)undoStack_.size() >= kMaxUndoLevels)
+        undoStack_.erase(undoStack_.begin());
+
+    SliceUndoState state;
+    state.sliceCount = slot.getSliceCount();
+    state.startPos = slot.getStartPos();
+    state.endPos = slot.getEndPos();
+    for (int i = 0; i < slot.getSliceCount(); ++i) {
+        state.sliceStarts[i] = slot.getSliceStart(i);
+        state.sliceEnds[i] = slot.getSliceEnd(i);
+        state.slicePitch[i] = slot.getSlicePitch(i);
+    }
+    state.numSamples = slot.getNumSamples();
+    state.audioBackup.makeCopyOf(slot.getBuffer());
+    undoStack_.push_back(std::move(state));
+}
+
+void PluginEditor::slicePerformUndo()
+{
+    if (undoStack_.empty()) {
+        processor_.showTickerPublic("Nothing to undo");
+        return;
+    }
+    auto& slot = processor_.getEngine().getSlot(selectedPad_);
+    auto& state = undoStack_.back();
+
+    // Restore audio buffer
+    slot.getBuffer().makeCopyOf(state.audioBackup);
+    slot.setNumSamplesFromUndo(state.numSamples);
+    slot.setStartPos(state.startPos);
+    slot.setEndPos(state.endPos);
+
+    // Restore slices
+    slot.clearSlices();
+    for (int i = 0; i < state.sliceCount; ++i)
+        slot.addSlicePair(state.sliceStarts[i], state.sliceEnds[i], state.slicePitch[i]);
+
+    undoStack_.pop_back();
+    int remaining = (int)undoStack_.size();
+    processor_.showTickerPublic("Undo (" + juce::String(remaining) + " left)");
+}
+
+void PluginEditor::sliceDeleteRegion()
+{
+    auto& slot = processor_.getEngine().getSlot(selectedPad_);
+    if (!slot.isLoaded() || slot.getSliceCount() == 0) {
+        processor_.showTickerPublic("No slices to delete");
+        return;
+    }
+    // Find cursor's region
+    int curSlice = slot.findSliceAt(sliceCursorPos_);
+    if (curSlice < 0) {
+        processor_.showTickerPublic("Cursor not in a slice");
+        return;
+    }
+
+    // Save undo BEFORE destructive operation
+    sliceSaveUndo();
+
+    float newCursor = sliceCursorPos_;
+    if (slot.deleteSliceRegion(curSlice, newCursor)) {
+        // Trigger the Capcom impact
+        triggerSpliceAnim(newCursor);
+        triggerActionFlash(juce::Colour(0xFFFF4444));
+        addStitch(newCursor);
+
+        sliceCursorPos_ = newCursor;
+        sliceViewCenter_ = newCursor;
+        float halfSpan = 0.5f / sliceZoom_;
+        sliceViewCenter_ = juce::jlimit(halfSpan, 1.0f - halfSpan, sliceViewCenter_);
+        processor_.showTickerPublic("SPLICE — " + juce::String(slot.getSliceCount()) + " slices");
+    } else {
+        if (!undoStack_.empty()) undoStack_.pop_back();  // undo the save since nothing happened
+        processor_.showTickerPublic("Can't delete");
+    }
 }
 
 void PluginEditor::paintSliceEditor(juce::Graphics& g, juce::Rectangle<int> area)
@@ -3419,11 +3645,13 @@ void PluginEditor::paintSliceEditor(juce::Graphics& g, juce::Rectangle<int> area
     const int boxB = kEncoderBarH + 6;
     auto box = juce::Rectangle<int>(boxL, boxT, w - boxL - boxR, h - boxT - boxB);
 
-    // Box background + border
+    // Box background + border (arcade-style double border)
     g.setColour(juce::Colour(0xFF1A1A1A));
     g.fillRoundedRectangle(box.toFloat(), 8.0f);
+    g.setColour(juce::Colour(kTabActive).withAlpha(0.25f));
+    g.drawRoundedRectangle(box.toFloat(), 8.0f, 2.0f);
     g.setColour(juce::Colour(0xFF333333));
-    g.drawRoundedRectangle(box.toFloat(), 8.0f, 1.5f);
+    g.drawRoundedRectangle(box.toFloat().reduced(3.0f), 6.0f, 1.0f);
 
     auto inner = box.reduced(12, 4);
 
@@ -3432,28 +3660,28 @@ void PluginEditor::paintSliceEditor(juce::Graphics& g, juce::Rectangle<int> area
     if (fname.contains(".")) fname = fname.upToLastOccurrenceOf(".", false, false);
 
     int sc = slot.getSliceCount();
-    int totalReg = sc + 1;
-    int hdrCursorSlice = 0;
-    for (int i = 0; i < sc; ++i)
-        if (sliceCursorPos_ >= slot.getSlicePoint(i)) hdrCursorSlice = i + 1;
-    float cvNorm = (totalReg > 1) ? (float)hdrCursorSlice / (float)(totalReg - 1) : 0.0f;
+    int hdrCursorSlice = slot.findSliceAt(sliceCursorPos_);
+    float cvNorm = (sc > 1 && hdrCursorSlice >= 0) ? (float)hdrCursorSlice / (float)(sc - 1) : 0.0f;
     float cvVolts = cvNorm * 10.0f - 5.0f;
     int ccNum = processor_.getPadCCMap(selectedPad_).ccStart;
 
     // Left: pad + slice info
     g.setColour(juce::Colour(0xFFDDDDDD));
     g.setFont(18.0f);
+    juce::String sliceStr = (hdrCursorSlice >= 0)
+        ? juce::String(hdrCursorSlice + 1) + "/" + juce::String(sc)
+        : "--/" + juce::String(sc);
     juce::String leftInfo = "P" + juce::String(selectedPad_ + 1) + "  "
-        + juce::String(hdrCursorSlice + 1) + "/" + juce::String(totalReg)
+        + sliceStr
         + "  CV" + (cvVolts >= 0 ? "+" : "") + juce::String(cvVolts, 1)
         + "  CC" + juce::String(ccNum);
     g.drawText(leftInfo, inner.getX() + 4, inner.getY(), inner.getWidth() / 2, 24,
                juce::Justification::centredLeft);
 
-    // Right: filename + count
+    // Right: filename + count — same size as left
     g.setColour(juce::Colour(0xFF999999));
-    g.setFont(16.0f);
-    g.drawText(fname + "  " + juce::String(totalReg) + " slices",
+    g.setFont(18.0f);
+    g.drawText(fname + "  " + juce::String(sc) + " slices",
                inner.getX() + inner.getWidth() / 2, inner.getY(),
                inner.getWidth() / 2 - 4, 24, juce::Justification::centredRight);
 
@@ -3493,12 +3721,16 @@ void PluginEditor::paintSliceEditor(juce::Graphics& g, juce::Rectangle<int> area
             if (by - ty < 1) { ty = cy - 0.5f; by = cy + 0.5f; }
             g.fillRect((float)(overArea.getX() + px), ty, 1.0f, by - ty);
         }
-        // Slice lines on overview (thin white)
+        // Slice region indicators on overview (red start/end lines)
         for (int i = 0; i < slot.getSliceCount(); ++i) {
-            float pt = slot.getSlicePoint(i);
-            float px = (float)overArea.getX() + pt * (float)overArea.getWidth();
-            g.setColour(juce::Colour(0x55FFFFFF));
-            g.fillRect(px, (float)overArea.getY(), 1.0f, (float)overH);
+            float sx = (float)overArea.getX() + slot.getSliceStart(i) * (float)overArea.getWidth();
+            float ex = (float)overArea.getX() + slot.getSliceEnd(i) * (float)overArea.getWidth();
+            g.setColour(juce::Colour(kTabActive).withAlpha(0.8f));
+            g.fillRect(sx - 0.5f, (float)overArea.getY(), 2.0f, (float)overH);
+            g.fillRect(ex - 0.5f, (float)overArea.getY(), 2.0f, (float)overH);
+            // Tint between start and end
+            g.setColour(juce::Colour(kTabActive).withAlpha(0.15f));
+            g.fillRect(sx, (float)overArea.getY(), ex - sx, (float)overH);
         }
         // Viewport indicator
         int vpX = overArea.getX() + (int)(viewStart * overArea.getWidth());
@@ -3552,80 +3784,100 @@ void PluginEditor::paintSliceEditor(juce::Graphics& g, juce::Rectangle<int> area
         return (float)wfArea.getX() + ((n - viewStart) / viewSpan) * (float)wfArea.getWidth();
     };
 
-    // ── Determine which slice region the cursor is in ─────────────────
-    int cursorSlice = 0;
-    for (int i = 0; i < slot.getSliceCount(); ++i)
-        if (sliceCursorPos_ >= slot.getSlicePoint(i)) cursorSlice = i + 1;
-    int totalRegions = slot.getSliceCount() + 1;
+    // ── Determine which slice the cursor is in ─────────────────────────
+    int cursorSlice = slot.findSliceAt(sliceCursorPos_);
 
-    // ── Slice region rendering: active = white wash + dark numbers ───
-    //    inactive = no wash, white numbers at top ─────────────────────
+    // ── Slice region rendering: paired start/end regions ─────────────
     {
         g.saveState();
         g.reduceClipRegion(wfArea);
 
-        float prevPt = slot.getStartPos();
-        for (int i = 0; i <= slot.getSliceCount(); ++i) {
-            float nextPt = (i < slot.getSliceCount()) ? slot.getSlicePoint(i) : slot.getEndPos();
-            if (nextPt < viewStart || prevPt > viewEnd) { prevPt = nextPt; continue; }
+        for (int i = 0; i < slot.getSliceCount(); ++i) {
+            float s = slot.getSliceStart(i);
+            float e = slot.getSliceEnd(i);
+            if (e < viewStart || s > viewEnd) continue;
 
-            float x1 = normToPx(std::max(prevPt, viewStart));
-            float x2 = normToPx(std::min(nextPt, viewEnd));
+            float x1 = normToPx(std::max(s, viewStart));
+            float x2 = normToPx(std::min(e, viewEnd));
             float regionW = x2 - x1;
             bool active = (i == cursorSlice);
 
             if (active) {
-                // Active region: softer white wash — visible but not blinding
                 g.setColour(juce::Colour(0xFFFFFFFF).withAlpha(0.15f));
                 g.fillRect(x1, (float)wfArea.getY(), regionW, (float)wfArea.getHeight());
 
-                // Dark cutout number at top — BIG and readable, with pitch arrow
                 if (regionW > 12.0f) {
                     float fontSize = juce::jlimit(16.0f, 32.0f, regionW * 0.5f);
-                    g.setColour(juce::Colour(0xFF0D0D0D).withAlpha(0.8f));
-                    g.setFont(fontSize);
+                    g.setFont(juce::Font(fontSize, juce::Font::bold));
                     juce::String numStr = juce::String(i + 1);
                     float p = slot.getSlicePitch(i);
-                    if (p > 0.1f) numStr += juce::String(juce::CharPointer_UTF8("\xe2\x86\x91"));  // ↑
-                    else if (p < -0.1f) numStr += juce::String(juce::CharPointer_UTF8("\xe2\x86\x93"));  // ↓
-                    g.drawText(numStr,
-                               (int)x1, wfArea.getY() + 3, (int)regionW, (int)fontSize + 4,
-                               juce::Justification::centred);
+                    if (p > 0.1f) numStr += juce::String(juce::CharPointer_UTF8("\xe2\x96\xb2"));
+                    else if (p < -0.1f) numStr += juce::String(juce::CharPointer_UTF8("\xe2\x96\xbc"));
+                    int nx = (int)x1, ny = wfArea.getY() + 3, nw = (int)regionW, nh = (int)fontSize + 6;
+                    // Drop shadow
+                    g.setColour(juce::Colour(0xFF000000).withAlpha(0.5f));
+                    g.drawText(numStr, nx + 2, ny + 2, nw, nh, juce::Justification::centred);
+                    // Main text — dark cutout
+                    g.setColour(juce::Colour(0xFF0D0D0D).withAlpha(0.85f));
+                    g.drawText(numStr, nx, ny, nw, nh, juce::Justification::centred);
                 }
             } else {
-                // Inactive: no fill, white number at top — with pitch arrow
                 if (regionW > 12.0f) {
                     float fontSize = juce::jlimit(14.0f, 26.0f, regionW * 0.45f);
-                    g.setColour(juce::Colour(0xFFFFFFFF).withAlpha(0.3f));
-                    g.setFont(fontSize);
+                    g.setFont(juce::Font(fontSize, juce::Font::bold));
                     juce::String numStr = juce::String(i + 1);
                     float p = slot.getSlicePitch(i);
-                    if (p > 0.1f) numStr += juce::String(juce::CharPointer_UTF8("\xe2\x86\x91"));
-                    else if (p < -0.1f) numStr += juce::String(juce::CharPointer_UTF8("\xe2\x86\x93"));
-                    g.drawText(numStr,
-                               (int)x1, wfArea.getY() + 3, (int)regionW, (int)fontSize + 4,
-                               juce::Justification::centred);
+                    if (p > 0.1f) numStr += juce::String(juce::CharPointer_UTF8("\xe2\x96\xb2"));
+                    else if (p < -0.1f) numStr += juce::String(juce::CharPointer_UTF8("\xe2\x96\xbc"));
+                    int nx = (int)x1, ny = wfArea.getY() + 3, nw = (int)regionW, nh = (int)fontSize + 6;
+                    // Drop shadow
+                    g.setColour(juce::Colour(0xFF000000).withAlpha(0.35f));
+                    g.drawText(numStr, nx + 1, ny + 1, nw, nh, juce::Justification::centred);
+                    // Main text — white translucent
+                    g.setColour(juce::Colour(0xFFFFFFFF).withAlpha(0.35f));
+                    g.drawText(numStr, nx, ny, nw, nh, juce::Justification::centred);
                 }
             }
-
-            prevPt = nextPt;
         }
         g.restoreState();
     }
 
-    // ── Slice lines (white, clean) ──────────────────────────────────────
+    // ── Slice boundary lines (white, start and end of each pair) ────────
     for (int i = 0; i < slot.getSliceCount(); ++i) {
-        float pt = slot.getSlicePoint(i);
-        if (pt < viewStart || pt > viewEnd) continue;
-        float px = normToPx(pt);
+        float s = slot.getSliceStart(i);
+        float e = slot.getSliceEnd(i);
+        // Start line
+        if (s >= viewStart && s <= viewEnd) {
+            float px = normToPx(s);
+            g.setColour(juce::Colour(0xBBFFFFFF));
+            g.fillRect(px - 0.5f, (float)wfArea.getY(), 1.5f, (float)wfArea.getHeight());
+            g.setColour(juce::Colour(0xDDFFFFFF));
+            g.fillRect(px - 3.0f, (float)wfArea.getY(), 7.0f, 2.0f);
+        }
+        // End line
+        if (e >= viewStart && e <= viewEnd) {
+            float px = normToPx(e);
+            g.setColour(juce::Colour(0xBBFFFFFF));
+            g.fillRect(px - 0.5f, (float)wfArea.getY(), 1.5f, (float)wfArea.getHeight());
+            g.setColour(juce::Colour(0xDDFFFFFF));
+            g.fillRect(px - 3.0f, (float)wfArea.getY(), 7.0f, 2.0f);
+        }
+    }
 
-        // Vertical line
-        g.setColour(juce::Colour(0xBBFFFFFF));
-        g.fillRect(px - 0.5f, (float)wfArea.getY(), 1.5f, (float)wfArea.getHeight());
-
-        // Small notch at top
-        g.setColour(juce::Colour(0xDDFFFFFF));
-        g.fillRect(px - 3.0f, (float)wfArea.getY(), 7.0f, 2.0f);
+    // ── Pending start marker (green dashed) ─────────────────────────────
+    if (slot.isSlicePending()) {
+        float pendPos = slot.getSlicePendingStart();
+        if (pendPos >= viewStart && pendPos <= viewEnd) {
+            float px = normToPx(pendPos);
+            g.setColour(juce::Colour(0xFF4CAF50));
+            // Dashed line
+            for (float dy = (float)wfArea.getY(); dy < (float)wfArea.getBottom(); dy += 8.0f)
+                g.fillRect(px - 0.5f, dy, 2.0f, 4.0f);
+            // Label
+            g.setFont(12.0f);
+            g.drawText("START", (int)px - 20, wfArea.getBottom() - 16, 40, 14,
+                       juce::Justification::centred);
+        }
     }
 
     // ── Start/End markers (subtle blue) ─────────────────────────────────
@@ -3638,6 +3890,25 @@ void PluginEditor::paintSliceEditor(juce::Graphics& g, juce::Rectangle<int> area
     drawMarker(slot.getStartPos());
     drawMarker(slot.getEndPos());
 
+    // ── Stitch marks (where tape was spliced) ────────────────────────────
+    for (int i = 0; i < stitchCount_; ++i) {
+        float sPos = stitchPositions_[i];
+        if (sPos < viewStart || sPos > viewEnd) continue;
+        float px = normToPx(sPos);
+        float top = (float)wfArea.getY();
+        float bot = (float)wfArea.getBottom();
+        // Dashed stitch line
+        g.setColour(juce::Colour(0xFFFF6B6B).withAlpha(0.5f));
+        for (float dy = top; dy < bot; dy += 10.0f)
+            g.fillRect(px - 0.5f, dy, 1.5f, 5.0f);
+        // X marks along the stitch (like thread)
+        g.setColour(juce::Colour(0xFFFF6B6B).withAlpha(0.4f));
+        for (float dy = top + 8.0f; dy < bot - 12.0f; dy += 20.0f) {
+            g.drawLine(px - 4.0f, dy, px + 4.0f, dy + 8.0f, 1.2f);
+            g.drawLine(px + 4.0f, dy, px - 4.0f, dy + 8.0f, 1.2f);
+        }
+    }
+
     // ── Playhead (green) ────────────────────────────────────────────────
     if (slot.isPlaying()) {
         float pos = slot.getPlaybackPosition();
@@ -3648,28 +3919,98 @@ void PluginEditor::paintSliceEditor(juce::Graphics& g, juce::Rectangle<int> area
         }
     }
 
-    // ── Cursor (bright white, thin, with diamond head) ──────────────────
+    // ── Cursor (bright, with diamond head + glow) ───────────────────────
     if (sliceCursorPos_ >= viewStart && sliceCursorPos_ <= viewEnd) {
         float px = normToPx(sliceCursorPos_);
         float top = (float)wfArea.getY();
         float bot = (float)wfArea.getBottom();
 
-        // Thin cursor line
-        g.setColour(juce::Colour(0xFFFFFFFF));
-        g.fillRect(px - 0.5f, top + 8.0f, 1.0f, bot - top - 8.0f);
+        // Glow behind cursor
+        g.setColour(juce::Colour(0xFFFFFFFF).withAlpha(0.06f));
+        g.fillRect(px - 6.0f, top, 12.0f, bot - top);
 
-        // Diamond head at top
+        // Cursor line
+        g.setColour(juce::Colour(0xFFFFFFFF));
+        g.fillRect(px - 0.5f, top + 8.0f, 1.5f, bot - top - 8.0f);
+
+        // Diamond head — larger, with drop shadow
         juce::Path diamond;
-        diamond.addTriangle(px - 5.0f, top + 8.0f, px + 5.0f, top + 8.0f, px, top);
-        diamond.addTriangle(px - 5.0f, top + 8.0f, px + 5.0f, top + 8.0f, px, top + 16.0f);
+        diamond.addTriangle(px - 6.0f, top + 10.0f, px + 6.0f, top + 10.0f, px, top);
+        diamond.addTriangle(px - 6.0f, top + 10.0f, px + 6.0f, top + 10.0f, px, top + 20.0f);
+        // Shadow
+        g.setColour(juce::Colour(0x44000000));
+        g.fillPath(diamond, juce::AffineTransform::translation(1.5f, 1.5f));
+        g.setColour(juce::Colour(0xFFFFFFFF));
         g.fillPath(diamond);
+    }
+
+    // ── Splice impact animation ─────────────────────────────────────────
+    if (spliceAnimActive_) {
+        double elapsed = juce::Time::getMillisecondCounterHiRes() - spliceAnimStartMs_;
+        float animDuration = 400.0f;  // ms
+        if (elapsed > animDuration) {
+            spliceAnimActive_ = false;
+        } else {
+            float t = (float)elapsed / animDuration;  // 0→1
+            float px = normToPx(spliceAnimPos_);
+
+            // Phase 1 (0-30%): bright impact flash at splice point
+            if (t < 0.3f) {
+                float flash = 1.0f - (t / 0.3f);
+                flash *= flash;  // quadratic falloff
+                g.setColour(juce::Colour(0xFFFFFFFF).withAlpha(flash * 0.6f));
+                float radius = 30.0f + t * 80.0f;
+                g.fillEllipse(px - radius, (float)wfArea.getCentreY() - radius,
+                              radius * 2.0f, radius * 2.0f);
+            }
+
+            // Phase 2 (0-60%): horizontal shockwave lines
+            if (t < 0.6f) {
+                float waveT = t / 0.6f;
+                float alpha = (1.0f - waveT) * 0.5f;
+                float spread = waveT * (float)wfArea.getWidth() * 0.3f;
+                g.setColour(juce::Colour(0xFFFF4444).withAlpha(alpha));
+                float cy = (float)wfArea.getCentreY();
+                g.fillRect(px - spread, cy - 1.0f, spread * 2.0f, 2.0f);
+                g.fillRect(px - spread * 0.6f, cy - 8.0f, spread * 1.2f, 1.5f);
+                g.fillRect(px - spread * 0.6f, cy + 8.0f, spread * 1.2f, 1.5f);
+            }
+
+            // Phase 3 (20-100%): impact sparks (little particles flying out)
+            if (t > 0.1f) {
+                float sparkT = (t - 0.1f) / 0.9f;
+                float alpha = std::max(0.0f, 1.0f - sparkT * 1.3f);
+                g.setColour(juce::Colour(0xFFFFAA33).withAlpha(alpha * 0.7f));
+                float cy = (float)wfArea.getCentreY();
+                // 6 sparks radiating outward
+                for (int sp = 0; sp < 6; ++sp) {
+                    float angle = (float)sp * 1.047f + 0.3f;  // ~60 degrees apart
+                    float dist = sparkT * 60.0f;
+                    float sx = px + std::cos(angle) * dist;
+                    float sy = cy + std::sin(angle) * dist;
+                    float sz = 3.0f * (1.0f - sparkT);
+                    g.fillEllipse(sx - sz, sy - sz, sz * 2.0f, sz * 2.0f);
+                }
+            }
+        }
+    }
+
+    // ── Action flash overlay (full-area tint, fades fast) ────────────────
+    {
+        double elapsed = juce::Time::getMillisecondCounterHiRes() - actionFlashStartMs_;
+        if (elapsed < 200.0) {
+            float t = (float)elapsed / 200.0f;
+            float alpha = (1.0f - t) * 0.12f;  // subtle, not blinding
+            g.setColour(actionFlashColour_.withAlpha(alpha));
+            g.fillRect(wfArea);
+        }
     }
 
     // ── Footer hints (clean, no symbols) ────────────────────────────────
     auto footerArea = inner.withTop(inner.getBottom() - 18);
     g.setColour(juce::Colour(0xFF444444));
     g.setFont(12.0f);
-    g.drawText("PUSH cut    L/R slices    LS audition    RS exit",
+    g.drawText("PUSH start/end    LS audition    RS exit    L/R slices",
                footerArea, juce::Justification::centred);
 
     // ── Update encoder bar values ───────────────────────────────────────
@@ -3680,11 +4021,19 @@ void PluginEditor::paintSliceEditor(juce::Graphics& g, juce::Rectangle<int> area
     else
         encoderSlots_[2].valueLabel.setText(sliceAutoName(sliceAutoPreset_), juce::dontSendNotification);
     // Per-slice pitch for current region
-    float curPitch = slot.getSlicePitch(cursorSlice);
-    if (std::abs(curPitch) < 0.05f)
-        encoderSlots_[3].valueLabel.setText("0st", juce::dontSendNotification);
-    else
-        encoderSlots_[3].valueLabel.setText((curPitch > 0 ? "+" : "") + juce::String(curPitch, 1) + "st", juce::dontSendNotification);
+    if (cursorSlice >= 0) {
+        float curPitch = slot.getSlicePitch(cursorSlice);
+        if (std::abs(curPitch) < 0.05f)
+            encoderSlots_[3].valueLabel.setText("0st", juce::dontSendNotification);
+        else
+            encoderSlots_[3].valueLabel.setText((curPitch > 0 ? "+" : "") + juce::String(curPitch, 1) + "st", juce::dontSendNotification);
+    } else {
+        encoderSlots_[3].valueLabel.setText("--", juce::dontSendNotification);
+    }
+
+    // Show pending state on enc 0
+    if (slot.isSlicePending())
+        encoderSlots_[0].valueLabel.setText("END?", juce::dontSendNotification);
 }
 
 } // namespace grid

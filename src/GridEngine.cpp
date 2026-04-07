@@ -15,9 +15,26 @@ void GridEngine::process(float* outL, float* outR, int numSamples)
     std::memset(outR, 0, sizeof(float) * static_cast<size_t>(numSamples));
 
     for (int i = 0; i < kNumPads; ++i) {
-        slots_[i].advanceRetriggerGuard(numSamples);  // always advance, even muted
-        if (!muted_[i])
+        slots_[i].advanceRetriggerGuard(numSamples);
+        if (muted_[i]) continue;
+
+        if (padOutL_[i] != nullptr) {
+            // Render into per-pad temp buffer
+            std::memset(padOutL_[i], 0, sizeof(float) * static_cast<size_t>(numSamples));
+            std::memset(padOutR_[i], 0, sizeof(float) * static_cast<size_t>(numSamples));
+            slots_[i].process(padOutL_[i], padOutR_[i], numSamples);
+
+            // Add to stereo mix if enabled
+            if (slots_[i].getSendToMix()) {
+                for (int s = 0; s < numSamples; ++s) {
+                    outL[s] += padOutL_[i][s];
+                    outR[s] += padOutR_[i][s];
+                }
+            }
+        } else {
+            // No per-pad routing — direct to mix (original path)
             slots_[i].process(outL, outR, numSamples);
+        }
     }
 }
 

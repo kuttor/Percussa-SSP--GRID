@@ -2,7 +2,7 @@
 
 8-pad performance sampler for the Percussa SSP. Load samples, slice them, pitch them, sequence them from CV or MIDI. Built with JUCE 7 and the SSP SDK.
 
-v2.0.0-beta | AGPL-3.0 | by kuttor
+v2.1.0-beta | AGPL-3.0 | by kuttor
 
 ## What it does
 
@@ -185,11 +185,11 @@ Output: `GRID_artefacts/GRID.so` copy to SSP SD card `/plugins/`.
 
 ## Credits
 
-- TheTechnobear — SSP SDK architecture and open source plugin reference.
-- wavejockey — primary hardware tester.
-- Handsonicsuki — CV and CC testing.
-- Signalsmith Stretch — MIT licensed stretch library.
-- Percussa — SSP hardware and SDK.
+TheTechnobear — SSP SDK architecture and open source plugin reference.
+wavejockey — primary hardware tester.
+Handsonicsuki — CV and CC testing.
+Signalsmith Stretch — MIT licensed stretch library.
+Percussa — SSP hardware and SDK.
 
 ## License
 

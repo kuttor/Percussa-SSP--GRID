@@ -2,7 +2,7 @@
 
 8-pad performance sampler for the Percussa SSP. Load samples, slice them, pitch them, sequence them from CV or MIDI. Built with JUCE 7 and the SSP SDK.
 
-v2.1.0-beta | AGPL-3.0 | by kuttor
+v2.2.0-beta | AGPL-3.0 | by kuttor
 
 ## What it does
 

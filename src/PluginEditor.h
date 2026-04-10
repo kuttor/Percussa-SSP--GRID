@@ -85,6 +85,25 @@ private:
     void browseGoHome();
     void paintFileBrowser(juce::Graphics& g, juce::Rectangle<int> area);
 
+    // Browser UX v2: hold detection + file ops + auto-preview
+    double encPushTime_[4] = {};       // timestamp of encoder push-down
+    bool   encPushHandled_[4] = {};    // true if long-press already consumed
+    bool   browseAutoPreview_ = false; // play sample on scroll
+    int    browseFileOp_ = 0;          // 0=none, 1=Move, 2=Copy, 3=Delete, 4=Multi
+    static constexpr double kHoldMs = 800.0;
+    static const char* browseFileOpName(int op) {
+        static const char* names[] = { "---", "MOVE", "COPY", "DELETE", "MULTI" };
+        return names[juce::jlimit(0, 4, op)];
+    }
+
+    // Slice Combine: concatenate multiple samples into one with auto-slicing
+    void sliceCombine(const juce::StringArray& paths);
+
+    // File clipboard for Move/Copy
+    juce::String browseClipboardPath_;
+    int browseClipboardOp_ = 0;  // 0=none, 1=move, 2=copy
+    void browseExecuteFileOp();
+
     // ── Config Browser (right-side flyout, LS+RS) ─────────────────────
     bool configMode_ = false;
     int configIndex_ = 0;       // index into configRows_ (selectable only)
@@ -168,15 +187,15 @@ private:
     // Save user's trim positions — restored on exit so audition doesn't wreck them
     float preSliceStartPos_ = 0.0f;
     float preSliceEndPos_ = 1.0f;
-    static constexpr int kSliceAutoCount = 6;
+    static constexpr int kSliceAutoCount = 9;
 
-    // 0=OFF, 1=8, 2=16, 3=24, 4=32, 5=Zero-X (-1)
+    // 0=OFF, 1=8, 2=16, 3=24, 4=32, 5=48, 6=64, 7=128, 8=Transient
     static int sliceAutoValue(int idx) {
-        static const int vals[] = { 0, 8, 16, 24, 32, -1 };
+        static const int vals[] = { 0, 8, 16, 24, 32, 48, 64, 128, -1 };
         return vals[juce::jlimit(0, kSliceAutoCount - 1, idx)];
     }
     static juce::String sliceAutoName(int idx) {
-        static const char* names[] = { "OFF", "8", "16", "24", "32", "Transient" };
+        static const char* names[] = { "OFF", "8", "16", "24", "32", "48", "64", "128", "Transient" };
         return names[juce::jlimit(0, kSliceAutoCount - 1, idx)];
     }
 
@@ -216,9 +235,9 @@ private:
 
     // Slice editor undo (multi-level stack, up to 16 levels)
     struct SliceUndoState {
-        float sliceStarts[64] = {};
-        float sliceEnds[64] = {};
-        float slicePitch[64] = {};
+        float sliceStarts[128] = {};
+        float sliceEnds[128] = {};
+        float slicePitch[128] = {};
         int sliceCount = 0;
         float startPos = 0.0f, endPos = 1.0f;
         juce::AudioBuffer<float> audioBackup;

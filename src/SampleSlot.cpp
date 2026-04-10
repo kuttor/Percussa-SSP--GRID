@@ -23,20 +23,22 @@ bool SampleSlot::loadFile(const juce::File& file)
     juce::AudioBuffer<float> tempBuffer(newChannels, newSamples);
     reader->read(&tempBuffer, 0, newSamples, 0, true, newChannels > 1);
 
-    // Stop all voices before swapping
-    for (auto& v : voices_) v.reset();
+    // Atomic guard: audio thread will skip process() while loading
+    loading_.store(true, std::memory_order_release);
 
+    for (auto& v : voices_) v.reset();
     numSamples_.store(0);
     buffer_ = std::move(tempBuffer);
     numChannels_ = newChannels;
     fileSampleRate_ = newRate;
     fileName_ = file.getFileName();
     filePath_ = file.getFullPathName();
-    numSamples_.store(newSamples);
     clearSlices();
     startPos_ = 0.0f;
     endPos_ = 1.0f;
+    numSamples_.store(newSamples);
 
+    loading_.store(false, std::memory_order_release);
     return true;
 }
 
@@ -50,6 +52,8 @@ bool SampleSlot::loadFromBuffer(const juce::AudioBuffer<float>& src, int numSamp
     for (int ch = 0; ch < newChannels; ++ch)
         tempBuffer.copyFrom(ch, 0, src, ch, 0, numSamps);
 
+    loading_.store(true, std::memory_order_release);
+
     for (auto& v : voices_) v.reset();
     numSamples_.store(0);
     buffer_ = std::move(tempBuffer);
@@ -57,16 +61,19 @@ bool SampleSlot::loadFromBuffer(const juce::AudioBuffer<float>& src, int numSamp
     fileSampleRate_ = sr;
     fileName_ = name;
     filePath_ = path;
-    numSamples_.store(numSamps);
     clearSlices();
     startPos_ = 0.0f;
     endPos_ = 1.0f;
+    numSamples_.store(numSamps);
 
+    loading_.store(false, std::memory_order_release);
     return true;
 }
 
 void SampleSlot::clear()
 {
+    loading_.store(true, std::memory_order_release);
+
     for (auto& v : voices_) v.reset();
     numSamples_.store(0);
     buffer_.setSize(0, 0);
@@ -80,6 +87,8 @@ void SampleSlot::clear()
     clearSlices();
     startPos_ = 0.0f;
     endPos_ = 1.0f;
+
+    loading_.store(false, std::memory_order_release);
 }
 
 void SampleSlot::setReversed(bool r)
@@ -174,7 +183,21 @@ void SampleSlot::triggerWithVelocity(float vel)
     if (samplesSinceLastTrigger_ < kRetriggerGuard) return;
     samplesSinceLastTrigger_ = 0;
 
-    // Kill and restart voice 0
+    // Voice stealing: if voice 0 is playing, move it to a tail voice
+    // for a short crossfade (eliminates clicks at slice boundaries)
+    if (voices_[0].playing) {
+        // Find a free tail slot (voices 1-3)
+        int tail = -1;
+        for (int i = kMaxVoices - 1; i >= 1; --i) {
+            if (!voices_[i].playing) { tail = i; break; }
+        }
+        if (tail < 0) tail = kMaxVoices - 1;  // steal oldest tail
+        voices_[tail] = voices_[0];
+        voices_[tail].stopping = true;
+        voices_[tail].fadeOut = kFadeSamples;
+    }
+
+    // Start fresh voice on slot 0
     voices_[0].reset();
     startVoice(voices_[0], vel);
     // Reset filter state for clean start
@@ -248,6 +271,9 @@ float SampleSlot::readInterpolated(const float* src, double pos, int limit) cons
 
 void SampleSlot::process(float* outL, float* outR, int numSamples)
 {
+    // Skip processing while buffer is being swapped (race condition guard)
+    if (loading_.load(std::memory_order_acquire)) return;
+
     int ns = numSamples_.load();
     if (ns == 0) return;
 

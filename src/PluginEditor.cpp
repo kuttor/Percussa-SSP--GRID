@@ -266,7 +266,7 @@ void PluginEditor::paint(juce::Graphics& g)
     // Version (bottom-right corner, small)
     g.setColour(juce::Colour(0xFF555555));
     g.setFont(14.0f);
-    g.drawText("2.1.0-beta", w - 120, encY, 110, kEncoderBarH,
+    g.drawText("2.2.0-beta", w - 120, encY, 110, kEncoderBarH,
                juce::Justification::centredRight);
 
     // ── Popup overlay (renders on top of everything) ─────────────────
@@ -1201,6 +1201,7 @@ void PluginEditor::paintFileBrowser(juce::Graphics& g, juce::Rectangle<int> area
 void PluginEditor::enterBrowseMode()
 {
     browseMode_ = true; browseIndex_ = 0; browseScrollOffset_ = 0;
+    browseFileOp_ = 0;
     // First open: go to Smart Home. Subsequent opens: stay where we were.
     if (!browseCurrentDir_.isDirectory())
     {
@@ -1208,14 +1209,14 @@ void PluginEditor::enterBrowseMode()
     } else {
         browseScanCurrentDir();
     }
-    encoderSlots_[0].nameLabel.setText("CLOSE", juce::dontSendNotification);
-    encoderSlots_[0].valueLabel.setText("[PUSH]", juce::dontSendNotification);
-    encoderSlots_[1].nameLabel.setText("FILES", juce::dontSendNotification);
-    encoderSlots_[1].valueLabel.setText("Load", juce::dontSendNotification);
+    encoderSlots_[0].nameLabel.setText("FILES", juce::dontSendNotification);
+    encoderSlots_[0].valueLabel.setText("Load", juce::dontSendNotification);
+    encoderSlots_[1].nameLabel.setText("NAV", juce::dontSendNotification);
+    encoderSlots_[1].valueLabel.setText("Back", juce::dontSendNotification);
     encoderSlots_[2].nameLabel.setText("PAD", juce::dontSendNotification);
-    encoderSlots_[2].valueLabel.setText("Back", juce::dontSendNotification);
-    encoderSlots_[3].nameLabel.setText("PLAY", juce::dontSendNotification);
-    encoderSlots_[3].valueLabel.setText("[PUSH]", juce::dontSendNotification);
+    encoderSlots_[2].valueLabel.setText("Audition", juce::dontSendNotification);
+    encoderSlots_[3].nameLabel.setText("FILE OP", juce::dontSendNotification);
+    encoderSlots_[3].valueLabel.setText("---", juce::dontSendNotification);
     repaint();
 }
 
@@ -1253,7 +1254,7 @@ void PluginEditor::browseScanCurrentDir()
             else if (secs < 60.0)
                 info = juce::String(secs, 1) + "s";
             else
-                info = juce::String((int)(secs / 60)) + ":" + juce::String((int)secs % 60).paddedLeft('0', 2);
+                info = juce::String((int)(secs / 60)) + "m" + juce::String((int)secs % 60).paddedLeft('0', 2) + "s";
             // Sample rate (compact)
             int sr = (int)reader->sampleRate;
             if (sr >= 1000) info += "   " + juce::String(sr / 1000) + "k";
@@ -1284,9 +1285,12 @@ void PluginEditor::browseSelect()
 
     if (sel.isDirectory()) { browseCurrentDir_ = sel; browseScanCurrentDir(); repaint(); }
     else {
-        // Load into currently selected pad — browser stays open
+        // Cache current slices before replacing sample
         auto& slot = processor_.getEngine().getSlot(selectedPad_);
+        processor_.cacheSlicesForPad(selectedPad_);
         slot.loadFile(sel);
+        // Restore cached slices if this file was previously sliced
+        processor_.restoreCachedSlices(selectedPad_);
         repaint();
     }
 }
@@ -1417,6 +1421,160 @@ void PluginEditor::browseGoHome()
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Slice Combine — concatenate selected samples into one, auto-slice
+// ═══════════════════════════════════════════════════════════════════════════
+
+void PluginEditor::sliceCombine(const juce::StringArray& paths)
+{
+    if (paths.isEmpty()) return;
+
+    juce::AudioFormatManager fmt;
+    fmt.registerBasicFormats();
+
+    // Pass 1: compute total length and target sample rate
+    double targetSR = 48000.0;
+    int totalSamples = 0;
+    int maxChannels = 1;
+    juce::Array<int> lengths;
+
+    for (auto& p : paths) {
+        juce::File f(p);
+        std::unique_ptr<juce::AudioFormatReader> reader(fmt.createReaderFor(f));
+        if (!reader) continue;
+        if (reader->sampleRate > targetSR) targetSR = reader->sampleRate;
+        if ((int)reader->numChannels > maxChannels) maxChannels = std::min(2, (int)reader->numChannels);
+        int len = (int)reader->lengthInSamples;
+        lengths.add(len);
+        totalSamples += len;
+    }
+
+    if (totalSamples == 0) {
+        processor_.showTickerPublic("No valid samples found");
+        return;
+    }
+
+    // Pass 2: read and concatenate
+    juce::AudioBuffer<float> combined(maxChannels, totalSamples);
+    combined.clear();
+    int writePos = 0;
+    juce::Array<float> boundaries;
+
+    for (int i = 0; i < paths.size(); ++i) {
+        juce::File f(paths[i]);
+        std::unique_ptr<juce::AudioFormatReader> reader(fmt.createReaderFor(f));
+        if (!reader) continue;
+
+        int len = (int)reader->lengthInSamples;
+        int ch = std::min(maxChannels, (int)reader->numChannels);
+
+        juce::AudioBuffer<float> temp(ch, len);
+        reader->read(&temp, 0, len, 0, true, ch > 1);
+
+        for (int c = 0; c < ch; ++c)
+            combined.copyFrom(c, writePos, temp, c, 0, len);
+
+        if (writePos > 0)
+            boundaries.add((float)writePos / (float)totalSamples);
+
+        writePos += len;
+    }
+
+    // Load combined buffer onto selected pad
+    auto& slot = processor_.getEngine().getSlot(selectedPad_);
+    processor_.cacheSlicesForPad(selectedPad_);
+    slot.loadFromBuffer(combined, totalSamples, targetSR, "combined_sliced", "");
+
+    // Create slice pairs at boundaries
+    slot.clearSlices();
+    float prevBound = 0.0f;
+    for (int i = 0; i < boundaries.size(); ++i) {
+        slot.addSlicePair(prevBound, boundaries[i]);
+        prevBound = boundaries[i];
+    }
+    // Final slice: last boundary to end
+    slot.addSlicePair(prevBound, 1.0f);
+
+    processor_.showTickerPublic("Combined " + juce::String(paths.size()) + " samples → " +
+                                juce::String(slot.getSliceCount()) + " slices");
+    repaint();
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// File Operations — Move/Copy/Delete execution
+// ═══════════════════════════════════════════════════════════════════════════
+
+void PluginEditor::browseExecuteFileOp()
+{
+    if (browseIndex_ < 0 || browseIndex_ >= browseItems_.size()) return;
+    auto sel = browseItems_[browseIndex_];
+    if (sel.isDirectory()) return;
+
+    switch (browseFileOp_) {
+        case 1:  // MOVE — store in clipboard, user navigates to dest then pushes again
+        case 2:  // COPY
+        {
+            browseClipboardPath_ = sel.getFullPathName();
+            browseClipboardOp_ = browseFileOp_;
+            processor_.showTickerPublic(
+                juce::String(browseFileOp_ == 1 ? "MOVE" : "COPY") + ": " +
+                sel.getFileName() + " — navigate to dest, push to paste");
+            break;
+        }
+        case 3:  // DELETE
+        {
+            showPopup("DELETE " + sel.getFileName() + "?", { "Yes", "Cancel" },
+                [this, sel](int r) {
+                    if (r == 0) {
+                        juce::File(sel).deleteFile();
+                        processor_.showTickerPublic("Deleted");
+                        browseScanCurrentDir();
+                    }
+                });
+            break;
+        }
+        case 4:  // MULTI
+        {
+            multiSelectMode_ = true;
+            multiSelectCount_ = 0;
+            for (int i = 0; i < kNumPads; ++i) multiSelected_[i] = false;
+            processor_.showTickerPublic("Multi-select: buttons to pick, enc 0 push to finish");
+            break;
+        }
+        default: {
+            // If clipboard has content, this is a PASTE into current directory
+            if (browseClipboardOp_ > 0 && browseClipboardPath_.isNotEmpty()) {
+                juce::File src(browseClipboardPath_);
+                if (!src.existsAsFile()) {
+                    processor_.showTickerPublic("Source file missing");
+                    browseClipboardOp_ = 0;
+                    browseClipboardPath_.clear();
+                    break;
+                }
+                juce::File dest = browseCurrentDir_.getChildFile(src.getFileName());
+                if (dest.exists()) {
+                    // Append _copy to avoid overwrite
+                    dest = browseCurrentDir_.getChildFile(
+                        src.getFileNameWithoutExtension() + "_copy" + src.getFileExtension());
+                }
+                if (browseClipboardOp_ == 1) {
+                    src.moveFileTo(dest);
+                    processor_.showTickerPublic("Moved → " + dest.getFileName());
+                } else {
+                    src.copyFileTo(dest);
+                    processor_.showTickerPublic("Copied → " + dest.getFileName());
+                }
+                browseClipboardOp_ = 0;
+                browseClipboardPath_.clear();
+                browseFileOp_ = 0;
+                browseScanCurrentDir();
+            }
+            break;
+        }
+    }
+    repaint();
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Page System
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -1478,7 +1636,7 @@ juce::String PluginEditor::getEncoderLabel(int page, int enc) const
             return l[enc];
         }
         case PAGE_OPTIONS: {
-            const char* l[] = { "", "CHOKE", "REVERSE", "ENHANCE" };
+            const char* l[] = { "", "CHOKE", "REVERSE", "NORMALIZE" };
             return l[enc];
         }
     }
@@ -1651,18 +1809,58 @@ void PluginEditor::timerCallback()
     if (browseMode_ && leftShiftHeld_) {
         double held = juce::Time::getMillisecondCounterHiRes() - leftShiftPressTime_;
         if (held > 2000.0) {
-            // Clear multi-select if active
             multiSelectMode_ = false;
             multiSelectCount_ = 0;
             for (int i = 0; i < kNumPads; ++i) multiSelected_[i] = false;
             browseGoHome();
-            leftShiftPressTime_ = juce::Time::getMillisecondCounterHiRes() + 99999.0;  // prevent re-trigger
+            leftShiftPressTime_ = juce::Time::getMillisecondCounterHiRes() + 99999.0;
             processor_.showTickerPublic("Smart Home");
             repaint();
         }
     }
 
-    if (browseMode_) { repaint(); return; }
+    // ── Encoder hold detection for browse mode ───────────────────────────
+    if (browseMode_) {
+        double now = juce::Time::getMillisecondCounterHiRes();
+        for (int e = 0; e < 4; ++e) {
+            if (encPushHandled_[e]) continue;
+            double held = now - encPushTime_[e];
+            if (held < kHoldMs || encPushTime_[e] == 0.0) continue;
+
+            encPushHandled_[e] = true;
+
+            if (e == 0) {
+                // Hold enc 0: close file browser
+                exitBrowseMode();
+                repaint();
+            }
+            else if (e == 1) {
+                // Hold enc 1: return to smart home
+                browseGoHome();
+                processor_.showTickerPublic("Smart Home");
+                repaint();
+            }
+            else if (e == 2) {
+                // Hold enc 2: toggle auto-preview
+                browseAutoPreview_ = !browseAutoPreview_;
+                processor_.showTickerPublic(browseAutoPreview_ ? "Auto Preview ON" : "Auto Preview OFF");
+                repaint();
+            }
+        }
+    }
+
+    if (browseMode_) {
+        // Update enc 3 label dynamically
+        if (browseClipboardOp_ > 0) {
+            encoderSlots_[3].nameLabel.setText("PASTE", juce::dontSendNotification);
+            encoderSlots_[3].valueLabel.setText(
+                juce::File(browseClipboardPath_).getFileName(), juce::dontSendNotification);
+        } else {
+            encoderSlots_[3].nameLabel.setText("FILE OP", juce::dontSendNotification);
+            encoderSlots_[3].valueLabel.setText(browseFileOpName(browseFileOp_), juce::dontSendNotification);
+        }
+        repaint(); return;
+    }
     if (sliceEditorMode_) { repaint(); return; }  // encoder labels managed by paintSliceEditor
     updateEncoderDisplay();
     repaint();
@@ -1736,7 +1934,9 @@ void PluginEditor::onButton(int n, bool val)
         if (browseIndex_ >= 0 && browseIndex_ < browseItems_.size()) {
             auto sel = browseItems_[browseIndex_];
             if (!sel.isDirectory() && browseItemNames_[browseIndex_] != ">> Clear Pad") {
+                processor_.cacheSlicesForPad(n);
                 slot.loadFile(sel);
+                processor_.restoreCachedSlices(n);
                 processor_.getEngine().trigger(n);
             }
         }
@@ -2223,13 +2423,8 @@ void PluginEditor::onEncoder(int n, float delta)
     }
 
     if (browseMode_) {
-        // Enc 0 turn: select pads (same as normal)
+        // Enc 0 turn: navigate files
         if (n == 0) {
-            selectedPad_ = juce::jlimit(0, kNumPads - 1, selectedPad_ + (delta > 0 ? 1 : -1));
-            repaint();
-        }
-        // Enc 1 turn: browse files
-        if (n == 1) {
             int fc = browseItems_.size();
             if (fc > 0) {
                 browseIndex_ = delta > 0 ? std::min(fc - 1, browseIndex_ + 1) : std::max(0, browseIndex_ - 1);
@@ -2241,12 +2436,25 @@ void PluginEditor::onEncoder(int n, float delta)
                     while (browseIndex_ > 0 && browseItemDurations_[browseIndex_] == "__HDR__")
                         browseIndex_--;
                 }
+                // Auto-preview: play sample on scroll
+                if (browseAutoPreview_ && browseIndex_ >= 0 && browseIndex_ < fc) {
+                    auto sel = browseItems_[browseIndex_];
+                    if (!sel.isDirectory() && browseItemNames_[browseIndex_] != ">> Clear Pad") {
+                        processor_.getEngine().getSlot(selectedPad_).loadFile(sel);
+                        processor_.getEngine().trigger(selectedPad_);
+                    }
+                }
                 repaint();
             }
         }
-        // Enc 2 turn: also navigate pads (push = back)
+        // Enc 2 turn: navigate pads
         if (n == 2) {
             selectedPad_ = juce::jlimit(0, kNumPads - 1, selectedPad_ + (delta > 0 ? 1 : -1));
+            repaint();
+        }
+        // Enc 3 turn: cycle file operations
+        if (n == 3) {
+            browseFileOp_ = juce::jlimit(0, 4, browseFileOp_ + (delta > 0 ? 1 : -1));
             repaint();
         }
         return;
@@ -2324,11 +2532,7 @@ void PluginEditor::onEncoder(int n, float delta)
                 int t = static_cast<int>(slot.getFilterType()) + (delta > 0 ? 1 : -1);
                 auto newType = static_cast<FilterType>(juce::jlimit(0, 6, t));
                 slot.setFilterType(newType);
-                // Reset cutoff to 0% (no filtering) for the new type
-                if (newType == FilterType::HPF)
-                    slot.setFilterCutoff(20.0f);      // HPF 0% = 20Hz
-                else if (newType != FilterType::Off)
-                    slot.setFilterCutoff(20000.0f);    // others 0% = 20kHz
+                // Keep current cutoff — don't reset on type change
             }
             if (n == 2) {
                 // Work in strength % space: right = more filtering
@@ -2386,6 +2590,126 @@ void PluginEditor::onEncoder(int n, float delta)
 
 void PluginEditor::onEncoderSwitch(int n, bool val)
 {
+    // ── Track push/release for hold detection ────────────────────────────
+    if (n >= 0 && n < 4) {
+        if (val) {
+            encPushTime_[n] = juce::Time::getMillisecondCounterHiRes();
+            encPushHandled_[n] = false;
+        } else {
+            // Release: check if it was a short press in browse mode
+            double held = juce::Time::getMillisecondCounterHiRes() - encPushTime_[n];
+            if (browseMode_ && !encPushHandled_[n]) {
+                if (n == 0 && held < kHoldMs) {
+                    if (multiSelectMode_) {
+                        // Finish multi-select
+                        multiSelectMode_ = false;
+                        if (multiSelectCount_ > 0) {
+                            juce::StringArray selectedPaths;
+                            for (int i = 0; i < kNumPads; ++i) {
+                                if (multiSelected_[i] && multiSelectedIndices_[i] < browseItems_.size())
+                                    selectedPaths.add(browseItems_[multiSelectedIndices_[i]].getFullPathName());
+                            }
+                            int count = multiSelectCount_;
+                            multiSelectCount_ = 0;
+                            for (int i = 0; i < kNumPads; ++i) multiSelected_[i] = false;
+
+                            showPopup("MULTI-SELECT", { "Create Kit", "Create Stack", "Create Sliced Sample", "Delete Selected", "Cancel" },
+                                [this, selectedPaths, count](int result) {
+                                    if (result == 0) {
+                                        for (int i = 0; i < std::min(count, kNumPads); ++i) {
+                                            juce::File f(selectedPaths[i]);
+                                            if (f.existsAsFile())
+                                                processor_.getEngine().getSlot(i).loadFile(f);
+                                        }
+                                        showNameEntryPopup("NAME YOUR KIT", [this](const juce::String& name) {
+                                            processor_.saveCurrentAsKit(name);
+                                        });
+                                    } else if (result == 1) {
+                                        juce::StringArray relPaths;
+                                        auto root = processor_.getSampleRootPath();
+                                        for (auto& p : selectedPaths) {
+                                            if (p.startsWith(root))
+                                                relPaths.add(p.substring(root.length() + 1));
+                                            else
+                                                relPaths.add(p);
+                                        }
+                                        showNameEntryPopup("NAME YOUR STACK", [this, relPaths](const juce::String& name) {
+                                            processor_.createStackFile(name, relPaths);
+                                        });
+                                    } else if (result == 2) {
+                                        // Slice Combine: concatenate samples into one, auto-slice at boundaries
+                                        sliceCombine(selectedPaths);
+                                    } else if (result == 3) {
+                                        juce::StringArray confirmOpts;
+                                        for (auto& p : selectedPaths)
+                                            confirmOpts.add(juce::File(p).getFileName());
+                                        confirmOpts.add("Yes, delete all");
+                                        confirmOpts.add("Cancel");
+                                        int yesIdx = selectedPaths.size();
+                                        showPopup("DELETE " + juce::String(selectedPaths.size()) + " FILES?", confirmOpts,
+                                            [this, selectedPaths, yesIdx](int confirmResult) {
+                                                if (confirmResult == yesIdx) {
+                                                    int deleted = 0;
+                                                    for (auto& p : selectedPaths) {
+                                                        juce::File f(p);
+                                                        if (f.existsAsFile() && f.deleteFile()) deleted++;
+                                                    }
+                                                    processor_.showTickerPublic("Deleted " + juce::String(deleted) + " files");
+                                                    if (browseMode_) browseScanCurrentDir();
+                                                }
+                                            });
+                                    }
+                                });
+                        } else {
+                            processor_.showTickerPublic("No files selected");
+                        }
+                        repaint();
+                    } else {
+                        // Normal: load file / enter directory
+                        browseSelect();
+                        repaint();
+                    }
+                }
+                else if (n == 1 && held < kHoldMs) {
+                    // Short push enc 1: go back
+                    browseGoUp();
+                    repaint();
+                }
+                else if (n == 2 && held < kHoldMs) {
+                    // Short push enc 2: audition (load + play, don't commit)
+                    if (browseIndex_ >= 0 && browseIndex_ < browseItems_.size()) {
+                        auto sel = browseItems_[browseIndex_];
+                        if (!sel.isDirectory() && browseItemNames_[browseIndex_] != ">> Clear Pad") {
+                            processor_.cacheSlicesForPad(selectedPad_);
+                            processor_.getEngine().getSlot(selectedPad_).loadFile(sel);
+                            processor_.restoreCachedSlices(selectedPad_);
+                            processor_.getEngine().trigger(selectedPad_);
+                            repaint();
+                        }
+                    }
+                }
+                else if (n == 3 && held < kHoldMs) {
+                    browseExecuteFileOp();
+                }
+                return;
+            }
+            // Non-browse releases: ignore
+            return;
+        }
+    } else {
+        if (!val) return;
+    }
+
+    // ── Handle long-press in browse mode (on press down, checked by timer) ──
+    // We handle this in timerCallback or here on initial press.
+    // For now: check holds on press, but the actual hold fires from timer.
+    if (browseMode_ && val) {
+        // Start hold timer — actual hold actions checked in timerCallback
+        // Just record the time and return (don't fall through to normal handling)
+        return;
+    }
+
+    // ── Everything below is short-press on push-down (non-browse) ────────
     if (!val) return;
 
     // Popup: push selects current option
@@ -2432,7 +2756,7 @@ void PluginEditor::onEncoderSwitch(int n, bool val)
                 clearStitches();
                 processor_.showTickerPublic("All slices cleared");
             } else if (val == -1) {
-                slot.detectTransients(0.3f);
+                slot.detectTransients(processor_.getTransSensitivity());
                 triggerActionFlash(juce::Colour(0xFF42A5F5));
                 processor_.showTickerPublic("Transients: " + juce::String(slot.getSliceCount()) + " cuts");
             } else {
@@ -2458,124 +2782,6 @@ void PluginEditor::onEncoderSwitch(int n, bool val)
         if (n == 0) { exitConfigMode(); return; }
         configPushValue(configIndex_);
         repaint();
-        return;
-    }
-
-    if (browseMode_) {
-        if (n == 0) {
-            if (multiSelectMode_) {
-                // Exit multi-select — show popup if any selected
-                multiSelectMode_ = false;
-                if (multiSelectCount_ > 0) {
-                    juce::StringArray selectedPaths;
-                    for (int i = 0; i < kNumPads; ++i) {
-                        if (multiSelected_[i] && multiSelectedIndices_[i] < browseItems_.size())
-                            selectedPaths.add(browseItems_[multiSelectedIndices_[i]].getFullPathName());
-                    }
-                    int count = multiSelectCount_;
-                    multiSelectCount_ = 0;
-                    for (int i = 0; i < kNumPads; ++i) multiSelected_[i] = false;
-
-                    showPopup("MULTI-SELECT", { "Create Kit", "Create Stack", "Delete Selected", "Cancel" },
-                        [this, selectedPaths, count](int result) {
-                            if (result == 0) {
-                                for (int i = 0; i < std::min(count, kNumPads); ++i) {
-                                    juce::File f(selectedPaths[i]);
-                                    if (f.existsAsFile())
-                                        processor_.getEngine().getSlot(i).loadFile(f);
-                                }
-                                showNameEntryPopup("NAME YOUR KIT", [this](const juce::String& name) {
-                                    processor_.saveCurrentAsKit(name);
-                                });
-                            } else if (result == 1) {
-                                juce::StringArray relPaths;
-                                auto root = processor_.getSampleRootPath();
-                                for (auto& p : selectedPaths) {
-                                    if (p.startsWith(root))
-                                        relPaths.add(p.substring(root.length() + 1));
-                                    else
-                                        relPaths.add(p);
-                                }
-                                showNameEntryPopup("NAME YOUR STACK", [this, relPaths](const juce::String& name) {
-                                    processor_.createStackFile(name, relPaths);
-                                });
-                            } else if (result == 2) {
-                                // Build confirmation with file list + Yes/Cancel
-                                juce::StringArray confirmOpts;
-                                for (auto& p : selectedPaths)
-                                    confirmOpts.add(juce::File(p).getFileName());
-                                confirmOpts.add("Yes, delete all");
-                                confirmOpts.add("Cancel");
-                                int yesIdx = selectedPaths.size();
-
-                                showPopup("DELETE " + juce::String(selectedPaths.size()) + " FILES?", confirmOpts,
-                                    [this, selectedPaths, yesIdx](int confirmResult) {
-                                        if (confirmResult == yesIdx) {
-                                            int deleted = 0;
-                                            for (auto& p : selectedPaths) {
-                                                juce::File f(p);
-                                                if (f.existsAsFile() && f.deleteFile()) deleted++;
-                                            }
-                                            processor_.showTickerPublic("Deleted " + juce::String(deleted) + " files");
-                                            if (browseMode_) browseScanCurrentDir();
-                                        }
-                                    });
-                            }
-                        });
-                } else {
-                    processor_.showTickerPublic("No files selected");
-                }
-                repaint();
-                return;
-            }
-            exitBrowseMode(); return;
-        }
-
-        // Multi-select mode: enc 1 push toggles file selection
-        if (multiSelectMode_ && n == 1) {
-            if (browseIndex_ >= 0 && browseIndex_ < browseItems_.size()) {
-                auto& sel = browseItems_.getReference(browseIndex_);
-                if (!sel.isDirectory()) {
-                    // Find if already selected, toggle it
-                    // Use browseIndex as key — track which browse indices are selected
-                    bool wasSelected = false;
-                    for (int i = 0; i < kNumPads; ++i) {
-                        if (multiSelected_[i] && multiSelectedIndices_[i] == browseIndex_) {
-                            multiSelected_[i] = false;
-                            multiSelectCount_--;
-                            wasSelected = true;
-                            break;
-                        }
-                    }
-                    if (!wasSelected && multiSelectCount_ < kNumPads) {
-                        // Find next empty slot
-                        for (int i = 0; i < kNumPads; ++i) {
-                            if (!multiSelected_[i]) {
-                                multiSelected_[i] = true;
-                                multiSelectedIndices_[i] = browseIndex_;
-                                multiSelectCount_++;
-                                break;
-                            }
-                        }
-                    }
-                    repaint();
-                }
-            }
-            return;
-        }
-
-        if (n == 1) browseSelect();                  // load file / enter dir
-        if (n == 2) browseGoUp();                    // back up
-        if (n == 3) {                                // audition: load + play
-            if (browseIndex_ >= 0 && browseIndex_ < browseItems_.size()) {
-                auto sel = browseItems_[browseIndex_];
-                if (!sel.isDirectory() && browseItemNames_[browseIndex_] != ">> Clear Pad") {
-                    processor_.getEngine().getSlot(selectedPad_).loadFile(sel);
-                    processor_.getEngine().trigger(selectedPad_);
-                    repaint();
-                }
-            }
-        }
         return;
     }
 
@@ -2739,6 +2945,8 @@ void PluginEditor::buildConfigRows()
       r.padIndex = selectedPad_; r.paramIndex = 9; configRows_.add(r); }
     { ConfigRow r; r.type = ConfigRowType::Enum; r.label = "Send to Mix";
       r.padIndex = selectedPad_; r.paramIndex = 10; configRows_.add(r); }
+    { ConfigRow r; r.type = ConfigRowType::PushAction; r.label = "Export Slices";
+      r.padIndex = selectedPad_; r.paramIndex = 11; configRows_.add(r); }
 
     // ── Divider ──
     ConfigRow div;
@@ -2798,6 +3006,8 @@ void PluginEditor::buildConfigRows()
       r.padIndex = -1; r.paramIndex = 18; configRows_.add(r); }
     { ConfigRow r; r.type = ConfigRowType::Enum; r.label = "Drive";
       r.padIndex = -1; r.paramIndex = 19; configRows_.add(r); }
+    { ConfigRow r; r.type = ConfigRowType::Enum; r.label = "Trans Sens";
+      r.padIndex = -1; r.paramIndex = 20; configRows_.add(r); }
 
     // ── Spacer between groups ──
     { ConfigRow s; s.type = ConfigRowType::Spacer; s.padIndex = -1; s.paramIndex = -1;
@@ -2933,6 +3143,7 @@ juce::String configGetValueText(const PluginProcessor& proc, const ConfigRow& ro
                 if (d < 1.005f) return "OFF";
                 return juce::String((d - 1.0f) * 100.0f, 0) + "%";
             }
+            case 20: return juce::String((int)(proc.getTransSensitivity() * 100)) + "%";
             default: return "?";
         }
     }
@@ -3166,6 +3377,7 @@ void PluginEditor::configAdjustValue(int selIdx, int delta)
             }
             case 18: processor_.setCompSCSrc(processor_.getCompSCSrc() + delta); break;
             case 19: processor_.setCompDrive(processor_.getCompDrive() + (float)delta * 0.01f); break;
+            case 20: processor_.setTransSensitivity(processor_.getTransSensitivity() + (float)delta * 0.05f); break;
             default: break;
         }
     }
@@ -3181,6 +3393,16 @@ void PluginEditor::configPushValue(int selIdx)
         if (row.paramIndex == 4) {  // Reboot
             processor_.rebootPlugin();
             exitConfigMode();
+        }
+        if (row.paramIndex == 11 && row.padIndex >= 0) {  // Export Slices
+            int pad = row.padIndex;
+            auto& slot = processor_.getEngine().getSlot(pad);
+            if (slot.getSliceCount() == 0) {
+                processor_.showTickerPublic("No slices to export");
+            } else {
+                int count = processor_.exportSlicesToFiles(pad);
+                processor_.showTickerPublic("Exported " + juce::String(count) + " slices");
+            }
         }
         return;
     }

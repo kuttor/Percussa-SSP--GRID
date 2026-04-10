@@ -1256,6 +1256,24 @@ void PluginProcessor::getStateInformation(juce::MemoryBlock& destData)
     xml->setAttribute("compSCHpfHz", compSCHpfHz_);
     xml->setAttribute("compSCSrc", compSCSrc_);
     xml->setAttribute("compDrive", compDrive_);
+    xml->setAttribute("transSensitivity", transSensitivity_);
+
+    // Save slice cache (per-file slice persistence)
+    for (auto& pair : sliceCache_) {
+        auto* cacheEl = xml->createNewChildElement("SLICE_CACHE");
+        cacheEl->setAttribute("file", pair.first);
+        cacheEl->setAttribute("count", pair.second.count);
+        juce::String starts, ends, pitches;
+        for (int i = 0; i < pair.second.count; ++i) {
+            if (i > 0) { starts += ","; ends += ","; pitches += ","; }
+            starts += juce::String(pair.second.starts[i], 6);
+            ends += juce::String(pair.second.ends[i], 6);
+            pitches += juce::String(pair.second.pitches[i], 2);
+        }
+        cacheEl->setAttribute("starts", starts);
+        cacheEl->setAttribute("ends", ends);
+        cacheEl->setAttribute("pitches", pitches);
+    }
 
     copyXmlToBinary(*xml, destData);
 }
@@ -1382,11 +1400,118 @@ void PluginProcessor::setStateInformation(const void* data, int sizeInBytes)
     compSCHpfHz_ = xml->getIntAttribute("compSCHpfHz", 80);
     compSCSrc_ = juce::jlimit(-1, 7, xml->getIntAttribute("compSCSrc", -1));
     compDrive_ = (float)xml->getDoubleAttribute("compDrive", 1.03);
+    transSensitivity_ = (float)xml->getDoubleAttribute("transSensitivity", 0.3);
+
+    // Load slice cache
+    sliceCache_.clear();
+    for (int i = 0; i < xml->getNumChildElements(); ++i) {
+        auto* el = xml->getChildElement(i);
+        if (!el || el->getTagName() != "SLICE_CACHE") continue;
+        juce::String filePath = el->getStringAttribute("file");
+        if (filePath.isEmpty()) continue;
+        SliceCache cache;
+        cache.count = el->getIntAttribute("count", 0);
+        auto starts = juce::StringArray::fromTokens(el->getStringAttribute("starts"), ",", "");
+        auto ends = juce::StringArray::fromTokens(el->getStringAttribute("ends"), ",", "");
+        auto pitches = juce::StringArray::fromTokens(el->getStringAttribute("pitches"), ",", "");
+        for (int s = 0; s < cache.count && s < 128; ++s) {
+            cache.starts[s] = (s < starts.size()) ? starts[s].getFloatValue() : 0.0f;
+            cache.ends[s] = (s < ends.size()) ? ends[s].getFloatValue() : 1.0f;
+            cache.pitches[s] = (s < pitches.size()) ? pitches[s].getFloatValue() : 0.0f;
+        }
+        sliceCache_[filePath] = cache;
+    }
 }
 
 juce::AudioProcessorEditor* PluginProcessor::createEditor()
 {
     return new PluginEditor(*this);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Slice Export — write each slice region as individual WAV file
+// ═══════════════════════════════════════════════════════════════════════════
+
+int PluginProcessor::exportSlicesToFiles(int pad)
+{
+    auto& slot = engine_.getSlot(juce::jlimit(0, kNumPads - 1, pad));
+    if (!slot.isLoaded() || slot.getSliceCount() == 0) return 0;
+
+    const auto& buf = slot.getBuffer();
+    int ns = slot.getNumSamples();
+    int nch = buf.getNumChannels();
+    double sr = slot.getSampleRate();
+    juce::String baseName = slot.getFileName().upToLastOccurrenceOf(".", false, false);
+
+    // Create export directory: same folder as sample, subfolder = samplename_slices
+    juce::File srcFile(slot.getFilePath());
+    juce::File exportDir = srcFile.getParentDirectory().getChildFile(baseName + "_slices");
+    exportDir.createDirectory();
+
+    juce::WavAudioFormat wav;
+    int exported = 0;
+
+    for (int i = 0; i < slot.getSliceCount(); ++i) {
+        float slStart = slot.getSliceStart(i);
+        float slEnd = slot.getSliceEnd(i);
+        int startSamp = (int)(slStart * ns);
+        int endSamp = (int)(slEnd * ns);
+        int len = endSamp - startSamp;
+        if (len <= 0) continue;
+
+        juce::AudioBuffer<float> sliceBuf(nch, len);
+        for (int ch = 0; ch < nch; ++ch)
+            sliceBuf.copyFrom(ch, 0, buf, ch, startSamp, len);
+
+        juce::String sliceName = baseName + "_slice_" + juce::String(i + 1).paddedLeft('0', 3) + ".wav";
+        juce::File outFile = exportDir.getChildFile(sliceName);
+
+        std::unique_ptr<juce::FileOutputStream> fos(outFile.createOutputStream());
+        if (fos) {
+            std::unique_ptr<juce::AudioFormatWriter> writer(
+                wav.createWriterFor(fos.get(), sr, (unsigned int)nch, 24, {}, 0));
+            if (writer) {
+                fos.release();  // writer takes ownership
+                writer->writeFromAudioSampleBuffer(sliceBuf, 0, len);
+                exported++;
+            }
+        }
+    }
+    return exported;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Per-sample slice persistence — cache slices keyed by filename
+// ═══════════════════════════════════════════════════════════════════════════
+
+void PluginProcessor::cacheSlicesForPad(int pad)
+{
+    auto& slot = engine_.getSlot(juce::jlimit(0, kNumPads - 1, pad));
+    if (!slot.isLoaded() || slot.getSliceCount() == 0) return;
+
+    SliceCache cache;
+    cache.count = slot.getSliceCount();
+    for (int i = 0; i < cache.count; ++i) {
+        cache.starts[i] = slot.getSliceStart(i);
+        cache.ends[i] = slot.getSliceEnd(i);
+        cache.pitches[i] = slot.getSlicePitch(i);
+    }
+    sliceCache_[slot.getFilePath()] = cache;
+}
+
+bool PluginProcessor::restoreCachedSlices(int pad)
+{
+    auto& slot = engine_.getSlot(juce::jlimit(0, kNumPads - 1, pad));
+    if (!slot.isLoaded()) return false;
+
+    auto it = sliceCache_.find(slot.getFilePath());
+    if (it == sliceCache_.end()) return false;
+
+    auto& cache = it->second;
+    slot.clearSlices();
+    for (int i = 0; i < cache.count; ++i)
+        slot.addSlicePair(cache.starts[i], cache.ends[i], cache.pitches[i]);
+    return true;
 }
 
 } // namespace grid

@@ -210,9 +210,9 @@ struct KitPadSlot {
     // Slice system — paired regions
     bool  sliceMode = false;
     int   sliceCount = 0;
-    float sliceStarts[64] = {};
-    float sliceEnds[64] = {};
-    float slicePitches[64] = {};
+    float sliceStarts[128] = {};
+    float sliceEnds[128] = {};
+    float slicePitches[128] = {};
     // Bundle (companion .kit.wav): -1 = not bundled, use filePath
     int   bundleOffset   = -1;
     int   bundleLength   = 0;

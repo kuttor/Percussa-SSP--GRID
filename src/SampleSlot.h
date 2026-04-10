@@ -39,6 +39,7 @@ public:
     bool loadFromBuffer(const juce::AudioBuffer<float>& src, int numSamps,
                         double sr, const juce::String& name, const juce::String& path);
     bool isLoaded() const { return numSamples_.load() > 0; }
+    bool isLoading() const { return loading_.load(std::memory_order_acquire); }
     void clear();
 
     // Trigger / Stop
@@ -152,7 +153,7 @@ public:
     // Slice system — paired start/end regions
     // Only completed pairs are playable. First tap = start, second = end.
     // ══════════════════════════════════════════════════════════════════════
-    static constexpr int kMaxSlices = 64;
+    static constexpr int kMaxSlices = 128;
     int getSliceCount() const            { return sliceCount_; }
     float getSliceStart(int i) const     { return (i >= 0 && i < sliceCount_) ? sliceStarts_[i] : 0.0f; }
     float getSliceEnd(int i) const       { return (i >= 0 && i < sliceCount_) ? sliceEnds_[i] : 1.0f; }
@@ -294,27 +295,34 @@ public:
             if (energy[f] > peakEnergy) peakEnergy = energy[f];
         float absThreshold = peakEnergy * 0.02f;  // ignore anything below 2% of peak
 
-        // Pass 2: collect onset positions
+        // Pass 2: collect onset positions using LOCAL window threshold
+        // (EMA was biased toward beginning — local window adapts everywhere)
         float onsetPositions[kMaxSlices];
         int numOnsets = 0;
-        float prevE = energy[0];
-        // Warm up EMA with first 10 frames average
-        float emaThresh = 0.0f;
-        int warmup = std::min(10, numFrames);
-        for (int f = 0; f < warmup; ++f) emaThresh += energy[f];
-        emaThresh /= (float)warmup;
+        constexpr int kLocalWin = 20;  // look-back window for local threshold
+        float odfBuf[kMaxFrames];
+
+        // Compute ODF for all frames first
+        odfBuf[0] = 0.0f;
+        for (int f = 1; f < numFrames; ++f)
+            odfBuf[f] = std::max(0.0f, energy[f] - energy[f - 1]);
+
         int lastOnsetFrame = -minInterOnsetSamples / kHop;
 
         for (int f = 1; f < numFrames - 1; ++f) {
-            float odf = std::max(0.0f, energy[f] - prevE);
+            // Local threshold: mean ODF over previous kLocalWin frames * sensitivity
+            float localMean = 0.0f;
+            int winStart = std::max(0, f - kLocalWin);
+            for (int w = winStart; w < f; ++w) localMean += odfBuf[w];
+            localMean /= (float)(f - winStart);
+            float thresh = localMean * threshMult;
 
-            // Slow adaptive threshold — doesn't chase the signal down
-            emaThresh = 0.03f * odf + 0.97f * emaThresh;
-            float thresh = emaThresh * threshMult;
+            // Also require minimum absolute threshold
+            thresh = std::max(thresh, peakEnergy * 0.005f);
 
-            float odfNext = std::max(0.0f, energy[f + 1] - energy[f]);
+            float odfNext = odfBuf[std::min(f + 1, numFrames - 1)];
 
-            if (odf > thresh && odf > odfNext
+            if (odfBuf[f] > thresh && odfBuf[f] > odfNext
                 && energy[f] > silenceGate && energy[f] > absThreshold
                 && (f - lastOnsetFrame) >= (minInterOnsetSamples / kHop)) {
                 // Backtrack to energy minimum in previous 10 frames
@@ -340,7 +348,6 @@ public:
                 }
                 lastOnsetFrame = f;
             }
-            prevE = energy[f];
         }
 
         // Create pairs: each onset starts a region, next onset (or sample end) ends it
@@ -462,6 +469,7 @@ private:
     juce::AudioFormatManager formatManager_;
     juce::AudioBuffer<float> buffer_;
     std::atomic<int> numSamples_ { 0 };
+    std::atomic<bool> loading_ { false };  // guard: audio thread skips when true
     int numChannels_ = 0;
     double fileSampleRate_ = 48000.0;
     juce::String fileName_;
@@ -475,7 +483,7 @@ private:
     PadMode mode_ = PadMode::OneShot;
 
     // Anti-click envelope
-    static constexpr int kFadeSamples = 32;
+    static constexpr int kFadeSamples = 64;   // ~1.3ms at 48kHz crossfade
     static constexpr int kRetriggerGuard = 64;  // ~1.3ms at 48kHz
     int samplesSinceLastTrigger_ = 99999;
 

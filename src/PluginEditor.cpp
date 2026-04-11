@@ -660,6 +660,52 @@ void PluginEditor::paintPadBox(juce::Graphics& g, juce::Rectangle<int> box, int 
             }
         }
     }
+
+    // ── Compressor GR meter (always visible when Show GR is ON) ────────
+    if (processor_.getCompShowGR()) {
+        int barW = 4;
+        int gapW = 1;
+        int totalW = barW * 2 + gapW;  // 9px total
+        int barH = box.getHeight() - 8;
+        int barX = box.getRight() - totalW - 3;
+        int barY = box.getY() + 4;
+
+        // Background for both bars
+        g.setColour(juce::Colour(0x33000000));
+        g.fillRect(barX, barY, totalW, barH);
+
+        if (processor_.getCompEnabled()) {
+            // Left bar: signal level (green, grows from bottom)
+            // Use GR as proxy — if GR > 0, signal is above threshold
+            float grDb = processor_.getCompGainReductionDb();
+            float threshDb = processor_.getCompThreshDb();
+
+            // Threshold line position (map dB to pixel)
+            // thresh is negative (e.g. -12dB). Range: -60 to 0
+            float threshNorm = 1.0f - juce::jlimit(0.0f, 1.0f, (threshDb + 60.0f) / 60.0f);
+            int threshY = barY + (int)(threshNorm * (float)barH);
+            g.setColour(juce::Colour(0x88FFFFFF));
+            g.fillRect(barX - 1, threshY, totalW + 2, 1);
+
+            // Signal bar (left, green) — show signal above threshold
+            float sigNorm = juce::jlimit(0.0f, 1.0f, grDb / 24.0f + 0.3f);  // baseline visibility
+            int sigH = (int)(sigNorm * (float)barH);
+            g.setColour(juce::Colour(0x994CAF50));
+            g.fillRect(barX, barY + barH - sigH, barW, sigH);
+
+            // GR bar (right, orange) — grows from TOP down
+            float grNorm = juce::jlimit(0.0f, 1.0f, grDb / 24.0f);
+            int grH = (int)(grNorm * (float)barH);
+            if (grH > 0) {
+                g.setColour(juce::Colour(0xCCFF6D00));
+                g.fillRect(barX + barW + gapW, barY, barW, grH);
+            }
+        } else {
+            // Compressor off — show empty meter outline only
+            g.setColour(juce::Colour(0x22FFFFFF));
+            g.drawRect(barX, barY, totalW, barH, 1);
+        }
+    }
 }
 
 void PluginEditor::paintMiniWaveform(juce::Graphics& g, juce::Rectangle<int> area, const SampleSlot& slot)
@@ -1149,9 +1195,27 @@ void PluginEditor::paintFileBrowser(juce::Graphics& g, juce::Rectangle<int> area
             }
         }
 
+        // Check if this file is the clipboard source
+        bool isClipboardSrc = false;
+        if (browseClipboardOp_ > 0 && !isDir && idx < browseItems_.size()) {
+            isClipboardSrc = (browseItems_[idx].getFullPathName() == browseClipboardPath_);
+        }
+
         if (sel) {
             g.setColour(juce::Colour(kBrowseSelBg));
             g.fillRoundedRectangle(row.toFloat(), 3.0f);
+        }
+        // Clipboard source highlight
+        if (isClipboardSrc && !sel) {
+            if (browseClipboardOp_ == 1) {
+                // CUT: grey out the source
+                g.setColour(juce::Colour(0x22FFFFFF));
+                g.fillRoundedRectangle(row.toFloat(), 3.0f);
+            } else {
+                // COPY: yellow tint
+                g.setColour(juce::Colour(0x33FFDD00));
+                g.fillRoundedRectangle(row.toFloat(), 3.0f);
+            }
         }
 
         // Multi-select: numbered circle on the left
@@ -1177,11 +1241,23 @@ void PluginEditor::paintFileBrowser(juce::Graphics& g, juce::Rectangle<int> area
         }
 
         // File/folder name
-        g.setColour(sel ? juce::Colour(0xFFFFFFFF) : juce::Colour(isDir ? kBrowseFolder : kBrowseText));
+        juce::Colour nameColour = sel ? juce::Colour(0xFFFFFFFF) : juce::Colour(isDir ? kBrowseFolder : kBrowseText);
+        if (isClipboardSrc && browseClipboardOp_ == 1)
+            nameColour = juce::Colour(0xFF666666);  // CUT: greyed out text
+        else if (isClipboardSrc && browseClipboardOp_ == 2)
+            nameColour = juce::Colour(0xFFFFDD00);  // COPY: yellow text
+
+        g.setColour(nameColour);
         g.setFont(18.0f);
         juce::String displayName = browseItemNames_[idx];
         if (!isDir && displayName.contains("."))
             displayName = displayName.upToLastOccurrenceOf(".", false, false);
+
+        // Clipboard indicator prefix
+        if (isClipboardSrc) {
+            juce::String prefix = (browseClipboardOp_ == 1) ? "CUT " : "CPY ";
+            displayName = prefix + displayName;
+        }
 
         int nameW = row.getWidth() - 120;
         g.drawText(displayName, row.getX() + nameOffset, row.getY(), nameW - nameOffset + 8, rowH,
@@ -1505,23 +1581,53 @@ void PluginEditor::sliceCombine(const juce::StringArray& paths)
 
 void PluginEditor::browseExecuteFileOp()
 {
+    // Check for pending paste FIRST (before any file selection checks)
+    if (browseClipboardOp_ > 0 && browseClipboardPath_.isNotEmpty() && browseFileOp_ == 0) {
+        juce::File src(browseClipboardPath_);
+        if (!src.existsAsFile()) {
+            processor_.showTickerPublic("Source file missing");
+            browseClipboardOp_ = 0;
+            browseClipboardPath_.clear();
+            return;
+        }
+        juce::File dest = browseCurrentDir_.getChildFile(src.getFileName());
+        if (dest.exists())
+            dest = browseCurrentDir_.getChildFile(
+                src.getFileNameWithoutExtension() + "_copy" + src.getFileExtension());
+
+        if (browseClipboardOp_ == 1) {
+            src.moveFileTo(dest);
+            processor_.showTickerPublic("Moved → " + dest.getFileName());
+        } else {
+            src.copyFileTo(dest);
+            processor_.showTickerPublic("Copied → " + dest.getFileName());
+        }
+        browseClipboardOp_ = 0;
+        browseClipboardPath_.clear();
+        browseScanCurrentDir();
+        repaint();
+        return;
+    }
+
     if (browseIndex_ < 0 || browseIndex_ >= browseItems_.size()) return;
     auto sel = browseItems_[browseIndex_];
-    if (sel.isDirectory()) return;
 
     switch (browseFileOp_) {
-        case 1:  // MOVE — store in clipboard, user navigates to dest then pushes again
+        case 1:  // MOVE — store in clipboard
         case 2:  // COPY
         {
+            if (sel.isDirectory()) return;
             browseClipboardPath_ = sel.getFullPathName();
             browseClipboardOp_ = browseFileOp_;
+            browseFileOp_ = 0;  // reset so next push triggers paste
             processor_.showTickerPublic(
-                juce::String(browseFileOp_ == 1 ? "MOVE" : "COPY") + ": " +
-                sel.getFileName() + " — navigate to dest, push to paste");
+                juce::String(browseClipboardOp_ == 1 ? "CUT" : "COPY") + ": " +
+                sel.getFileName() + " — go to dest, push to paste");
             break;
         }
         case 3:  // DELETE
         {
+            if (sel.isDirectory()) return;
             showPopup("DELETE " + sel.getFileName() + "?", { "Yes", "Cancel" },
                 [this, sel](int r) {
                     if (r == 0) {
@@ -1540,36 +1646,7 @@ void PluginEditor::browseExecuteFileOp()
             processor_.showTickerPublic("Multi-select: buttons to pick, enc 0 push to finish");
             break;
         }
-        default: {
-            // If clipboard has content, this is a PASTE into current directory
-            if (browseClipboardOp_ > 0 && browseClipboardPath_.isNotEmpty()) {
-                juce::File src(browseClipboardPath_);
-                if (!src.existsAsFile()) {
-                    processor_.showTickerPublic("Source file missing");
-                    browseClipboardOp_ = 0;
-                    browseClipboardPath_.clear();
-                    break;
-                }
-                juce::File dest = browseCurrentDir_.getChildFile(src.getFileName());
-                if (dest.exists()) {
-                    // Append _copy to avoid overwrite
-                    dest = browseCurrentDir_.getChildFile(
-                        src.getFileNameWithoutExtension() + "_copy" + src.getFileExtension());
-                }
-                if (browseClipboardOp_ == 1) {
-                    src.moveFileTo(dest);
-                    processor_.showTickerPublic("Moved → " + dest.getFileName());
-                } else {
-                    src.copyFileTo(dest);
-                    processor_.showTickerPublic("Copied → " + dest.getFileName());
-                }
-                browseClipboardOp_ = 0;
-                browseClipboardPath_.clear();
-                browseFileOp_ = 0;
-                browseScanCurrentDir();
-            }
-            break;
-        }
+        default: break;
     }
     repaint();
 }
@@ -1612,6 +1689,10 @@ juce::String PluginEditor::getEncoderLabel(int page, int enc) const
             return l[enc];
         }
         case PAGE_SAMPLE: {
+            if (enc == 3) {
+                auto& s = const_cast<GridEngine&>(processor_.getEngine()).getSlot(selectedPad_);
+                return s.getPitchQuantize() ? "NOTE" : "PITCH";
+            }
             const char* l[] = { "", "START", "END", "PITCH" };
             return l[enc];
         }
@@ -1628,6 +1709,11 @@ juce::String PluginEditor::getEncoderLabel(int page, int enc) const
             return l[enc];
         }
         case PAGE_FILTER: {
+            FilterType ft = const_cast<GridEngine&>(processor_.getEngine()).getSlot(selectedPad_).getFilterType();
+            if (ft == FilterType::LPG) {
+                const char* l[] = { "", "TYPE", "STRIKE", "DECAY" };
+                return l[enc];
+            }
             const char* l[] = { "", "TYPE", "CUTOFF", "RESO" };
             return l[enc];
         }
@@ -1680,6 +1766,11 @@ juce::String PluginEditor::getEncoderValue(int page, int enc) const
             if (enc == 2) return juce::String(slot.getEndPos() * 100.0f, 1) + "%";
             if (enc == 3) {
                 float st = slot.getPitchSemitones();
+                if (slot.getPitchQuantize()) {
+                    int ist = (int)std::round(st);
+                    return juce::String(SampleSlot::semitoneName(ist))
+                         + juce::String(SampleSlot::semitoneOctave(ist));
+                }
                 return (st >= 0 ? "+" : "") + juce::String(st, 1) + "st";
             }
             return "---";
@@ -1738,12 +1829,17 @@ juce::String PluginEditor::getEncoderValue(int page, int enc) const
         }
         case PAGE_FILTER: {
             if (enc == 1) {
-                const char* types[] = { "OFF", "LPF", "HPF", "BPF", "NOTCH", "FORMANT", "MS-20" };
+                const char* types[] = { "OFF", "LPF", "HPF", "BPF", "NOTCH", "FORMANT", "MS-20", "LPG" };
                 return types[static_cast<int>(slot.getFilterType())];
             }
             if (enc == 2) {
                 float hz = slot.getFilterCutoff();
                 FilterType ft = slot.getFilterType();
+                if (ft == FilterType::LPG) {
+                    // Strike: show as percentage of max gate opening
+                    float pct = (hz / 20000.0f) * 100.0f;
+                    return juce::String((int)pct) + "%";
+                }
                 // Strength: 0% = no filtering, 100% = max filtering
                 float pct;
                 if (ft == FilterType::HPF)
@@ -1757,7 +1853,16 @@ juce::String PluginEditor::getEncoderValue(int page, int enc) const
                 else hzStr = juce::String((int)hz);
                 return juce::String((int)pct) + "% / " + hzStr + "Hz";
             }
-            if (enc == 3) return juce::String((int)(slot.getFilterResonance() * 100)) + "%";
+            if (enc == 3) {
+                if (slot.getFilterType() == FilterType::LPG) {
+                    // Decay: show as time description
+                    float d = slot.getFilterResonance();
+                    float ms = 20.0f + d * 2980.0f;  // 20ms to 3000ms
+                    if (ms >= 1000.0f) return juce::String(ms / 1000.0f, 1) + "s";
+                    return juce::String((int)ms) + "ms";
+                }
+                return juce::String((int)(slot.getFilterResonance() * 100)) + "%";
+            }
             return "---";
         }
         case PAGE_MIDI: {
@@ -2488,7 +2593,12 @@ void PluginEditor::onEncoder(int n, float delta)
         case PAGE_SAMPLE:
             if (n == 1) slot.setStartPos(slot.getStartPos() + delta * 0.015f);
             if (n == 2) slot.setEndPos(slot.getEndPos() + delta * 0.015f);
-            if (n == 3) slot.setPitchSemitones(slot.getPitchSemitones() + delta * 1.0f);
+            if (n == 3) {
+                if (slot.getPitchQuantize())
+                    slot.setPitchSemitones(std::round(slot.getPitchSemitones()) + (delta > 0 ? 1.0f : -1.0f));
+                else
+                    slot.setPitchSemitones(slot.getPitchSemitones() + delta * 1.0f);
+            }
             break;
 
         case PAGE_PLAY:
@@ -2530,7 +2640,7 @@ void PluginEditor::onEncoder(int n, float delta)
         case PAGE_FILTER: {
             if (n == 1) {
                 int t = static_cast<int>(slot.getFilterType()) + (delta > 0 ? 1 : -1);
-                auto newType = static_cast<FilterType>(juce::jlimit(0, 6, t));
+                auto newType = static_cast<FilterType>(juce::jlimit(0, 7, t));
                 slot.setFilterType(newType);
                 // Keep current cutoff — don't reset on type change
             }
@@ -2598,6 +2708,14 @@ void PluginEditor::onEncoderSwitch(int n, bool val)
         } else {
             // Release: check if it was a short press in browse mode
             double held = juce::Time::getMillisecondCounterHiRes() - encPushTime_[n];
+
+            // Popup mode: any encoder release confirms selection
+            if (popupMode_ && !encPushHandled_[n] && held < kHoldMs) {
+                closePopup(popupIndex_);
+                encPushTime_[n] = 0.0;
+                return;
+            }
+
             if (browseMode_ && !encPushHandled_[n]) {
                 if (n == 0 && held < kHoldMs) {
                     if (multiSelectMode_) {
@@ -2691,6 +2809,7 @@ void PluginEditor::onEncoderSwitch(int n, bool val)
                 else if (n == 3 && held < kHoldMs) {
                     browseExecuteFileOp();
                 }
+                encPushTime_[n] = 0.0;  // prevent timer from firing hold action
                 return;
             }
             // Non-browse releases: ignore
@@ -2714,6 +2833,7 @@ void PluginEditor::onEncoderSwitch(int n, bool val)
 
     // Popup: push selects current option
     if (popupMode_) {
+        closePopup(popupIndex_);
         return;
     }
 
@@ -2788,6 +2908,7 @@ void PluginEditor::onEncoderSwitch(int n, bool val)
     // Push encoder 0 on ANY page = toggle browser
     if (n == 0) {
         enterBrowseMode();
+        encPushHandled_[0] = true;  // prevent release from triggering browseSelect
         return;
     }
 
@@ -2808,7 +2929,11 @@ void PluginEditor::onEncoderSwitch(int n, bool val)
         case PAGE_SAMPLE:
             if (n == 1) slot.setStartPos(0.0f);
             if (n == 2) slot.setEndPos(1.0f);
-            if (n == 3) slot.setPitchSemitones(0.0f);
+            if (n == 3) {
+                slot.setPitchQuantize(!slot.getPitchQuantize());
+                if (slot.getPitchQuantize())
+                    slot.setPitchSemitones(std::round(slot.getPitchSemitones()));
+            }
             break;
         case PAGE_PLAY:
             if (n == 1) { slot.setMode(PadMode::OneShot); slot.setTimeStretch(1.0f); }
@@ -2904,7 +3029,7 @@ void PluginEditor::buildConfigRows()
     juce::String padName = slot.isLoaded() ? slot.getFileName() : "empty";
     if (padName.contains(".")) padName = padName.upToLastOccurrenceOf(".", false, false);
 
-    // ── Pad-specific section ──
+    // ── Pad header ──
     ConfigRow hdr;
     hdr.type = ConfigRowType::Header;
     hdr.label = "PAD " + juce::String(selectedPad_ + 1) + ": " + padName;
@@ -2912,20 +3037,25 @@ void PluginEditor::buildConfigRows()
     hdr.paramIndex = -1;
     configRows_.add(hdr);
 
-    // CLK Beats: only visible when pad is in a clocked mode
+    // ── Options section ──
+    { ConfigRow s; s.type = ConfigRowType::SubHeader; s.label = "Options";
+      s.padIndex = -1; s.paramIndex = -1; configRows_.add(s); }
+
     PadMode padMode = slot.getMode();
     if (padMode == PadMode::ClockedLoop || padMode == PadMode::ClockedOneShot) {
         { ConfigRow r; r.type = ConfigRowType::Enum; r.label = "CLK Beats";
           r.padIndex = selectedPad_; r.paramIndex = 5; configRows_.add(r); }
     }
 
-    // Lo-Fi mode (paramIndex 8)
     { ConfigRow r; r.type = ConfigRowType::Enum; r.label = "Lo-Fi";
       r.padIndex = selectedPad_; r.paramIndex = 8; configRows_.add(r); }
 
-    // Spacer before CC section
-    { ConfigRow s; s.type = ConfigRowType::Spacer; s.padIndex = -1; s.paramIndex = -1;
-      configRows_.add(s); }
+    { ConfigRow r; r.type = ConfigRowType::Enum; r.label = "Stretch";
+      r.padIndex = selectedPad_; r.paramIndex = 12; configRows_.add(r); }
+
+    // ── MIDI CC section ──
+    { ConfigRow s; s.type = ConfigRowType::SubHeader; s.label = "MIDI CC";
+      s.padIndex = -1; s.paramIndex = -1; configRows_.add(s); }
 
     for (int i = 0; i < PadCCMap::kNumCCs; ++i) {
         ConfigRow row;
@@ -2936,16 +3066,20 @@ void PluginEditor::buildConfigRows()
         configRows_.add(row);
     }
 
-    // ── Spacer before routing ──
-    { ConfigRow s; s.type = ConfigRowType::Spacer; s.padIndex = -1; s.paramIndex = -1;
-      configRows_.add(s); }
+    // ── Routing section ──
+    { ConfigRow s; s.type = ConfigRowType::SubHeader; s.label = "Routing";
+      s.padIndex = -1; s.paramIndex = -1; configRows_.add(s); }
 
-    // Per-pad output routing
     { ConfigRow r; r.type = ConfigRowType::Enum; r.label = "Output Ch";
       r.padIndex = selectedPad_; r.paramIndex = 9; configRows_.add(r); }
     { ConfigRow r; r.type = ConfigRowType::Enum; r.label = "Send to Mix";
       r.padIndex = selectedPad_; r.paramIndex = 10; configRows_.add(r); }
-    { ConfigRow r; r.type = ConfigRowType::PushAction; r.label = "Export Slices";
+
+    // ── Tools section ──
+    { ConfigRow s; s.type = ConfigRowType::SubHeader; s.label = "Tools";
+      s.padIndex = -1; s.paramIndex = -1; configRows_.add(s); }
+
+    { ConfigRow r; r.type = ConfigRowType::PushAction; r.label = "Export Slices to Samples";
       r.padIndex = selectedPad_; r.paramIndex = 11; configRows_.add(r); }
 
     // ── Divider ──
@@ -2957,33 +3091,26 @@ void PluginEditor::buildConfigRows()
     configRows_.add(div);
 
     // ── Performance group ──
-    // 0 = Mute Mode
+    { ConfigRow s; s.type = ConfigRowType::SubHeader; s.label = "Performance";
+      s.padIndex = -1; s.paramIndex = -1; configRows_.add(s); }
     { ConfigRow r; r.type = ConfigRowType::Enum; r.label = "Mute Mode";
       r.padIndex = -1; r.paramIndex = 0; configRows_.add(r); }
-    // 2 = Queue Bars (grouped with Mute Mode)
     { ConfigRow r; r.type = ConfigRowType::Enum; r.label = "Queue Bars";
       r.padIndex = -1; r.paramIndex = 2; configRows_.add(r); }
-    // 6 = Mute Fade
     { ConfigRow r; r.type = ConfigRowType::Enum; r.label = "Mute Fade";
       r.padIndex = -1; r.paramIndex = 6; configRows_.add(r); }
 
-    // ── Spacer between groups ──
-    { ConfigRow s; s.type = ConfigRowType::Spacer; s.padIndex = -1; s.paramIndex = -1;
-      configRows_.add(s); }
-
     // ── Slice CV group ──
-    // 7 = Slice CV 1
+    { ConfigRow s; s.type = ConfigRowType::SubHeader; s.label = "Slice CV";
+      s.padIndex = -1; s.paramIndex = -1; configRows_.add(s); }
     { ConfigRow r; r.type = ConfigRowType::Enum; r.label = "Slice CV 1";
       r.padIndex = -1; r.paramIndex = 7; configRows_.add(r); }
-    // 8 = Slice CV 2
     { ConfigRow r; r.type = ConfigRowType::Enum; r.label = "Slice CV 2";
       r.padIndex = -1; r.paramIndex = 8; configRows_.add(r); }
 
-    // ── Spacer ──
-    { ConfigRow s; s.type = ConfigRowType::Spacer; s.padIndex = -1; s.paramIndex = -1;
-      configRows_.add(s); }
-
     // ── Compressor group ──
+    { ConfigRow s; s.type = ConfigRowType::SubHeader; s.label = "Compressor";
+      s.padIndex = -1; s.paramIndex = -1; configRows_.add(s); }
     { ConfigRow r; r.type = ConfigRowType::Enum; r.label = "Compressor";
       r.padIndex = -1; r.paramIndex = 9; configRows_.add(r); }
     { ConfigRow r; r.type = ConfigRowType::Enum; r.label = "Threshold";
@@ -3008,25 +3135,20 @@ void PluginEditor::buildConfigRows()
       r.padIndex = -1; r.paramIndex = 19; configRows_.add(r); }
     { ConfigRow r; r.type = ConfigRowType::Enum; r.label = "Trans Sens";
       r.padIndex = -1; r.paramIndex = 20; configRows_.add(r); }
-
-    // ── Spacer between groups ──
-    { ConfigRow s; s.type = ConfigRowType::Spacer; s.padIndex = -1; s.paramIndex = -1;
-      configRows_.add(s); }
+    { ConfigRow r; r.type = ConfigRowType::Enum; r.label = "Show GR";
+      r.padIndex = -1; r.paramIndex = 21; configRows_.add(r); }
 
     // ── Preset group ──
-    // 1 = Preset Switch
+    { ConfigRow s; s.type = ConfigRowType::SubHeader; s.label = "Presets";
+      s.padIndex = -1; s.paramIndex = -1; configRows_.add(s); }
     { ConfigRow r; r.type = ConfigRowType::Enum; r.label = "Preset Switch";
       r.padIndex = -1; r.paramIndex = 1; configRows_.add(r); }
 
-    // ── Spacer ──
-    { ConfigRow s; s.type = ConfigRowType::Spacer; s.padIndex = -1; s.paramIndex = -1;
-      configRows_.add(s); }
-
     // ── System group ──
-    // 5 = Encoder Speed
+    { ConfigRow s; s.type = ConfigRowType::SubHeader; s.label = "System";
+      s.padIndex = -1; s.paramIndex = -1; configRows_.add(s); }
     { ConfigRow r; r.type = ConfigRowType::Enum; r.label = "Enc Speed";
       r.padIndex = -1; r.paramIndex = 5; configRows_.add(r); }
-    // 3 = Debug Msgs
     { ConfigRow r; r.type = ConfigRowType::Enum; r.label = "Debug Msgs";
       r.padIndex = -1; r.paramIndex = 3; configRows_.add(r); }
     // 4 = Reboot Plugin
@@ -3039,7 +3161,7 @@ int PluginEditor::configSelectableCount() const
     int count = 0;
     for (auto& row : configRows_)
         if (row.type != ConfigRowType::Header && row.type != ConfigRowType::Divider
-            && row.type != ConfigRowType::Spacer)
+            && row.type != ConfigRowType::Spacer && row.type != ConfigRowType::SubHeader)
             count++;
     return count;
 }
@@ -3049,7 +3171,7 @@ int PluginEditor::configSelectableToVisual(int selIdx) const
     int sel = 0;
     for (int i = 0; i < configRows_.size(); ++i) {
         auto t = configRows_[i].type;
-        if (t == ConfigRowType::Header || t == ConfigRowType::Divider || t == ConfigRowType::Spacer)
+        if (t == ConfigRowType::Header || t == ConfigRowType::Divider || t == ConfigRowType::Spacer || t == ConfigRowType::SubHeader)
             continue;
         if (sel == selIdx) return i;
         sel++;
@@ -3062,7 +3184,7 @@ int PluginEditor::configVisualToSelectable(int visualIdx) const
     int sel = 0;
     for (int i = 0; i < visualIdx && i < configRows_.size(); ++i) {
         auto t = configRows_[i].type;
-        if (t != ConfigRowType::Header && t != ConfigRowType::Divider && t != ConfigRowType::Spacer)
+        if (t != ConfigRowType::Header && t != ConfigRowType::Divider && t != ConfigRowType::Spacer && t != ConfigRowType::SubHeader)
             sel++;
     }
     return sel;
@@ -3091,6 +3213,10 @@ juce::String configGetValueText(const PluginProcessor& proc, const ConfigRow& ro
         }
         if (row.paramIndex == 10) {
             return proc.getEngine().getSlot(row.padIndex).getSendToMix() ? "ON" : "OFF";
+        }
+        if (row.paramIndex == 12) {
+            const char* names[] = { "OLA", "WSOLA" };
+            return names[static_cast<int>(proc.getEngine().getSlot(row.padIndex).getStretchMode())];
         }
     }
     if (row.type == ConfigRowType::Enum && row.padIndex < 0) {
@@ -3143,7 +3269,13 @@ juce::String configGetValueText(const PluginProcessor& proc, const ConfigRow& ro
                 if (d < 1.005f) return "OFF";
                 return juce::String((d - 1.0f) * 100.0f, 0) + "%";
             }
-            case 20: return juce::String((int)(proc.getTransSensitivity() * 100)) + "%";
+            case 20: {
+                float s = proc.getTransSensitivity();
+                if (s > 0.45f) return "LOW";
+                if (s > 0.15f) return "MED";
+                return "HIGH";
+            }
+            case 21: return proc.getCompShowGR() ? "ON" : "OFF";
             default: return "?";
         }
     }
@@ -3183,7 +3315,7 @@ void PluginEditor::paintConfigBrowser(juce::Graphics& g, juce::Rectangle<int> ar
                                              content.getWidth(), rowH);
 
         bool isSelectable = (row.type != ConfigRowType::Header && row.type != ConfigRowType::Divider
-                              && row.type != ConfigRowType::Spacer);
+                              && row.type != ConfigRowType::Spacer && row.type != ConfigRowType::SubHeader);
         bool isSelected = isSelectable && (configVisualToSelectable(idx) == configIndex_);
 
         // ── Header row ──
@@ -3219,6 +3351,23 @@ void PluginEditor::paintConfigBrowser(juce::Graphics& g, juce::Rectangle<int> ar
             g.setColour(juce::Colour(0x88FFFFFF));
             g.drawText(row.label, textX, rowRect.getY(), textW, rowRect.getHeight(),
                        juce::Justification::centred);
+            continue;
+        }
+
+        // ── SubHeader row (section label with line extending right) ──
+        if (row.type == ConfigRowType::SubHeader) {
+            g.setFont(14.0f);
+            g.setColour(juce::Colour(0xAAE53935));  // red accent, slightly muted
+            juce::String label = row.label.toUpperCase();
+            int textW = g.getCurrentFont().getStringWidth(label) + 4;
+            int textX = rowRect.getX() + 6;
+            g.drawText(label, textX, rowRect.getY(), textW, rowRect.getHeight(),
+                       juce::Justification::centredLeft);
+            // Line extending from text to right edge
+            int lineY = rowRect.getCentreY();
+            int lineStart = textX + textW + 6;
+            g.setColour(juce::Colour(0x44FFFFFF));
+            g.fillRect(lineStart, lineY, rowRect.getRight() - lineStart - 4, 1);
             continue;
         }
 
@@ -3317,6 +3466,14 @@ void PluginEditor::configAdjustValue(int selIdx, int delta)
         return;
     }
 
+    // Per-pad Stretch Mode (paramIndex 12)
+    if (row.type == ConfigRowType::Enum && row.padIndex >= 0 && row.paramIndex == 12) {
+        auto& slot = processor_.getEngine().getSlot(row.padIndex);
+        int v = static_cast<int>(slot.getStretchMode()) + delta;
+        slot.setStretchMode(static_cast<StretchMode>(juce::jlimit(0, 1, v)));
+        return;
+    }
+
     if (row.type == ConfigRowType::Enum && row.padIndex < 0) {
         switch (row.paramIndex) {
             case 0: {  // Mute Mode
@@ -3377,7 +3534,19 @@ void PluginEditor::configAdjustValue(int selIdx, int delta)
             }
             case 18: processor_.setCompSCSrc(processor_.getCompSCSrc() + delta); break;
             case 19: processor_.setCompDrive(processor_.getCompDrive() + (float)delta * 0.01f); break;
-            case 20: processor_.setTransSensitivity(processor_.getTransSensitivity() + (float)delta * 0.05f); break;
+            case 20: {
+                // Step through LOW (0.6) → MED (0.3) → HIGH (0.1)
+                float s = processor_.getTransSensitivity();
+                if (delta > 0) {  // right = more sensitive
+                    if (s > 0.45f) processor_.setTransSensitivity(0.3f);
+                    else if (s > 0.15f) processor_.setTransSensitivity(0.1f);
+                } else {          // left = less sensitive
+                    if (s < 0.15f) processor_.setTransSensitivity(0.3f);
+                    else if (s < 0.45f) processor_.setTransSensitivity(0.6f);
+                }
+                break;
+            }
+            case 21: processor_.setCompShowGR(delta > 0); break;
             default: break;
         }
     }

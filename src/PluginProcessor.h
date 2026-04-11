@@ -180,6 +180,8 @@ private:
     int   compSCHpfHz_   = 80;     // sidechain HPF frequency (0=off, 60/80/120/150)
     int   compSCSrc_     = -1;     // sidechain source pad (-1=bus, 0-7=pad)
     float compDrive_     = 1.03f;  // subtle output saturation (1.0=off, 1.05=warm)
+    float compGainReductionDb_ = 0.0f;  // current GR for visualization
+    bool  compShowGR_    = false;  // show GR overlay on pads
     float transSensitivity_ = 0.3f;  // transient detection sensitivity (0.1=more, 1.0=fewer)
 
     // Envelope state (dual-time-constant)
@@ -243,6 +245,9 @@ public:
     void  setCompSCSrc(int p)        { compSCSrc_ = juce::jlimit(-1, 7, p); }
     float getCompDrive() const       { return compDrive_; }
     void  setCompDrive(float d)      { compDrive_ = juce::jlimit(1.0f, 1.15f, d); }
+    float getCompGainReductionDb() const { return compGainReductionDb_; }
+    bool  getCompShowGR() const      { return compShowGR_; }
+    void  setCompShowGR(bool b)      { compShowGR_ = b; }
     float getTransSensitivity() const { return transSensitivity_; }
     void  setTransSensitivity(float s) { transSensitivity_ = juce::jlimit(0.05f, 1.0f, s); }
     void rebootPlugin();

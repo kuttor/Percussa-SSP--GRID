@@ -571,6 +571,12 @@ void PluginProcessor::processBlock(juce::AudioBuffer<float>& buffer,
 
                 float gainLin = std::pow(10.0f, -gainReductionDb / 20.0f);
 
+                // Store peak GR for visualization (smoothed)
+                if (gainReductionDb > compGainReductionDb_)
+                    compGainReductionDb_ = gainReductionDb;
+                else
+                    compGainReductionDb_ *= 0.9995f;  // slow decay for meter
+
                 // ── 5. Apply gain with wet/dry blend ─────────────────────
                 float compGainL = (1.0f - wet) + wet * gainLin;
                 float compGainR = compGainL;  // stereo linked
@@ -1257,6 +1263,7 @@ void PluginProcessor::getStateInformation(juce::MemoryBlock& destData)
     xml->setAttribute("compSCSrc", compSCSrc_);
     xml->setAttribute("compDrive", compDrive_);
     xml->setAttribute("transSensitivity", transSensitivity_);
+    xml->setAttribute("compShowGR", compShowGR_ ? 1 : 0);
 
     // Save slice cache (per-file slice persistence)
     for (auto& pair : sliceCache_) {
@@ -1401,6 +1408,7 @@ void PluginProcessor::setStateInformation(const void* data, int sizeInBytes)
     compSCSrc_ = juce::jlimit(-1, 7, xml->getIntAttribute("compSCSrc", -1));
     compDrive_ = (float)xml->getDoubleAttribute("compDrive", 1.03);
     transSensitivity_ = (float)xml->getDoubleAttribute("transSensitivity", 0.3);
+    compShowGR_ = xml->getIntAttribute("compShowGR", 0) != 0;
 
     // Load slice cache
     sliceCache_.clear();

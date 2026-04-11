@@ -20,15 +20,21 @@ bool SampleSlot::loadFile(const juce::File& file)
     int newSamples  = static_cast<int>(reader->lengthInSamples);
     double newRate  = reader->sampleRate;
 
-    juce::AudioBuffer<float> tempBuffer(newChannels, newSamples);
-    reader->read(&tempBuffer, 0, newSamples, 0, true, newChannels > 1);
-
     // Atomic guard: audio thread will skip process() while loading
     loading_.store(true, std::memory_order_release);
 
+    // Write to the INACTIVE buffer (audio thread is reading the active one)
+    int inactive = 1 - activeBuffer_.load(std::memory_order_acquire);
+    buffers_[inactive].setSize(newChannels, newSamples);
+    reader->read(&buffers_[inactive], 0, newSamples, 0, true, newChannels > 1);
+
+    // Stop all voices, zero out sample count
     for (auto& v : voices_) v.reset();
-    numSamples_.store(0);
-    buffer_ = std::move(tempBuffer);
+    numSamples_.store(0, std::memory_order_release);
+
+    // Swap: audio thread now sees the new buffer
+    activeBuffer_.store(inactive, std::memory_order_release);
+
     numChannels_ = newChannels;
     fileSampleRate_ = newRate;
     fileName_ = file.getFileName();
@@ -36,7 +42,7 @@ bool SampleSlot::loadFile(const juce::File& file)
     clearSlices();
     startPos_ = 0.0f;
     endPos_ = 1.0f;
-    numSamples_.store(newSamples);
+    numSamples_.store(newSamples, std::memory_order_release);
 
     loading_.store(false, std::memory_order_release);
     return true;
@@ -48,15 +54,19 @@ bool SampleSlot::loadFromBuffer(const juce::AudioBuffer<float>& src, int numSamp
     if (numSamps <= 0) return false;
 
     int newChannels = std::min(src.getNumChannels(), 2);
-    juce::AudioBuffer<float> tempBuffer(newChannels, numSamps);
-    for (int ch = 0; ch < newChannels; ++ch)
-        tempBuffer.copyFrom(ch, 0, src, ch, 0, numSamps);
 
     loading_.store(true, std::memory_order_release);
 
+    int inactive = 1 - activeBuffer_.load(std::memory_order_acquire);
+    buffers_[inactive].setSize(newChannels, numSamps);
+    for (int ch = 0; ch < newChannels; ++ch)
+        buffers_[inactive].copyFrom(ch, 0, src, ch, 0, numSamps);
+
     for (auto& v : voices_) v.reset();
-    numSamples_.store(0);
-    buffer_ = std::move(tempBuffer);
+    numSamples_.store(0, std::memory_order_release);
+
+    activeBuffer_.store(inactive, std::memory_order_release);
+
     numChannels_ = newChannels;
     fileSampleRate_ = sr;
     fileName_ = name;
@@ -64,7 +74,7 @@ bool SampleSlot::loadFromBuffer(const juce::AudioBuffer<float>& src, int numSamp
     clearSlices();
     startPos_ = 0.0f;
     endPos_ = 1.0f;
-    numSamples_.store(numSamps);
+    numSamples_.store(numSamps, std::memory_order_release);
 
     loading_.store(false, std::memory_order_release);
     return true;
@@ -75,8 +85,10 @@ void SampleSlot::clear()
     loading_.store(true, std::memory_order_release);
 
     for (auto& v : voices_) v.reset();
-    numSamples_.store(0);
-    buffer_.setSize(0, 0);
+    numSamples_.store(0, std::memory_order_release);
+    buffers_[0].setSize(0, 0);
+    buffers_[1].setSize(0, 0);
+    activeBuffer_.store(0, std::memory_order_release);
     numChannels_ = 0;
     fileName_.clear();
     filePath_.clear();
@@ -100,8 +112,9 @@ void SampleSlot::setReversed(bool r)
     if (ns <= 0) return;
 
     numSamples_.store(0);
+    auto& buf = buffers_[activeBuffer_.load(std::memory_order_acquire)];
     for (int ch = 0; ch < numChannels_; ++ch) {
-        float* data = buffer_.getWritePointer(ch);
+        float* data = buf.getWritePointer(ch);
         std::reverse(data, data + ns);
     }
     numSamples_.store(ns);
@@ -113,8 +126,9 @@ void SampleSlot::normalize()
     if (ns <= 0) return;
 
     float peak = 0.0f;
+    auto& buf = buffers_[activeBuffer_.load(std::memory_order_acquire)];
     for (int ch = 0; ch < numChannels_; ++ch) {
-        const float* data = buffer_.getReadPointer(ch);
+        const float* data = buf.getReadPointer(ch);
         for (int s = 0; s < ns; ++s) {
             float a = std::abs(data[s]);
             if (a > peak) peak = a;
@@ -127,7 +141,7 @@ void SampleSlot::normalize()
 
     numSamples_.store(0);
     for (int ch = 0; ch < numChannels_; ++ch) {
-        float* data = buffer_.getWritePointer(ch);
+        float* data = buf.getWritePointer(ch);
         for (int s = 0; s < ns; ++s)
             data[s] *= gain;
     }
@@ -206,6 +220,14 @@ void SampleSlot::triggerWithVelocity(float vel)
         fmtIc1L_[b] = fmtIc2L_[b] = fmtIc1R_[b] = fmtIc2R_[b] = 0.0f;
     }
     lofiPhaseL_ = lofiPhaseR_ = lofiHeldL_ = lofiHeldR_ = 0.0f;
+
+    // LPG: strike the vactrol on trigger
+    if (filterType_ == FilterType::LPG) {
+        float strike = filterCutoff_ / 20000.0f;  // cutoff knob → strike amount [0..1]
+        lpgVactrol_ = std::min(1.0f, vel * strike);
+        lpgMemory_ = std::min(1.0f, lpgMemory_ + 0.15f * vel);  // accumulate heat
+        lpgBlockCount_ = 0;
+    }
 }
 
 void SampleSlot::stop()
@@ -283,13 +305,22 @@ void SampleSlot::process(float* outL, float* outR, int numSamples)
         if (v.playing) { anyActive = true; break; }
     if (!anyActive) return;
 
+    // Re-check loading after voice check (narrow the race window)
+    if (loading_.load(std::memory_order_acquire)) return;
+
+    // Snapshot buffer pointers — if loading starts after this point,
+    // we're committed to this block but the pointers are still valid
+    // because loadFile writes to the INACTIVE buffer then swaps
+    auto& buf = buffers_[activeBuffer_.load(std::memory_order_acquire)];
+    if (buf.getNumSamples() < ns || buf.getNumChannels() == 0) return;
+
     const int startSample = static_cast<int>(startPos_ * (float)ns);
     const int endSample = static_cast<int>(endPos_ * (float)ns);
     const int regionLen = endSample - startSample;
     if (regionLen <= 0) return;
 
-    const float* srcL = buffer_.getReadPointer(0);
-    const float* srcR = (numChannels_ > 1) ? buffer_.getReadPointer(1) : srcL;
+    const float* srcL = buf.getReadPointer(0);
+    const float* srcR = (numChannels_ > 1) ? buf.getReadPointer(1) : srcL;
 
     const float panL = cachedPanL_;
     const float panR = cachedPanR_;
@@ -467,10 +498,29 @@ void SampleSlot::processVoice(Voice& v, float* outL, float* outR, int numSamples
 
             if (v.grainCounter >= kGrainSize) {
                 v.grainCounter = 0;
-                v.grainPos[0] = v.sourcePos;
+                double newPos = v.sourcePos;
+                // WSOLA: search for best grain alignment
+                if (stretchMode_ == StretchMode::WSOLA) {
+                    int prevIdx = static_cast<int>(v.grainPos[0]) - halfGrain;
+                    if (prevIdx >= 0 && prevIdx + halfGrain < ns) {
+                        int offset = wsolaFindBestOffset(srcL, ns, newPos,
+                                                          srcL + prevIdx, std::min(halfGrain, 128));
+                        newPos += offset;
+                    }
+                }
+                v.grainPos[0] = newPos;
             }
             if (v.grainCounter == halfGrain) {
-                v.grainPos[1] = v.sourcePos;
+                double newPos = v.sourcePos;
+                if (stretchMode_ == StretchMode::WSOLA) {
+                    int prevIdx = static_cast<int>(v.grainPos[1]) - halfGrain;
+                    if (prevIdx >= 0 && prevIdx + halfGrain < ns) {
+                        int offset = wsolaFindBestOffset(srcL, ns, newPos,
+                                                          srcL + prevIdx, std::min(halfGrain, 128));
+                        newPos += offset;
+                    }
+                }
+                v.grainPos[1] = newPos;
             }
 
             if (v.sourcePos >= static_cast<double>(endSample)) {
@@ -527,7 +577,30 @@ void SampleSlot::processVoice(Voice& v, float* outL, float* outR, int numSamples
 
         // ── Filter ─────────────────────────────────────────────────────────
         if (filterActive) {
-            if (filterType_ == FilterType::Formant) {
+            if (filterType_ == FilterType::LPG) {
+                // Block-rate vactrol envelope update
+                if (++lpgBlockCount_ >= kLPGBlockSize) {
+                    lpgBlockCount_ = 0;
+                    float newEnv = lpgStepEnvelope();
+                    lpgEnvInc_ = (newEnv - lpgEnv_) * (1.0f / (float)kLPGBlockSize);
+                }
+                lpgEnv_ += lpgEnvInc_;
+                float e = juce::jlimit(0.0f, 1.0f, lpgEnv_);
+
+                // Map envelope to cutoff: 20Hz (closed) → 20kHz (open)
+                float fc = 20.0f * lpgFastPow2(9.9658f * e);  // 20 * 1000^e
+                float twoPiOverSr = 6.283185307f / (float)outputSampleRate_;
+                float g = 1.0f - std::exp(-twoPiOverSr * std::min(fc, 20000.0f));
+
+                // One-pole lowpass (6dB/oct — authentic Buchla 292 slope)
+                lpgFilterZ_L_ += g * (sL - lpgFilterZ_L_);
+                lpgFilterZ_R_ += g * (sR - lpgFilterZ_R_);
+
+                // VCA: squared envelope for natural amplitude curve
+                float vca = e * e;
+                sL = lpgFilterZ_L_ * vca;
+                sR = lpgFilterZ_R_ * vca;
+            } else if (filterType_ == FilterType::Formant) {
                 // Input drive for vocal presence
                 float fmtDrive = 1.0f + filterReso_ * 0.4f;
                 float dL = sL * fmtDrive, dR = sR * fmtDrive;
@@ -569,6 +642,67 @@ void SampleSlot::processVoice(Voice& v, float* outL, float* outR, int numSamples
         outL[i] += sL * v.velocity * panL * env * fadeEnv * muteGain_;
         outR[i] += sR * v.velocity * panR * env * fadeEnv * muteGain_;
     }
+}
+
+int SampleSlot::wsolaFindBestOffset(const float* src, int ns, double expectedPos,
+                                     const float* prevTail, int overlapLen) const
+{
+    if (overlapLen <= 0 || !prevTail) return 0;
+
+    int bestOffset = 0;
+    float bestCorr = -1e30f;
+    int ePos = static_cast<int>(expectedPos);
+
+    for (int d = -kWsolaSearchRange; d <= kWsolaSearchRange; ++d) {
+        int pos = ePos + d;
+        if (pos < 0 || pos + overlapLen >= ns) continue;
+
+        float corr = 0.0f;
+        // Simplified cross-correlation (every 4th sample for speed)
+        for (int j = 0; j < overlapLen; j += 4)
+            corr += src[pos + j] * prevTail[j];
+
+        if (corr > bestCorr) {
+            bestCorr = corr;
+            bestOffset = d;
+        }
+    }
+    return bestOffset;
+}
+
+float SampleSlot::lpgStepEnvelope()
+{
+    float decay = filterReso_;  // resonance knob → decay [0..1]
+
+    // Attack: 0.5ms (hard) to 5ms (soft)
+    float strike = filterCutoff_ / 20000.0f;
+    float attSec = 0.0005f + (1.0f - strike) * 0.0045f;
+    float attackCoeff = std::exp(-1.0f / (attSec * (float)outputSampleRate_));
+
+    // Fast decay: 20-100ms
+    float fdSec = 0.020f + decay * 0.080f;
+    float decayFast = std::exp(-1.0f / (fdSec * (float)outputSampleRate_));
+
+    // Slow tail: 200ms-3s
+    float sdSec = 0.200f + decay * 2.8f;
+    float decaySlow = std::exp(-1.0f / (sdSec * (float)outputSampleRate_));
+
+    if (lpgVactrol_ > 0.001f) {
+        // State-dependent dual-rate decay
+        float mix = lpgVactrol_;
+        float coeff = decaySlow + mix * (decayFast - decaySlow);
+        // Memory effect: repeated strikes slow decay
+        float memFactor = 1.0f + lpgMemory_ * 0.5f;
+        coeff = 1.0f - (1.0f - coeff) / memFactor;
+        lpgVactrol_ = coeff * lpgVactrol_;
+    } else {
+        lpgVactrol_ = 0.0f;
+    }
+
+    // Decay illumination memory
+    lpgMemory_ *= 0.99995f;
+
+    return lpgVactrol_;
 }
 
 } // namespace grid

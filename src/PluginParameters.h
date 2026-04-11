@@ -90,11 +90,14 @@ enum Page { PAGE_OVERVIEW = 0, PAGE_SAMPLE, PAGE_PLAY, PAGE_PITCH, PAGE_FADE, PA
 // -- Per-pad modes --
 enum class PadMode { OneShot = 0, Loop, ClockedLoop, ClockedOneShot };
 
+// -- Time stretch algorithm --
+enum class StretchMode { OLA = 0, WSOLA };  // OLA = current, WSOLA = cross-correlation aligned
+
 // -- Voice modes (per-pad retrigger behavior) --
 enum class VoiceMode { Mono = 0, Gate, Legato, Poly };
 
 // -- Filter types (TPT SVF) --
-enum class FilterType { Off = 0, LPF, HPF, BPF, Notch, Formant, MS20 };
+enum class FilterType { Off = 0, LPF, HPF, BPF, Notch, Formant, MS20, LPG };
 
 // -- Lo-fi sampler emulation modes --
 enum class LofiMode { Off = 0, Bit8, Bit12, SP1200, MPC60 };
@@ -143,7 +146,7 @@ struct PadCCMap {
 };
 
 // -- Config browser row types --
-enum class ConfigRowType { Header, Divider, Spacer, CCValue, Enum, PushAction };
+enum class ConfigRowType { Header, SubHeader, Divider, Spacer, CCValue, Enum, PushAction };
 
 struct ConfigRow {
     ConfigRowType type;

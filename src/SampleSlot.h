@@ -80,6 +80,10 @@ public:
     void setTimeStretch(float t)     { timeStretch_ = juce::jlimit(0.25f, 4.0f, t); }
     float getTimeStretch() const     { return timeStretch_; }
 
+    // Stretch algorithm
+    void setStretchMode(StretchMode m) { stretchMode_ = m; }
+    StretchMode getStretchMode() const { return stretchMode_; }
+
     // Clock beats: how many beats the sample stretches to fit (1,2,4,8,16)
     void setClockBeats(int b)        { clockBeats_ = juce::jlimit(1, 16, b); }
     int getClockBeats() const        { return clockBeats_; }
@@ -138,6 +142,17 @@ public:
     // Lo-fi sampler emulation
     void setLofiMode(LofiMode m)         { lofiMode_ = m; }
     LofiMode getLofiMode() const         { return lofiMode_; }
+
+    // Pitch quantize
+    bool getPitchQuantize() const        { return pitchQuantize_; }
+    void setPitchQuantize(bool q)        { pitchQuantize_ = q; }
+    float getQuantizedPitch() const      { return pitchQuantize_ ? std::round(pitchSemitones_) : pitchSemitones_; }
+    static const char* semitoneName(int st) {
+        static const char* names[] = { "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" };
+        int note = ((st % 12) + 12) % 12;
+        return names[note];
+    }
+    static int semitoneOctave(int st) { return (st + 60) / 12 - 1; }  // C4 = 0 semitones
 
     // Compressor send (0.0 = dry, 1.0 = full send to bus compressor)
     void setCompSend(float s)            { compSend_ = juce::jlimit(0.0f, 1.0f, s); }
@@ -259,7 +274,8 @@ public:
         clearSlices();
         int ns = numSamples_.load();
         if (ns == 0) return;
-        const float* data = buffer_.getReadPointer(0);
+        auto& buf = buffers_[activeBuffer_.load(std::memory_order_acquire)];
+        const float* data = buf.getReadPointer(0);
         int startSamp = (int)(startPos_ * ns);
         int endSamp = (int)(endPos_ * ns);
         int regionLen = endSamp - startSamp;
@@ -365,7 +381,8 @@ public:
     float findNearestZeroCrossing(float pos) const {
         int ns = numSamples_.load();
         if (ns == 0) return pos;
-        const float* data = buffer_.getReadPointer(0);
+        auto& buf = buffers_[activeBuffer_.load(std::memory_order_acquire)];
+        const float* data = buf.getReadPointer(0);
         int center = (int)(pos * ns);
         int best = center;
         float bestDist = 999999.0f;
@@ -397,19 +414,23 @@ public:
         if (deleteLen <= 0 || deleteLen >= ns) return false;
 
         int newLen = ns - deleteLen;
-        int numCh = buffer_.getNumChannels();
+        auto& curBuf = buffers_[activeBuffer_.load(std::memory_order_acquire)];
+        int numCh = curBuf.getNumChannels();
 
-        juce::AudioBuffer<float> newBuf(numCh, newLen);
+        // Write splice result into the inactive buffer
+        int inactive = 1 - activeBuffer_.load(std::memory_order_acquire);
+        buffers_[inactive].setSize(numCh, newLen);
         for (int ch = 0; ch < numCh; ++ch) {
-            const float* src = buffer_.getReadPointer(ch);
-            float* dst = newBuf.getWritePointer(ch);
+            const float* src = curBuf.getReadPointer(ch);
+            float* dst = buffers_[inactive].getWritePointer(ch);
             if (sampStart > 0)
                 std::memcpy(dst, src, sizeof(float) * sampStart);
             if (sampEnd < ns)
                 std::memcpy(dst + sampStart, src + sampEnd, sizeof(float) * (ns - sampEnd));
         }
-        buffer_ = std::move(newBuf);
-        numSamples_.store(newLen);
+        numSamples_.store(0, std::memory_order_release);
+        activeBuffer_.store(inactive, std::memory_order_release);
+        numSamples_.store(newLen, std::memory_order_release);
 
         // Remove the deleted slice
         removeSlice(sliceIdx);
@@ -458,8 +479,8 @@ public:
     int getNumChannels() const { return numChannels_; }
     double getSampleRate() const { return fileSampleRate_; }
     float getPlaybackPosition() const;
-    const juce::AudioBuffer<float>& getBuffer() const { return buffer_; }
-    juce::AudioBuffer<float>& getBuffer() { return buffer_; }  // mutable for undo
+    const juce::AudioBuffer<float>& getBuffer() const { return buffers_[activeBuffer_.load(std::memory_order_acquire)]; }
+    juce::AudioBuffer<float>& getBuffer() { return buffers_[activeBuffer_.load(std::memory_order_acquire)]; }  // mutable for undo
 
     // Voice access (for UI display)
     const Voice& getVoice(int i) const { return voices_[juce::jlimit(0, kMaxVoices - 1, i)]; }
@@ -467,7 +488,8 @@ public:
 
 private:
     juce::AudioFormatManager formatManager_;
-    juce::AudioBuffer<float> buffer_;
+    juce::AudioBuffer<float> buffers_[2];          // double-buffer: audio reads one, UI writes the other
+    std::atomic<int> activeBuffer_ { 0 };           // which buffer the audio thread reads from
     std::atomic<int> numSamples_ { 0 };
     std::atomic<bool> loading_ { false };  // guard: audio thread skips when true
     int numChannels_ = 0;
@@ -496,6 +518,7 @@ private:
     float pitchRate_      = 1.0f;
     float timeStretch_    = 1.0f;
     float clockStretch_   = 1.0f;
+    StretchMode stretchMode_ = StretchMode::WSOLA;  // default to WSOLA
     int   clockBeats_     = 4;
     float fadeInMs_       = 0.0f;
     float fadeOutMs_      = 0.0f;
@@ -533,6 +556,28 @@ private:
     LofiMode lofiMode_ = LofiMode::Off;
     float lofiPhaseL_ = 0.0f, lofiPhaseR_ = 0.0f;
     float lofiHeldL_ = 0.0f, lofiHeldR_ = 0.0f;
+
+    // LPG (Buchla-style Low Pass Gate) — vactrol envelope + one-pole filter + VCA
+    float lpgVactrol_    = 0.0f;  // vactrol excitation [0..1]
+    float lpgEnv_        = 0.0f;  // interpolated envelope (per-sample)
+    float lpgEnvInc_     = 0.0f;  // per-sample increment (block-rate update)
+    float lpgMemory_     = 0.0f;  // illumination history (successive strikes lengthen decay)
+    float lpgFilterZ_L_  = 0.0f;  // one-pole filter state L
+    float lpgFilterZ_R_  = 0.0f;  // one-pole filter state R
+    int   lpgBlockCount_ = 0;
+    static constexpr int kLPGBlockSize = 16;
+
+    // LPG helpers
+    float lpgStepEnvelope();
+    static inline float lpgFastPow2(float x) {
+        x = juce::jlimit(-126.0f, 126.0f, x);
+        union { float f; int32_t i; } u;
+        u.i = (int32_t)(x * 8388608.0f) + 1065353216;
+        return u.f;
+    }
+
+    // Pitch quantize mode
+    bool pitchQuantize_ = false;
     float compSend_ = 0.0f;  // compressor send amount
     int outputChannel_ = -1;  // -1 = use default (pad index), 0-7 = specific output
     bool sendToMix_ = true;   // send to stereo mix (L/R)
@@ -635,6 +680,7 @@ private:
 
     // Granular — shared window table
     static constexpr int kGrainSize = 4096;
+    static constexpr int kWsolaSearchRange = 64;  // ±64 samples search window
     float grainWindow_[kGrainSize];
     void initGrainWindow() {
         for (int i = 0; i < kGrainSize; ++i)
@@ -645,6 +691,12 @@ private:
     float getGrainWindow(int sampleInGrain) const {
         return grainWindow_[sampleInGrain & (kGrainSize - 1)];
     }
+
+    // WSOLA: find best grain placement via cross-correlation
+    // Returns offset in [-kWsolaSearchRange, +kWsolaSearchRange]
+    int wsolaFindBestOffset(const float* src, int ns, double expectedPos,
+                            const float* prevTail, int overlapLen) const;
+
     float readInterpolated(const float* src, double pos, int limit) const;
 
     // Internal: start a specific voice at the sample start position

@@ -67,7 +67,7 @@ void PluginEditor::paint(juce::Graphics& g)
     g.setColour(juce::Colour(kTabBg));
     g.fillRect(0, 0, w, kTabHeight);
 
-    const char* pages[] = { "PADS", "SAMPLE", "PLAY", "WARP", "FADE", "FILTER", "MIDI", "OPTIONS" };
+    const char* pages[] = { "PADS", "SAMPLE", "PLAY", "WARP", "FADE", "FILTER", "MIDI", "MOD" };
     int tabW = 110;
     for (int i = 0; i < kNumPages; ++i)
     {
@@ -255,19 +255,18 @@ void PluginEditor::paint(juce::Graphics& g)
         g.fillRect(sx, encY + kEncoderBarH / 2, 1, kEncoderBarH / 2);
     }
 
-    // ── Preset name (center of encoder bar, right half) ────────────────
+    // ── Kit name (right side of encoder bar, tight vertical padding) ──
     {
         juce::String kitName = processor_.getCurrentKitName();
-        g.setColour(juce::Colour(0xFFAAAAAA));
-        g.setFont(18.0f);
-        g.drawText(kitName, 850, encY, 500, kEncoderBarH, juce::Justification::centred);
+        // Encoder 0 slot roughly occupies 0..~200px. Kit name anchors on right side.
+        g.setColour(juce::Colour(0xFFEEEEEE));
+        g.setFont(juce::Font(20.0f, juce::Font::bold));
+        // Drop a tight vertical band inside the encoder bar: 6px top/bottom padding
+        int bandY = encY + 6;
+        int bandH = kEncoderBarH - 12;
+        g.drawText(kitName, w - 320, bandY, 310, bandH,
+                   juce::Justification::centredRight);
     }
-
-    // Version (bottom-right corner, small)
-    g.setColour(juce::Colour(0xFF555555));
-    g.setFont(14.0f);
-    g.drawText("2.2.0-beta", w - 120, encY, 110, kEncoderBarH,
-               juce::Justification::centredRight);
 
     // ── Popup overlay (renders on top of everything) ─────────────────
     if (popupMode_) {
@@ -281,10 +280,28 @@ void PluginEditor::paint(juce::Graphics& g)
         paintKeyboard(g, fullArea);
     }
 
+    // ── Mod editor overlay ──────────────────────────────────────────
+    if (modEditorOpen_ && currentPage_ == PAGE_MOD) {
+        auto fullArea = juce::Rectangle<int>(0, 0, w, h);
+        paintModEditor(g, fullArea);
+    }
+
     // ── Slice editor overlay ─────────────────────────────────────────
     if (sliceEditorMode_) {
         auto fullArea = juce::Rectangle<int>(0, 0, w, h);
         paintSliceEditor(g, fullArea);
+    }
+
+    // ── Compressor editor overlay ────────────────────────────────────
+    if (compEditorOpen_) {
+        auto fullArea = juce::Rectangle<int>(0, 0, w, h);
+        paintCompEditor(g, fullArea);
+    }
+
+    // ── Mixer overlay ────────────────────────────────────────────────
+    if (mixerOpen_) {
+        auto fullArea = juce::Rectangle<int>(0, 0, w, h);
+        paintMixer(g, fullArea);
     }
 }
 
@@ -661,56 +678,39 @@ void PluginEditor::paintPadBox(juce::Graphics& g, juce::Rectangle<int> box, int 
         }
     }
 
-    // ── Compressor GR meter (always visible when Show GR is ON) ────────
-    if (processor_.getCompShowGR()) {
-        int barW = 4;
-        int gapW = 1;
-        int totalW = barW * 2 + gapW;  // 9px total
+    // ── Compressor GR meter (auto-visible when compressor is ON) ───────
+    if (processor_.getCompEnabled()) {
+        int barW = 5;
         int barH = box.getHeight() - 8;
-        int barX = box.getRight() - totalW - 3;
+        int barX = box.getRight() - barW - 4;
         int barY = box.getY() + 4;
 
-        // Background for both bars
+        // Background
         g.setColour(juce::Colour(0x33000000));
-        g.fillRect(barX, barY, totalW, barH);
+        g.fillRect(barX, barY, barW, barH);
 
-        if (processor_.getCompEnabled()) {
-            // Left bar: signal level (green, grows from bottom)
-            // Use GR as proxy — if GR > 0, signal is above threshold
-            float grDb = processor_.getCompGainReductionDb();
-            float threshDb = processor_.getCompThreshDb();
+        float grDb = processor_.getCompGainReductionDb();
+        float threshDb = processor_.getCompThreshDb();
 
-            // Threshold line position (map dB to pixel)
-            // thresh is negative (e.g. -12dB). Range: -60 to 0
-            float threshNorm = 1.0f - juce::jlimit(0.0f, 1.0f, (threshDb + 60.0f) / 60.0f);
-            int threshY = barY + (int)(threshNorm * (float)barH);
-            g.setColour(juce::Colour(0x88FFFFFF));
-            g.fillRect(barX - 1, threshY, totalW + 2, 1);
+        // Threshold tick mark
+        float threshNorm = 1.0f - juce::jlimit(0.0f, 1.0f, (threshDb + 60.0f) / 60.0f);
+        int threshY = barY + (int)(threshNorm * (float)barH);
+        g.setColour(juce::Colour(0x88FFFFFF));
+        g.fillRect(barX - 1, threshY, barW + 2, 1);
 
-            // Signal bar (left, green) — show signal above threshold
-            float sigNorm = juce::jlimit(0.0f, 1.0f, grDb / 24.0f + 0.3f);  // baseline visibility
-            int sigH = (int)(sigNorm * (float)barH);
-            g.setColour(juce::Colour(0x994CAF50));
-            g.fillRect(barX, barY + barH - sigH, barW, sigH);
-
-            // GR bar (right, orange) — grows from TOP down
-            float grNorm = juce::jlimit(0.0f, 1.0f, grDb / 24.0f);
-            int grH = (int)(grNorm * (float)barH);
-            if (grH > 0) {
-                g.setColour(juce::Colour(0xCCFF6D00));
-                g.fillRect(barX + barW + gapW, barY, barW, grH);
-            }
-        } else {
-            // Compressor off — show empty meter outline only
-            g.setColour(juce::Colour(0x22FFFFFF));
-            g.drawRect(barX, barY, totalW, barH, 1);
+        // GR bar (orange, grows from top down)
+        float grNorm = juce::jlimit(0.0f, 1.0f, grDb / 24.0f);
+        int grH = (int)(grNorm * (float)barH);
+        if (grH > 0) {
+            g.setColour(juce::Colour(0xCCFF6D00));
+            g.fillRect(barX, barY, barW, grH);
         }
     }
 }
 
 void PluginEditor::paintMiniWaveform(juce::Graphics& g, juce::Rectangle<int> area, const SampleSlot& slot)
 {
-    if (!slot.isLoaded() || area.getWidth() <= 0) return;
+    if (!slot.isLoaded() || slot.isLoading() || area.getWidth() <= 0) return;
 
     const float* data = slot.getBuffer().getReadPointer(0);
     const int total = slot.getNumSamples();
@@ -899,7 +899,7 @@ void PluginEditor::paintSamplePage(juce::Graphics& g, juce::Rectangle<int> area)
 
 void PluginEditor::paintWaveformDetail(juce::Graphics& g, juce::Rectangle<int> area, const SampleSlot& slot)
 {
-    if (!slot.isLoaded() || area.getWidth() <= 0) return;
+    if (!slot.isLoaded() || slot.isLoading() || area.getWidth() <= 0) return;
 
     const float* data = slot.getBuffer().getReadPointer(0);
     const int total = slot.getNumSamples();
@@ -1122,7 +1122,7 @@ void PluginEditor::paintFileBrowser(juce::Graphics& g, juce::Rectangle<int> area
 
     // Header: folder name + version
     g.setColour(juce::Colour(kTabActive));
-    g.setFont(22.0f);
+    g.setFont(bFont(22.0f));
     juce::String header = browseCurrentDir_.getFileName().isEmpty() ? "Smart Home" : browseCurrentDir_.getFileName();
     g.drawText(header, content.removeFromTop(30), juce::Justification::centredLeft);
 
@@ -1130,11 +1130,11 @@ void PluginEditor::paintFileBrowser(juce::Graphics& g, juce::Rectangle<int> area
     auto subLine = content.removeFromTop(22);
     if (multiSelectMode_) {
         g.setColour(juce::Colour(kTabActive));
-        g.setFont(17.0f);
+        g.setFont(bFont(17.0f));
         g.drawText("SELECT: " + juce::String(multiSelectCount_) + "/8  (Enc0 to finish)",
                    subLine, juce::Justification::centredLeft);
     } else {
-        g.setFont(14.0f);
+        g.setFont(bFont(14.0f));
         g.setColour(juce::Colour(kEncLabel));
         g.drawText("-> PAD " + juce::String(selectedPad_ + 1), subLine, juce::Justification::centredLeft);
     }
@@ -1142,7 +1142,7 @@ void PluginEditor::paintFileBrowser(juce::Graphics& g, juce::Rectangle<int> area
 
     if (fileCount == 0) {
         g.setColour(juce::Colour(kPadEmpty));
-        g.setFont(16.0f);
+        g.setFont(bFont(16.0f));
         g.drawText("No items found", content, juce::Justification::centred);
         return;
     }
@@ -1164,7 +1164,7 @@ void PluginEditor::paintFileBrowser(juce::Graphics& g, juce::Rectangle<int> area
         if (isHeader) {
             juce::String label = browseItemNames_[idx].substring(7);  // strip "__HDR__"
             int divY = row.getCentreY();
-            g.setFont(13.0f);
+            g.setFont(bFont(13.0f));
             int textW = g.getCurrentFont().getStringWidth(label) + 16;
             int textX = row.getCentreX() - textW / 2;
             // Dashes left
@@ -1229,7 +1229,7 @@ void PluginEditor::paintFileBrowser(juce::Graphics& g, juce::Rectangle<int> area
                 g.setColour(juce::Colour(kTabActive));
                 g.fillEllipse((float)circleX, (float)circleY, (float)circleSize, (float)circleSize);
                 g.setColour(juce::Colour(0xFFFFFFFF));
-                g.setFont(14.0f);
+                g.setFont(bFont(14.0f));
                 g.drawText(juce::String(multiNum), circleX, circleY, circleSize, circleSize,
                            juce::Justification::centred);
             } else {
@@ -1248,7 +1248,7 @@ void PluginEditor::paintFileBrowser(juce::Graphics& g, juce::Rectangle<int> area
             nameColour = juce::Colour(0xFFFFDD00);  // COPY: yellow text
 
         g.setColour(nameColour);
-        g.setFont(18.0f);
+        g.setFont(bFont(18.0f));
         juce::String displayName = browseItemNames_[idx];
         if (!isDir && displayName.contains("."))
             displayName = displayName.upToLastOccurrenceOf(".", false, false);
@@ -1267,7 +1267,7 @@ void PluginEditor::paintFileBrowser(juce::Graphics& g, juce::Rectangle<int> area
         if (!isDir && idx < browseItemDurations_.size() && browseItemDurations_[idx].isNotEmpty()) {
             juce::String info = browseItemDurations_[idx];
             g.setColour(sel ? juce::Colour(0xFFFFFFFF) : juce::Colour(0xFF999999));
-            g.setFont(17.0f);
+            g.setFont(bFont(17.0f));
             g.drawText(info, row.getX(), row.getY(), row.getWidth() - 8, rowH,
                        juce::Justification::centredRight);
         }
@@ -1657,6 +1657,7 @@ void PluginEditor::browseExecuteFileOp()
 
 void PluginEditor::switchPage(int page) {
     if (browseMode_) return;
+    modEditorOpen_ = false;  // close mod editor on page switch
     currentPage_ = juce::jlimit(0, kNumPages - 1, page);
     if (currentPage_ == PAGE_MIDI)
         processor_.refreshMidiDevices();
@@ -1676,6 +1677,18 @@ void PluginEditor::updateEncoderDisplay()
     {
         encoderSlots_[i].nameLabel.setText(getEncoderLabel(currentPage_, i), juce::dontSendNotification);
         encoderSlots_[i].valueLabel.setText(getEncoderValue(currentPage_, i), juce::dontSendNotification);
+
+        // MOD page: dim disabled mod slots
+        if (currentPage_ == PAGE_MOD && i >= 1 && i <= 3) {
+            auto& mod = processor_.getEngine().getSlot(selectedPad_).getMod(i - 1);
+            uint32_t col = mod.enabled ? kEncValue : 0xFF444444;
+            encoderSlots_[i].valueLabel.setColour(juce::Label::textColourId, juce::Colour(col));
+            encoderSlots_[i].nameLabel.setColour(juce::Label::textColourId,
+                juce::Colour(mod.enabled ? kEncLabel : 0xFF333333));
+        } else {
+            encoderSlots_[i].valueLabel.setColour(juce::Label::textColourId, juce::Colour(kEncValue));
+            encoderSlots_[i].nameLabel.setColour(juce::Label::textColourId, juce::Colour(kEncLabel));
+        }
     }
 }
 
@@ -1705,7 +1718,7 @@ juce::String PluginEditor::getEncoderLabel(int page, int enc) const
             return l[enc];
         }
         case PAGE_FADE: {
-            const char* l[] = { "", "FADE IN", "FADE OUT", "COMP" };
+            const char* l[] = { "", "FADE IN", "FADE OUT", "---" };
             return l[enc];
         }
         case PAGE_FILTER: {
@@ -1721,8 +1734,8 @@ juce::String PluginEditor::getEncoderLabel(int page, int enc) const
             const char* l[] = { "", "CHANNEL", "DEVICE", "CLK" };
             return l[enc];
         }
-        case PAGE_OPTIONS: {
-            const char* l[] = { "", "CHOKE", "REVERSE", "NORMALIZE" };
+        case PAGE_MOD: {
+            const char* l[] = { "", "MOD A", "MOD B", "MOD C" };
             return l[enc];
         }
     }
@@ -1820,11 +1833,6 @@ juce::String PluginEditor::getEncoderValue(int page, int enc) const
             };
             if (enc == 1) return fmtFade(slot.getFadeInMs(), slot.getFadeInCurve());
             if (enc == 2) return fmtFade(slot.getFadeOutMs(), slot.getFadeOutCurve());
-            if (enc == 3) {
-                float send = slot.getCompSend();
-                if (send < 0.01f) return "OFF";
-                return juce::String((int)(send * 100)) + "%";
-            }
             return "---";
         }
         case PAGE_FILTER: {
@@ -1883,13 +1891,12 @@ juce::String PluginEditor::getEncoderValue(int page, int enc) const
             }
             return "---";
         }
-        case PAGE_OPTIONS: {
-            if (enc == 1) {
-                const char* grps[] = { "NONE", "A", "B", "C", "D", "E", "F", "G", "H" };
-                return grps[static_cast<int>(slot.getChokeGroup())];
+        case PAGE_MOD: {
+            if (enc >= 1 && enc <= 3) {
+                const auto& mod = slot.getMod(enc - 1);
+                juce::String name = modTargetName(mod.target);
+                return mod.enabled ? name : name + " [OFF]";
             }
-            if (enc == 2) return slot.isReversed() ? "ON" : "OFF";
-            if (enc == 3) return "[PUSH]";
             return "---";
         }
     }
@@ -1902,27 +1909,15 @@ juce::String PluginEditor::getEncoderValue(int page, int enc) const
 
 void PluginEditor::timerCallback()
 {
-    // Kit browse timeout: revert after 3 seconds of no input
-    if (kitBrowseActive_) {
-        double elapsed = juce::Time::getMillisecondCounterHiRes() - kitBrowseStartTime_;
-        if (elapsed > kKitBrowseTimeoutMs) {
-            kitBrowseRevert();
-        }
+
+    // Comp editor scope: push new data each frame
+    if (compEditorOpen_) {
+        compScopePush(processor_.getCompDisplayInputPeak(),
+                      processor_.getCompGainReductionDb());
     }
 
-    // Left shift long-press: go to smart home root in browse mode
-    if (browseMode_ && leftShiftHeld_) {
-        double held = juce::Time::getMillisecondCounterHiRes() - leftShiftPressTime_;
-        if (held > 2000.0) {
-            multiSelectMode_ = false;
-            multiSelectCount_ = 0;
-            for (int i = 0; i < kNumPads; ++i) multiSelected_[i] = false;
-            browseGoHome();
-            leftShiftPressTime_ = juce::Time::getMillisecondCounterHiRes() + 99999.0;
-            processor_.showTickerPublic("Smart Home");
-            repaint();
-        }
-    }
+    // Autosave: every ~5 seconds, quietly write state to disk
+    processor_.tickAutosave();
 
     // ── Encoder hold detection for browse mode ───────────────────────────
     if (browseMode_) {
@@ -1949,6 +1944,24 @@ void PluginEditor::timerCallback()
                 // Hold enc 2: toggle auto-preview
                 browseAutoPreview_ = !browseAutoPreview_;
                 processor_.showTickerPublic(browseAutoPreview_ ? "Auto Preview ON" : "Auto Preview OFF");
+                repaint();
+            }
+        }
+    }
+
+    // ── Encoder hold detection for MOD page ─────────────────────────────
+    if (currentPage_ == PAGE_MOD && !modEditorOpen_ && !browseMode_) {
+        double now = juce::Time::getMillisecondCounterHiRes();
+        for (int e = 1; e <= 3; ++e) {
+            if (encPushHandled_[e] || encPushTime_[e] == 0.0) continue;
+            double held = now - encPushTime_[e];
+            if (held >= 1500.0) {
+                encPushHandled_[e] = true;
+                int modSlot = e - 1;
+                modEditorOpen_ = true;
+                modEditorSlot_ = modSlot;
+                modEditorRow_ = 0;
+                processor_.showTickerPublic("MOD " + juce::String((char)('A' + modSlot)) + " Editor");
                 repaint();
             }
         }
@@ -1986,6 +1999,17 @@ void PluginEditor::onButton(int n, bool val)
     // Keyboard blocks everything
     if (keyboardMode_) return;
 
+    // Mod editor: buttons map to 2x4 block selected by modEditorRow_
+    if (modEditorOpen_ && currentPage_ == PAGE_MOD) {
+        int physRow = n / 4;      // 0 = top 4 buttons, 1 = bottom 4
+        int physCol = n % 4;      // 0-3 within row
+        int stepIdx = physRow * 8 + modEditorRow_ * 4 + physCol;
+        auto& mod = processor_.getEngine().getSlot(selectedPad_).getMod(modEditorSlot_);
+        mod.steps[stepIdx] = !mod.steps[stepIdx];
+        repaint();
+        return;
+    }
+
     // Config mode: switch pad context
     if (configMode_) {
         selectedPad_ = n;
@@ -1996,7 +2020,7 @@ void PluginEditor::onButton(int n, bool val)
 
     // Left shift + pad = clear pad (only on OVERVIEW/OPTIONS page, not in any overlay)
     if (leftShiftHeld_ && !browseMode_ && !muteMode_ && !configMode_
-        && (currentPage_ == PAGE_OVERVIEW || currentPage_ == PAGE_OPTIONS)) {
+        && (currentPage_ == PAGE_OVERVIEW || currentPage_ == PAGE_MOD)) {
         processor_.getEngine().getSlot(n).clear();
         processor_.getEngine().setMuted(n, false);
         selectedPad_ = n;
@@ -2079,7 +2103,7 @@ void PluginEditor::onLeftButton(bool val)
     if (sliceEditorMode_) {
         // Left arrow = previous slice boundary (wraps)
         auto& slot = processor_.getEngine().getSlot(selectedPad_);
-        float navPts[130];
+        float navPts[260];
         int navCount = 0;
         for (int i = 0; i < slot.getSliceCount(); ++i) {
             navPts[navCount++] = slot.getSliceStart(i);
@@ -2103,13 +2127,24 @@ void PluginEditor::onLeftButton(bool val)
     }
     if (popupMode_) { closePopup(-1); return; }
     if (configMode_) {
-        configAdjustValue(configIndex_, -1);
-        configEditMode_ = true;
+        if (configEditMode_) {
+            configAdjustValue(configIndex_, -1);
+        }
         repaint();
         return;
     }
     if (browseMode_) return;
-    switchPage(currentPage_ - 1);
+    if (compEditorOpen_) {
+        compEditorRow_ = (compEditorRow_ == 0) ? 1 : 0;
+        repaint(); return;
+    }
+    if (modEditorOpen_) {
+        modEditorRow_ = (modEditorRow_ == 0) ? 1 : 0;
+        repaint(); return;
+    }
+    int p = currentPage_ - 1;
+    if (p < 0) p = kNumPages - 1;  // wrap
+    switchPage(p);
 }
 
 void PluginEditor::onRightButton(bool val)
@@ -2122,7 +2157,7 @@ void PluginEditor::onRightButton(bool val)
     if (sliceEditorMode_) {
         // Right arrow = next slice boundary (wraps)
         auto& slot = processor_.getEngine().getSlot(selectedPad_);
-        float navPts[130];
+        float navPts[260];
         int navCount = 0;
         for (int i = 0; i < slot.getSliceCount(); ++i) {
             navPts[navCount++] = slot.getSliceStart(i);
@@ -2144,13 +2179,24 @@ void PluginEditor::onRightButton(bool val)
         repaint(); return;
     }
     if (configMode_) {
-        configAdjustValue(configIndex_, 1);
-        configEditMode_ = true;
+        if (configEditMode_) {
+            configAdjustValue(configIndex_, 1);
+        }
         repaint();
         return;
     }
     if (browseMode_) return;
-    switchPage(currentPage_ + 1);
+    if (compEditorOpen_) {
+        compEditorRow_ = (compEditorRow_ == 0) ? 1 : 0;
+        repaint(); return;
+    }
+    if (modEditorOpen_) {
+        modEditorRow_ = (modEditorRow_ == 0) ? 1 : 0;
+        repaint(); return;
+    }
+    int p = currentPage_ + 1;
+    if (p >= kNumPages) p = 0;  // wrap
+    switchPage(p);
 }
 
 void PluginEditor::onUpButton(bool val)
@@ -2181,22 +2227,21 @@ void PluginEditor::onUpButton(bool val)
         repaint(); return;
     }
 
-    // Kit browsing: up = previous kit
+    // Kit switching: up = previous kit (immediate load)
     if (!browseMode_ && !configMode_) {
-        if (!kitBrowseActive_) {
-            refreshAvailableKits();
-            if (availableKits_.isEmpty()) {
-                processor_.showTickerPublic("No kits found");
-                return;
-            }
-            kitBrowseActive_ = true;
-            kitBrowseIndex_ = std::max(0, kitCurrentIndex_ - 1);
-        } else {
-            kitBrowseIndex_ = std::max(0, kitBrowseIndex_ - 1);
+        refreshAvailableKits();
+        if (availableKits_.isEmpty()) {
+            processor_.showTickerPublic("No saved kits");
+            return;
         }
-        kitBrowseStartTime_ = juce::Time::getMillisecondCounterHiRes();
-        auto kitName = availableKits_[kitBrowseIndex_].getFileNameWithoutExtension();
-        processor_.showTickerPublic("Kit: " + kitName + " (" + juce::String(kitBrowseIndex_ + 1)
+        if (kitCurrentIndex_ <= 0) {
+            processor_.showTickerPublic("Already at first kit");
+            return;
+        }
+        kitCurrentIndex_--;
+        processor_.loadKit(availableKits_[kitCurrentIndex_]);
+        auto kitName = availableKits_[kitCurrentIndex_].getFileNameWithoutExtension();
+        processor_.showTickerPublic(kitName + "  (" + juce::String(kitCurrentIndex_ + 1)
                                     + "/" + juce::String(availableKits_.size()) + ")");
         repaint();
         return;
@@ -2217,6 +2262,22 @@ void PluginEditor::onDownButton(bool val)
         exitSliceEditor();
         return;
     }
+    if (compEditorOpen_) {
+        exitCompEditor();
+        repaint(); return;
+    }
+    if (mixerOpen_) {
+        exitMixer();
+        repaint(); return;
+    }
+    if (modEditorOpen_) {
+        // Auto-save to active preset on close
+        auto& mod = processor_.getEngine().getSlot(selectedPad_).getMod(modEditorSlot_);
+        if (mod.activePreset > 0)
+            mod.saveToPreset(mod.activePreset - 1);
+        modEditorOpen_ = false;
+        repaint(); return;
+    }
     if (popupMode_) {
         popupIndex_ = std::min(popupOptions_.size() - 1, popupIndex_ + 1);
         repaint(); return;
@@ -2233,23 +2294,21 @@ void PluginEditor::onDownButton(bool val)
         repaint(); return;
     }
 
-    // Kit browsing: down = next kit
+    // Kit switching: down = next kit (immediate load)
     if (!browseMode_ && !configMode_) {
-        if (!kitBrowseActive_) {
-            refreshAvailableKits();
-            if (availableKits_.isEmpty()) {
-                processor_.showTickerPublic("No kits found");
-                return;
-            }
-            kitBrowseActive_ = true;
-            kitBrowseIndex_ = std::min(availableKits_.size() - 1,
-                                       kitCurrentIndex_ >= 0 ? kitCurrentIndex_ + 1 : 0);
-        } else {
-            kitBrowseIndex_ = std::min(availableKits_.size() - 1, kitBrowseIndex_ + 1);
+        refreshAvailableKits();
+        if (availableKits_.isEmpty()) {
+            processor_.showTickerPublic("No saved kits");
+            return;
         }
-        kitBrowseStartTime_ = juce::Time::getMillisecondCounterHiRes();
-        auto kitName = availableKits_[kitBrowseIndex_].getFileNameWithoutExtension();
-        processor_.showTickerPublic("Kit: " + kitName + " (" + juce::String(kitBrowseIndex_ + 1)
+        if (kitCurrentIndex_ >= availableKits_.size() - 1) {
+            processor_.showTickerPublic("Already at last kit");
+            return;
+        }
+        kitCurrentIndex_ = (kitCurrentIndex_ < 0) ? 0 : kitCurrentIndex_ + 1;
+        processor_.loadKit(availableKits_[kitCurrentIndex_]);
+        auto kitName = availableKits_[kitCurrentIndex_].getFileNameWithoutExtension();
+        processor_.showTickerPublic(kitName + "  (" + juce::String(kitCurrentIndex_ + 1)
                                     + "/" + juce::String(availableKits_.size()) + ")");
         repaint();
         return;
@@ -2297,16 +2356,22 @@ void PluginEditor::onLeftShiftButton(bool val)
         return;
     }
 
+    // Comp editor: LS = close
+    if (compEditorOpen_) {
+        exitCompEditor();
+        return;
+    }
+
+    // Mixer: LS = close
+    if (mixerOpen_) {
+        exitMixer();
+        return;
+    }
+
     // LS+RS = config toggle
     if (rightShiftHeld_) {
         if (configMode_) exitConfigMode();
         else enterConfigMode();
-        return;
-    }
-
-    // Kit browse: left shift commits
-    if (kitBrowseActive_) {
-        kitBrowseCommit();
         return;
     }
 
@@ -2513,15 +2578,42 @@ void PluginEditor::onEncoder(int n, float delta)
         return;
     }
 
+    // Comp editor: encoders adjust current row's params
+    if (compEditorOpen_) {
+        compEditorEncoderTurn(n, delta);
+        repaint();
+        return;
+    }
+
+    // Mixer: enc 0 = select pad, enc 1 = adjust volume
+    if (mixerOpen_) {
+        if (n == 0) {
+            mixerPad_ = juce::jlimit(0, kNumPads - 1, mixerPad_ + (delta > 0 ? 1 : -1));
+        }
+        if (n == 1) {
+            auto& slot = processor_.getEngine().getSlot(mixerPad_);
+            slot.setVolume(juce::jlimit(0.0f, 1.0f, slot.getVolume() + delta * 0.02f));
+        }
+        repaint();
+        return;
+    }
+
     // Config mode: enc 0 = scroll rows, enc 1-3 = adjust value if editing
     if (configMode_) {
-        if (n == 0) {
-            int d = (delta > 0) ? 1 : -1;
-            int count = configSelectableCount();
-            configIndex_ = juce::jlimit(0, std::max(0, count - 1), configIndex_ + d);
-            configEditMode_ = false;  // reset edit on scroll
-        } else if (configEditMode_) {
-            configAdjustValue(configIndex_, delta > 0 ? 1 : -1);
+        if (n == 3) {
+            if (configEditMode_) {
+                // In edit mode: enc3 adjusts the selected parameter
+                configAdjustValue(configIndex_, delta > 0 ? 1 : -1);
+            } else {
+                // Not editing: enc3 scrolls the list
+                int d = (delta > 0) ? 1 : -1;
+                int count = configSelectableCount();
+                configIndex_ = juce::jlimit(0, std::max(0, count - 1), configIndex_ + d);
+            }
+        } else if (n == 0) {
+            // Enc0 still navigates pads while config is open
+            selectedPad_ = juce::jlimit(0, kNumPads - 1, selectedPad_ + (delta > 0 ? 1 : -1));
+            buildConfigRows();
         }
         repaint();
         return;
@@ -2631,9 +2723,6 @@ void PluginEditor::onEncoder(int n, float delta)
             if (n == 2) {
                 slot.setFadeOutMs(slot.getFadeOutMs() - delta * fadeStep(slot.getFadeOutMs()));
             }
-            if (n == 3) {
-                slot.setCompSend(slot.getCompSend() + delta * 0.05f);
-            }
             break;
         }
 
@@ -2688,13 +2777,42 @@ void PluginEditor::onEncoder(int n, float delta)
             }
             break;
 
-        case PAGE_OPTIONS:
-            if (n == 1) {
-                int g = static_cast<int>(slot.getChokeGroup()) + (delta > 0 ? 1 : -1);
-                slot.setChokeGroup(static_cast<ChokeGroup>(juce::jlimit(0, 8, g)));
+        case PAGE_MOD: {
+            if (modEditorOpen_) {
+                auto& mod = slot.getMod(modEditorSlot_);
+                if (n == 1) {
+                    // Strength fine control
+                    mod.strength = juce::jlimit(0.0f, 1.0f, mod.strength + (float)delta * 0.02f);
+                }
+                if (n == 2) {
+                    // Cycle action
+                    int a = static_cast<int>(mod.action) + (delta > 0 ? 1 : -1);
+                    mod.action = static_cast<ModAction>(juce::jlimit(0, (int)ModAction::kCount - 1, a));
+                }
+                if (n == 3) {
+                    // Cycle preset: OFF(0), 1, 2, ... 10
+                    int pr = mod.activePreset + (delta > 0 ? 1 : -1);
+                    pr = juce::jlimit(0, kModPresets, pr);
+                    if (pr != mod.activePreset) {
+                        // Auto-save current to old preset before switching
+                        if (mod.activePreset > 0)
+                            mod.saveToPreset(mod.activePreset - 1);
+                        mod.activePreset = pr;
+                        // Load new preset
+                        if (pr > 0)
+                            mod.loadFromPreset(pr - 1);
+                    }
+                }
+            } else {
+                // On MOD page: turn enc 1/2/3 to cycle target for that mod slot
+                if (n >= 1 && n <= 3) {
+                    auto& mod = slot.getMod(n - 1);
+                    int t = static_cast<int>(mod.target) + (delta > 0 ? 1 : -1);
+                    mod.target = static_cast<ModTarget>(juce::jlimit(0, (int)ModTarget::kCount - 1, t));
+                }
             }
-            // enc 2 (reverse) is push-only toggle
             break;
+        }
     }
 }
 
@@ -2812,7 +2930,35 @@ void PluginEditor::onEncoderSwitch(int n, bool val)
                 encPushTime_[n] = 0.0;  // prevent timer from firing hold action
                 return;
             }
-            // Non-browse releases: ignore
+            // Non-browse releases: handle MOD page, then return
+            if (currentPage_ == PAGE_MOD && n >= 1 && n <= 3 && !encPushHandled_[n]) {
+                auto& slot = processor_.getEngine().getSlot(selectedPad_);
+                double held = juce::Time::getMillisecondCounterHiRes() - encPushTime_[n];
+                if (modEditorOpen_) {
+                    // In editor: push actions
+                    auto& mod = slot.getMod(modEditorSlot_);
+                    if (n == 1) mod.strength = 0.5f;
+                    if (n == 2) {
+                        int a = (static_cast<int>(mod.action) + 1) % (int)ModAction::kCount;
+                        mod.action = static_cast<ModAction>(a);
+                    }
+                    if (n == 3) {
+                        // Push preset encoder: reset to OFF
+                        if (mod.activePreset > 0)
+                            mod.saveToPreset(mod.activePreset - 1);
+                        mod.activePreset = 0;
+                    }
+                } else if (held < 1500.0) {
+                    // Short press only (hold is handled by timer)
+                    int modSlot = n - 1;
+                    auto& mod = slot.getMod(modSlot);
+                    mod.enabled = !mod.enabled;
+                    processor_.showTickerPublic(juce::String("Mod ") + (char)('A' + modSlot) + (mod.enabled ? " ON" : " OFF"));
+                }
+                encPushHandled_[n] = true;
+                updateEncoderDisplay();
+                repaint();
+            }
             return;
         }
     } else {
@@ -2897,10 +3043,12 @@ void PluginEditor::onEncoderSwitch(int n, bool val)
         return;
     }
 
-    // Config mode: push toggles edit mode or executes action
+    // Config mode: enc0 push closes, enc3 push toggles edit or executes action
     if (configMode_) {
         if (n == 0) { exitConfigMode(); return; }
-        configPushValue(configIndex_);
+        if (n == 3) {
+            configPushValue(configIndex_);
+        }
         repaint();
         return;
     }
@@ -2948,7 +3096,6 @@ void PluginEditor::onEncoderSwitch(int n, bool val)
         case PAGE_FADE:
             if (n == 1) slot.setFadeInCurve(slot.getFadeInCurve() == 0 ? 1 : 0);
             if (n == 2) slot.setFadeOutCurve(slot.getFadeOutCurve() == 0 ? 1 : 0);
-            if (n == 3) slot.setCompSend(0.0f);
             break;
         case PAGE_FILTER:
             if (n == 1) slot.setFilterType(FilterType::Off);
@@ -2967,20 +3114,8 @@ void PluginEditor::onEncoderSwitch(int n, bool val)
             if (n == 3 && processor_.getMidiDeviceName().isNotEmpty())
                 processor_.setMidiClockEnabled(!processor_.isMidiClockEnabled());
             break;
-        case PAGE_OPTIONS:
-            if (n == 1) slot.setChokeGroup(ChokeGroup::None);
-            if (n == 2) slot.setReversed(!slot.isReversed());
-            if (n == 3) {
-                float oldGain = slot.getNormalizeGain();
-                slot.normalize();
-                float newGain = slot.getNormalizeGain();
-                if (newGain <= 1.0f && oldGain <= 1.0f && std::abs(newGain - 1.0f) < 0.01f) {
-                    // Already at or near 0dB
-                } else {
-                    float dB = 20.0f * std::log10(newGain);
-                    processor_.showTickerPublic("Normalized: " + juce::String(dB > 0 ? "+" : "") + juce::String(dB, 1) + " dB");
-                }
-            }
+        case PAGE_MOD:
+            // Handled on release (above) for hold detection
             break;
         default:
             break;
@@ -3003,12 +3138,12 @@ void PluginEditor::enterConfigMode()
     // Update encoder bar
     encoderSlots_[0].nameLabel.setText("CONFIG", juce::dontSendNotification);
     encoderSlots_[0].valueLabel.setText("[CLOSE]", juce::dontSendNotification);
-    encoderSlots_[1].nameLabel.setText("SCROLL", juce::dontSendNotification);
-    encoderSlots_[1].valueLabel.setText("Up/Down", juce::dontSendNotification);
-    encoderSlots_[2].nameLabel.setText("EDIT", juce::dontSendNotification);
-    encoderSlots_[2].valueLabel.setText("[PUSH]", juce::dontSendNotification);
-    encoderSlots_[3].nameLabel.setText("", juce::dontSendNotification);
-    encoderSlots_[3].valueLabel.setText("", juce::dontSendNotification);
+    encoderSlots_[1].nameLabel.setText("", juce::dontSendNotification);
+    encoderSlots_[1].valueLabel.setText("", juce::dontSendNotification);
+    encoderSlots_[2].nameLabel.setText("", juce::dontSendNotification);
+    encoderSlots_[2].valueLabel.setText("", juce::dontSendNotification);
+    encoderSlots_[3].nameLabel.setText("BROWSE", juce::dontSendNotification);
+    encoderSlots_[3].valueLabel.setText("[SELECT]", juce::dontSendNotification);
     repaint();
 }
 
@@ -3029,13 +3164,8 @@ void PluginEditor::buildConfigRows()
     juce::String padName = slot.isLoaded() ? slot.getFileName() : "empty";
     if (padName.contains(".")) padName = padName.upToLastOccurrenceOf(".", false, false);
 
-    // ── Pad header ──
-    ConfigRow hdr;
-    hdr.type = ConfigRowType::Header;
-    hdr.label = "PAD " + juce::String(selectedPad_ + 1) + ": " + padName;
-    hdr.padIndex = selectedPad_;
-    hdr.paramIndex = -1;
-    configRows_.add(hdr);
+    // The PAD header is rendered by the pinned header in paintConfigBrowser,
+    // so it's NOT included in the scrollable rows.
 
     // ── Options section ──
     { ConfigRow s; s.type = ConfigRowType::SubHeader; s.label = "Options";
@@ -3043,17 +3173,41 @@ void PluginEditor::buildConfigRows()
 
     PadMode padMode = slot.getMode();
     if (padMode == PadMode::ClockedLoop || padMode == PadMode::ClockedOneShot) {
-        { ConfigRow r; r.type = ConfigRowType::Enum; r.label = "CLK Beats";
+        { ConfigRow r; r.type = ConfigRowType::Enum; r.label = "Clock Beats";
           r.padIndex = selectedPad_; r.paramIndex = 5; configRows_.add(r); }
     }
 
-    { ConfigRow r; r.type = ConfigRowType::Enum; r.label = "Lo-Fi";
+    { ConfigRow r; r.type = ConfigRowType::Enum; r.label = "Lo-Fi Emulation";
       r.padIndex = selectedPad_; r.paramIndex = 8; configRows_.add(r); }
 
-    { ConfigRow r; r.type = ConfigRowType::Enum; r.label = "Stretch";
+    { ConfigRow r; r.type = ConfigRowType::Enum; r.label = "Stretch Algorithm";
       r.padIndex = selectedPad_; r.paramIndex = 12; configRows_.add(r); }
 
-    // ── MIDI CC section ──
+    { ConfigRow r; r.type = ConfigRowType::Enum; r.label = "Sample Reverse";
+      r.padIndex = selectedPad_; r.paramIndex = 14; configRows_.add(r); }
+
+    { ConfigRow r; r.type = ConfigRowType::Enum; r.label = "Choke Group";
+      r.padIndex = selectedPad_; r.paramIndex = 13; configRows_.add(r); }
+
+    { ConfigRow r; r.type = ConfigRowType::PushAction; r.label = "Normalize";
+      r.padIndex = selectedPad_; r.paramIndex = 15; configRows_.add(r); }
+
+    { ConfigRow s; s.type = ConfigRowType::Spacer; s.padIndex = -1; s.paramIndex = -1;
+      configRows_.add(s); }
+
+    // ── Routing (moved up per Andy) ──
+    { ConfigRow s; s.type = ConfigRowType::SubHeader; s.label = "Routing";
+      s.padIndex = -1; s.paramIndex = -1; configRows_.add(s); }
+
+    { ConfigRow r; r.type = ConfigRowType::Enum; r.label = "Pad Output Channel";
+      r.padIndex = selectedPad_; r.paramIndex = 9; configRows_.add(r); }
+    { ConfigRow r; r.type = ConfigRowType::Enum; r.label = "Send to Stereo Mix";
+      r.padIndex = selectedPad_; r.paramIndex = 10; configRows_.add(r); }
+
+    { ConfigRow s; s.type = ConfigRowType::Spacer; s.padIndex = -1; s.paramIndex = -1;
+      configRows_.add(s); }
+
+    // ── MIDI CC ──
     { ConfigRow s; s.type = ConfigRowType::SubHeader; s.label = "MIDI CC";
       s.padIndex = -1; s.paramIndex = -1; configRows_.add(s); }
 
@@ -3066,31 +3220,34 @@ void PluginEditor::buildConfigRows()
         configRows_.add(row);
     }
 
-    // ── Routing section ──
-    { ConfigRow s; s.type = ConfigRowType::SubHeader; s.label = "Routing";
-      s.padIndex = -1; s.paramIndex = -1; configRows_.add(s); }
+    { ConfigRow s; s.type = ConfigRowType::Spacer; s.padIndex = -1; s.paramIndex = -1;
+      configRows_.add(s); }
 
-    { ConfigRow r; r.type = ConfigRowType::Enum; r.label = "Output Ch";
-      r.padIndex = selectedPad_; r.paramIndex = 9; configRows_.add(r); }
-    { ConfigRow r; r.type = ConfigRowType::Enum; r.label = "Send to Mix";
-      r.padIndex = selectedPad_; r.paramIndex = 10; configRows_.add(r); }
-
-    // ── Tools section ──
+    // ── Tools ──
     { ConfigRow s; s.type = ConfigRowType::SubHeader; s.label = "Tools";
       s.padIndex = -1; s.paramIndex = -1; configRows_.add(s); }
 
     { ConfigRow r; r.type = ConfigRowType::PushAction; r.label = "Export Slices to Samples";
       r.padIndex = selectedPad_; r.paramIndex = 11; configRows_.add(r); }
 
-    // ── Divider ──
-    ConfigRow div;
-    div.type = ConfigRowType::Divider;
-    div.label = "GLOBAL";
-    div.padIndex = -1;
-    div.paramIndex = -1;
-    configRows_.add(div);
+    { ConfigRow s; s.type = ConfigRowType::Spacer; s.padIndex = -1; s.paramIndex = -1;
+      configRows_.add(s); }
 
-    // ── Performance group ──
+    // ── GLOBAL divider ──
+    {
+        ConfigRow div;
+        div.type = ConfigRowType::Divider;
+        div.label = "GLOBAL";
+        div.padIndex = -1;
+        div.paramIndex = -1;  // normal global divider
+        configRows_.add(div);
+    }
+
+    // Breathing room after GLOBAL
+    { ConfigRow s; s.type = ConfigRowType::Spacer; s.padIndex = -1; s.paramIndex = -1;
+      configRows_.add(s); }
+
+    // ── Performance ──
     { ConfigRow s; s.type = ConfigRowType::SubHeader; s.label = "Performance";
       s.padIndex = -1; s.paramIndex = -1; configRows_.add(s); }
     { ConfigRow r; r.type = ConfigRowType::Enum; r.label = "Mute Mode";
@@ -3099,8 +3256,13 @@ void PluginEditor::buildConfigRows()
       r.padIndex = -1; r.paramIndex = 2; configRows_.add(r); }
     { ConfigRow r; r.type = ConfigRowType::Enum; r.label = "Mute Fade";
       r.padIndex = -1; r.paramIndex = 6; configRows_.add(r); }
+    { ConfigRow r; r.type = ConfigRowType::PushAction; r.label = "Show Mixer";
+      r.padIndex = -1; r.paramIndex = 28; configRows_.add(r); }
 
-    // ── Slice CV group ──
+    { ConfigRow s; s.type = ConfigRowType::Spacer; s.padIndex = -1; s.paramIndex = -1;
+      configRows_.add(s); }
+
+    // ── Slice CV ──
     { ConfigRow s; s.type = ConfigRowType::SubHeader; s.label = "Slice CV";
       s.padIndex = -1; s.paramIndex = -1; configRows_.add(s); }
     { ConfigRow r; r.type = ConfigRowType::Enum; r.label = "Slice CV 1";
@@ -3108,11 +3270,16 @@ void PluginEditor::buildConfigRows()
     { ConfigRow r; r.type = ConfigRowType::Enum; r.label = "Slice CV 2";
       r.padIndex = -1; r.paramIndex = 8; configRows_.add(r); }
 
-    // ── Compressor group ──
+    { ConfigRow s; s.type = ConfigRowType::Spacer; s.padIndex = -1; s.paramIndex = -1;
+      configRows_.add(s); }
+
+    // ── Compressor ──
     { ConfigRow s; s.type = ConfigRowType::SubHeader; s.label = "Compressor";
       s.padIndex = -1; s.paramIndex = -1; configRows_.add(s); }
-    { ConfigRow r; r.type = ConfigRowType::Enum; r.label = "Compressor";
+    { ConfigRow r; r.type = ConfigRowType::Enum; r.label = "Enable Compressor";
       r.padIndex = -1; r.paramIndex = 9; configRows_.add(r); }
+    { ConfigRow r; r.type = ConfigRowType::PushAction; r.label = "Show Compressor";
+      r.padIndex = -1; r.paramIndex = 26; configRows_.add(r); }
     { ConfigRow r; r.type = ConfigRowType::Enum; r.label = "Threshold";
       r.padIndex = -1; r.paramIndex = 10; configRows_.add(r); }
     { ConfigRow r; r.type = ConfigRowType::Enum; r.label = "Ratio";
@@ -3123,37 +3290,49 @@ void PluginEditor::buildConfigRows()
       r.padIndex = -1; r.paramIndex = 13; configRows_.add(r); }
     { ConfigRow r; r.type = ConfigRowType::Enum; r.label = "Makeup";
       r.padIndex = -1; r.paramIndex = 14; configRows_.add(r); }
-    { ConfigRow r; r.type = ConfigRowType::Enum; r.label = "Knee";
-      r.padIndex = -1; r.paramIndex = 15; configRows_.add(r); }
-    { ConfigRow r; r.type = ConfigRowType::Enum; r.label = "Auto Rel";
-      r.padIndex = -1; r.paramIndex = 16; configRows_.add(r); }
-    { ConfigRow r; r.type = ConfigRowType::Enum; r.label = "SC HPF";
+    { ConfigRow r; r.type = ConfigRowType::Enum; r.label = "Mix";
+      r.padIndex = -1; r.paramIndex = 25; configRows_.add(r); }
+    { ConfigRow r; r.type = ConfigRowType::Enum; r.label = "Sidechain Filter";
       r.padIndex = -1; r.paramIndex = 17; configRows_.add(r); }
-    { ConfigRow r; r.type = ConfigRowType::Enum; r.label = "SC Source";
-      r.padIndex = -1; r.paramIndex = 18; configRows_.add(r); }
-    { ConfigRow r; r.type = ConfigRowType::Enum; r.label = "Drive";
-      r.padIndex = -1; r.paramIndex = 19; configRows_.add(r); }
-    { ConfigRow r; r.type = ConfigRowType::Enum; r.label = "Trans Sens";
-      r.padIndex = -1; r.paramIndex = 20; configRows_.add(r); }
-    { ConfigRow r; r.type = ConfigRowType::Enum; r.label = "Show GR";
-      r.padIndex = -1; r.paramIndex = 21; configRows_.add(r); }
+    { ConfigRow r; r.type = ConfigRowType::Enum; r.label = "Low Cut";
+      r.padIndex = -1; r.paramIndex = 27; configRows_.add(r); }
 
-    // ── Preset group ──
+    { ConfigRow s; s.type = ConfigRowType::Spacer; s.padIndex = -1; s.paramIndex = -1;
+      configRows_.add(s); }
+
+    // ── Presets ──
     { ConfigRow s; s.type = ConfigRowType::SubHeader; s.label = "Presets";
       s.padIndex = -1; s.paramIndex = -1; configRows_.add(s); }
     { ConfigRow r; r.type = ConfigRowType::Enum; r.label = "Preset Switch";
       r.padIndex = -1; r.paramIndex = 1; configRows_.add(r); }
+    { ConfigRow r; r.type = ConfigRowType::Enum; r.label = "Prog Change";
+      r.padIndex = -1; r.paramIndex = 22; configRows_.add(r); }
+    { ConfigRow r; r.type = ConfigRowType::Enum; r.label = "PC Source";
+      r.padIndex = -1; r.paramIndex = 23; configRows_.add(r); }
 
-    // ── System group ──
+    { ConfigRow s; s.type = ConfigRowType::Spacer; s.padIndex = -1; s.paramIndex = -1;
+      configRows_.add(s); }
+
+    // ── System ──
     { ConfigRow s; s.type = ConfigRowType::SubHeader; s.label = "System";
       s.padIndex = -1; s.paramIndex = -1; configRows_.add(s); }
-    { ConfigRow r; r.type = ConfigRowType::Enum; r.label = "Enc Speed";
+    { ConfigRow r; r.type = ConfigRowType::Enum; r.label = "Encoder Speed";
       r.padIndex = -1; r.paramIndex = 5; configRows_.add(r); }
+    { ConfigRow r; r.type = ConfigRowType::Enum; r.label = "Browser Font";
+      r.padIndex = -1; r.paramIndex = 24; configRows_.add(r); }
     { ConfigRow r; r.type = ConfigRowType::Enum; r.label = "Debug Msgs";
       r.padIndex = -1; r.paramIndex = 3; configRows_.add(r); }
-    // 4 = Reboot Plugin
     { ConfigRow r; r.type = ConfigRowType::PushAction; r.label = "Reboot Plugin";
       r.padIndex = -1; r.paramIndex = 4; configRows_.add(r); }
+
+    { ConfigRow s; s.type = ConfigRowType::Spacer; s.padIndex = -1; s.paramIndex = -1;
+      configRows_.add(s); }
+
+    // ── About ──
+    { ConfigRow s; s.type = ConfigRowType::SubHeader; s.label = "About";
+      s.padIndex = -1; s.paramIndex = -1; configRows_.add(s); }
+    { ConfigRow r; r.type = ConfigRowType::Enum; r.label = "Firmware";
+      r.padIndex = -1; r.paramIndex = 29; configRows_.add(r); }
 }
 
 int PluginEditor::configSelectableCount() const
@@ -3218,6 +3397,16 @@ juce::String configGetValueText(const PluginProcessor& proc, const ConfigRow& ro
             const char* names[] = { "OLA", "WSOLA" };
             return names[static_cast<int>(proc.getEngine().getSlot(row.padIndex).getStretchMode())];
         }
+        if (row.paramIndex == 13) {
+            const char* grps[] = { "NONE", "A", "B", "C", "D", "E", "F", "G", "H" };
+            return grps[static_cast<int>(proc.getEngine().getSlot(row.padIndex).getChokeGroup())];
+        }
+        if (row.paramIndex == 14) {
+            return proc.getEngine().getSlot(row.padIndex).isReversed() ? "ON" : "OFF";
+        }
+        if (row.paramIndex == 15) {
+            return "[PUSH]";
+        }
     }
     if (row.type == ConfigRowType::Enum && row.padIndex < 0) {
         switch (row.paramIndex) {
@@ -3276,6 +3465,30 @@ juce::String configGetValueText(const PluginProcessor& proc, const ConfigRow& ro
                 return "HIGH";
             }
             case 21: return proc.getCompShowGR() ? "ON" : "OFF";
+            case 22: return proc.getProgChangeEnabled() ? "ON" : "OFF";
+            case 23: {
+                int cc = proc.getProgChangeCC();
+                return (cc == 0) ? "Prog Change" : "CC " + juce::String(cc);
+            }
+            case 24: {
+                float adj = proc.getBrowserFontAdj();
+                if (std::abs(adj) < 0.01f) return "Default";
+                return (adj > 0 ? "+" : "") + juce::String(adj, 1);
+            }
+            case 25: {  // Comp Mix
+                float mix = proc.getCompMix();
+                if (mix > 0.99f) return "100%";
+                if (mix < 0.01f) return "0% (Dry)";
+                return juce::String((int)(mix * 100.0f)) + "%";
+            }
+            case 27: {  // Low Cut
+                int hz = proc.getOutputHpfHz();
+                if (hz <= 0) return "OFF";
+                return juce::String(hz) + " Hz";
+            }
+            case 29: {  // Firmware (read-only)
+                return juce::String(PluginEditor::kFirmwareVersion);
+            }
             default: return "?";
         }
     }
@@ -3294,17 +3507,58 @@ void PluginEditor::paintConfigBrowser(juce::Graphics& g, juce::Rectangle<int> ar
     g.setColour(juce::Colour(0xFF333333));
     g.fillRect(area.getX(), area.getY(), 1, area.getHeight());
 
-    auto content = area.reduced(14, 8);
-    const int rowH = 32;
+    // ── Pinned PAD header (always visible at top, doesn't scroll) ───────
+    auto& pinSlot = processor_.getEngine().getSlot(selectedPad_);
+    juce::String pinName = pinSlot.isLoaded() ? pinSlot.getFileName() : "empty";
+    if (pinName.contains(".")) pinName = pinName.upToLastOccurrenceOf(".", false, false);
+    juce::String pinLabel = "PAD " + juce::String(selectedPad_ + 1) + ": " + pinName;
+
+    const int pinH = 52;
+    auto pinRect = juce::Rectangle<int>(area.getX(), area.getY(), area.getWidth(), pinH);
+    // Dashed-divider style (matches GLOBAL), larger font
+    {
+        int divY = pinRect.getCentreY();
+        g.setFont(bFont(26.0f));
+        g.getCurrentFont().getStringWidth(pinLabel);
+        int textW = g.getCurrentFont().getStringWidth(pinLabel) + 20;
+        int textX = pinRect.getCentreX() - textW / 2;
+        // Dashes left
+        g.setColour(juce::Colour(0x66FFFFFF));
+        for (int dx = pinRect.getX() + 6; dx < textX - 6; dx += 12)
+            g.fillRect(dx, divY, 6, 2);
+        // Dashes right
+        for (int dx = textX + textW + 6; dx < pinRect.getRight() - 6; dx += 12)
+            g.fillRect(dx, divY, 6, 2);
+        // Label
+        g.setColour(juce::Colour(0xFFE53935));
+        g.drawText(pinLabel, textX, pinRect.getY(), textW, pinRect.getHeight(),
+                   juce::Justification::centred);
+    }
+    // Bottom separator under pinned header
+    g.setColour(juce::Colour(0xFF2A2A2A));
+    g.fillRect(area.getX(), pinRect.getBottom(), area.getWidth(), 1);
+
+    // ── Scrollable list area (below the pin) ────────────────────────────
+    auto scrollArea = area.withTrimmedTop(pinH + 1);
+    auto content = scrollArea.reduced(14, 8);
+    const int rowH = 36;
     const int visibleRows = std::max(1, content.getHeight() / rowH);
 
-    // Scroll to keep selected row visible
+    // Scroll to keep selected row visible, including any headers/subheaders above it
     int selVisual = configSelectableToVisual(configIndex_);
-    if (selVisual < configScrollOffset_) configScrollOffset_ = selVisual;
+    // When scrolling up, also reveal non-selectable rows (headers) above the target
+    int scrollTarget = selVisual;
+    while (scrollTarget > 0) {
+        auto t = configRows_[scrollTarget - 1].type;
+        if (t == ConfigRowType::SubHeader || t == ConfigRowType::Divider || t == ConfigRowType::Spacer)
+            scrollTarget--;
+        else
+            break;
+    }
+    if (scrollTarget < configScrollOffset_) configScrollOffset_ = scrollTarget;
     if (selVisual >= configScrollOffset_ + visibleRows) configScrollOffset_ = selVisual - visibleRows + 1;
     configScrollOffset_ = juce::jlimit(0, std::max(0, configRows_.size() - visibleRows), configScrollOffset_);
 
-    int selCount = 0;  // tracks which selectable row we're on
     for (int i = 0; i < visibleRows; ++i)
     {
         int idx = configScrollOffset_ + i;
@@ -3318,61 +3572,55 @@ void PluginEditor::paintConfigBrowser(juce::Graphics& g, juce::Rectangle<int> ar
                               && row.type != ConfigRowType::Spacer && row.type != ConfigRowType::SubHeader);
         bool isSelected = isSelectable && (configVisualToSelectable(idx) == configIndex_);
 
-        // ── Header row ──
+        // ── Header row (legacy, unused now — kept for safety) ──
         if (row.type == ConfigRowType::Header) {
-            g.setColour(juce::Colour(kConfigHeader));
-            g.setFont(18.0f);
-            g.drawText(row.label, rowRect, juce::Justification::centred);
-            g.setColour(juce::Colour(kConfigDivider));
-            g.fillRect(rowRect.getX(), rowRect.getBottom() - 1, rowRect.getWidth(), 1);
+            // The pinned header renders the pad header; skip any legacy Header rows.
             continue;
         }
 
         // ── Spacer row (visual gap between groups) ──
         if (row.type == ConfigRowType::Spacer) {
-            continue;  // just empty space
+            continue;
         }
 
-        // ── Divider row (centered GLOBAL with dashes on each side) ──
+        // ── Divider row — big dashed style for GLOBAL ──
         if (row.type == ConfigRowType::Divider) {
+
             int divY = rowRect.getCentreY();
-            // Measure text width
-            g.setFont(13.0f);
-            int textW = g.getCurrentFont().getStringWidth(row.label) + 16;
+            g.setFont(bFont(24.0f));  // enlarged per spec
+            int textW = g.getCurrentFont().getStringWidth(row.label) + 20;
             int textX = rowRect.getCentreX() - textW / 2;
-            // Dashes left of text
-            g.setColour(juce::Colour(0x55FFFFFF));
-            for (int dx = rowRect.getX(); dx < textX - 4; dx += 10)
-                g.fillRect(dx, divY, 5, 1);
-            // Dashes right of text
-            for (int dx = textX + textW + 4; dx < rowRect.getRight(); dx += 10)
-                g.fillRect(dx, divY, 5, 1);
-            // GLOBAL text centered
-            g.setColour(juce::Colour(0x88FFFFFF));
+            // Dashes left
+            g.setColour(juce::Colour(0x66FFFFFF));
+            for (int dx = rowRect.getX(); dx < textX - 6; dx += 12)
+                g.fillRect(dx, divY, 6, 2);
+            // Dashes right
+            for (int dx = textX + textW + 6; dx < rowRect.getRight(); dx += 12)
+                g.fillRect(dx, divY, 6, 2);
+            // Label centered
+            g.setColour(juce::Colour(0xFFE53935));
             g.drawText(row.label, textX, rowRect.getY(), textW, rowRect.getHeight(),
                        juce::Justification::centred);
             continue;
         }
 
-        // ── SubHeader row (section label with line extending right) ──
+        // ── SubHeader — enlarged, with line extending right ──
         if (row.type == ConfigRowType::SubHeader) {
-            g.setFont(14.0f);
-            g.setColour(juce::Colour(0xAAE53935));  // red accent, slightly muted
+            g.setFont(juce::Font(bFont(20.0f), juce::Font::bold));
+            g.setColour(juce::Colour(0xDDE53935));
             juce::String label = row.label.toUpperCase();
             int textW = g.getCurrentFont().getStringWidth(label) + 4;
             int textX = rowRect.getX() + 6;
             g.drawText(label, textX, rowRect.getY(), textW, rowRect.getHeight(),
                        juce::Justification::centredLeft);
-            // Line extending from text to right edge
-            int lineY = rowRect.getCentreY();
-            int lineStart = textX + textW + 6;
-            g.setColour(juce::Colour(0x44FFFFFF));
+            int lineY = rowRect.getCentreY() + 2;
+            int lineStart = textX + textW + 8;
+            g.setColour(juce::Colour(0x55FFFFFF));
             g.fillRect(lineStart, lineY, rowRect.getRight() - lineStart - 4, 1);
             continue;
         }
 
         // ── Selectable row ──
-        // Check if row should be greyed out (Queue Bars when both modes are Immediate)
         bool greyed = false;
         if (row.type == ConfigRowType::Enum && row.padIndex < 0 && row.paramIndex == 2) {
             greyed = (processor_.getPerfMode() == PerfMode::Immediate
@@ -3390,8 +3638,8 @@ void PluginEditor::paintConfigBrowser(juce::Graphics& g, juce::Rectangle<int> ar
         // Label (left)
         float labelAlpha = greyed ? 0.35f : 1.0f;
         g.setColour((isSelected ? juce::Colour(0xFFFFFFFF) : juce::Colour(kConfigLabel)).withAlpha(labelAlpha));
-        g.setFont(16.0f);
-        g.drawText(row.label, rowRect.withTrimmedLeft(10).withTrimmedRight(90),
+        g.setFont(bFont(18.0f));
+        g.drawText(row.label, rowRect.withTrimmedLeft(10).withTrimmedRight(110),
                    juce::Justification::centredLeft);
 
         // Value (right)
@@ -3399,20 +3647,20 @@ void PluginEditor::paintConfigBrowser(juce::Graphics& g, juce::Rectangle<int> ar
         bool editing = isSelected && configEditMode_;
         float valAlpha = greyed ? 0.35f : 1.0f;
         g.setColour((editing ? juce::Colour(kConfigEditVal) : juce::Colour(kConfigValue)).withAlpha(valAlpha));
-        g.setFont(editing ? 17.0f : 15.0f);
+        g.setFont(editing ? bFont(19.0f) : bFont(17.0f));
         g.drawText(valText, rowRect.withTrimmedRight(6), juce::Justification::centredRight);
     }
 
     // Scroll indicators
     if (configScrollOffset_ > 0) {
         g.setColour(juce::Colour(0x66FFFFFF));
-        g.setFont(14.0f);
+        g.setFont(bFont(14.0f));
         g.drawText(juce::CharPointer_UTF8("\xe2\x96\xb2"), content.getX(), content.getY() - 16,
                    content.getWidth(), 14, juce::Justification::centredRight);
     }
     if (configScrollOffset_ + visibleRows < configRows_.size()) {
         g.setColour(juce::Colour(0x66FFFFFF));
-        g.setFont(14.0f);
+        g.setFont(bFont(14.0f));
         g.drawText(juce::CharPointer_UTF8("\xe2\x96\xbc"),
                    content.getX(), content.getBottom() + 2,
                    content.getWidth(), 14, juce::Justification::centredRight);
@@ -3471,6 +3719,21 @@ void PluginEditor::configAdjustValue(int selIdx, int delta)
         auto& slot = processor_.getEngine().getSlot(row.padIndex);
         int v = static_cast<int>(slot.getStretchMode()) + delta;
         slot.setStretchMode(static_cast<StretchMode>(juce::jlimit(0, 1, v)));
+        return;
+    }
+
+    // Per-pad Choke Group (paramIndex 13)
+    if (row.type == ConfigRowType::Enum && row.padIndex >= 0 && row.paramIndex == 13) {
+        auto& slot = processor_.getEngine().getSlot(row.padIndex);
+        int v = static_cast<int>(slot.getChokeGroup()) + delta;
+        slot.setChokeGroup(static_cast<ChokeGroup>(juce::jlimit(0, 8, v)));
+        return;
+    }
+
+    // Per-pad Reverse (paramIndex 14)
+    if (row.type == ConfigRowType::Enum && row.padIndex >= 0 && row.paramIndex == 14) {
+        auto& slot = processor_.getEngine().getSlot(row.padIndex);
+        slot.setReversed(delta > 0);
         return;
     }
 
@@ -3547,6 +3810,32 @@ void PluginEditor::configAdjustValue(int selIdx, int delta)
                 break;
             }
             case 21: processor_.setCompShowGR(delta > 0); break;
+            case 22: processor_.setProgChangeEnabled(delta > 0); break;
+            case 23: {
+                int cc = processor_.getProgChangeCC() + delta;
+                processor_.setProgChangeCC(juce::jlimit(0, 127, cc));
+                break;
+            }
+            case 24: {
+                float adj = processor_.getBrowserFontAdj() + (float)delta * 0.5f;
+                processor_.setBrowserFontAdj(adj);
+                break;
+            }
+            case 25: {  // Comp Mix
+                processor_.setCompMix(processor_.getCompMix() + (float)delta * 0.05f);
+                break;
+            }
+            case 27: {  // Low Cut
+                const int steps[] = { 0, 20, 25, 30, 40, 50 };
+                int cur = processor_.getOutputHpfHz();
+                int idx = 0;
+                for (int i = 0; i < 6; ++i) if (steps[i] == cur) { idx = i; break; }
+                idx = juce::jlimit(0, 5, idx + delta);
+                processor_.setOutputHpfHz(steps[idx]);
+                break;
+            }
+            case 28: break;  // Show Mixer (push action, no turn behavior)
+            case 29: break;  // Firmware (read-only)
             default: break;
         }
     }
@@ -3572,6 +3861,24 @@ void PluginEditor::configPushValue(int selIdx)
                 int count = processor_.exportSlicesToFiles(pad);
                 processor_.showTickerPublic("Exported " + juce::String(count) + " slices");
             }
+        }
+        if (row.paramIndex == 15 && row.padIndex >= 0) {  // Normalize
+            auto& slot = processor_.getEngine().getSlot(row.padIndex);
+            float oldGain = slot.getNormalizeGain();
+            slot.normalize();
+            float newGain = slot.getNormalizeGain();
+            if (!(newGain <= 1.0f && oldGain <= 1.0f && std::abs(newGain - 1.0f) < 0.01f)) {
+                float dB = 20.0f * std::log10(newGain);
+                processor_.showTickerPublic("Normalized: " + juce::String(dB > 0 ? "+" : "") + juce::String(dB, 1) + " dB");
+            }
+        }
+        if (row.paramIndex == 26) {  // Show Compressor
+            exitConfigMode();
+            enterCompEditor();
+        }
+        if (row.paramIndex == 28) {  // Show Mixer
+            exitConfigMode();
+            enterMixer();
         }
         return;
     }
@@ -4022,7 +4329,7 @@ void PluginEditor::sliceDeleteRegion()
 void PluginEditor::paintSliceEditor(juce::Graphics& g, juce::Rectangle<int> area)
 {
     auto& slot = processor_.getEngine().getSlot(selectedPad_);
-    if (!slot.isLoaded()) { exitSliceEditor(); return; }
+    if (!slot.isLoaded() || slot.isLoading()) { exitSliceEditor(); return; }
 
     const int w = area.getWidth(), h = area.getHeight();
 
@@ -4425,6 +4732,865 @@ void PluginEditor::paintSliceEditor(juce::Graphics& g, juce::Rectangle<int> area
     // Show pending state on enc 0
     if (slot.isSlicePending())
         encoderSlots_[0].valueLabel.setText("END?", juce::dontSendNotification);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Mod Editor — popup overlay with pixel art icons and 16-step grid
+// ═══════════════════════════════════════════════════════════════════════════
+
+void PluginEditor::paintModEditor(juce::Graphics& g, juce::Rectangle<int> area)
+{
+    auto& slot = processor_.getEngine().getSlot(selectedPad_);
+    auto& mod = slot.getMod(modEditorSlot_);
+
+    const int w = area.getWidth(), h = area.getHeight();
+
+    // Semi-transparent backdrop
+    g.setColour(juce::Colour(0xCC000000));
+    g.fillRect(area);
+
+    // ── Popup box: 60% width, use most of vertical space ──────────────
+    int boxW = (int)(w * 0.60f);
+    int boxH = h - 80;  // fill height minus encoder bar + tab
+    int boxX = (w - boxW) / 2;
+    int boxY = 36;
+    auto box = juce::Rectangle<int>(boxX, boxY, boxW, boxH);
+
+    // Box background + double border (arcade style)
+    g.setColour(juce::Colour(0xFF080808));
+    g.fillRect(box);
+    g.setColour(juce::Colour(0xFF555555));
+    g.drawRect(box, 1);
+    g.setColour(juce::Colour(0xFF333333));
+    g.drawRect(box.expanded(2), 1);
+
+    int margin = 12;
+    int innerX = box.getX() + margin;
+    int innerW = box.getWidth() - margin * 2;
+
+    // ── Header: MOD A/B/C + target + on/off ──────────────────────────────
+    int headerY = box.getY() + 10;
+    juce::String slotLetter = juce::String((char)('A' + modEditorSlot_));
+
+    g.setColour(mod.enabled ? juce::Colour(0xFF44FF44) : juce::Colour(0xFF666666));
+    g.setFont(22.0f);
+    g.drawText("MOD " + slotLetter + ": " + modTargetName(mod.target),
+               innerX, headerY, innerW / 2, 24, juce::Justification::centredLeft);
+
+    g.setColour(mod.enabled ? juce::Colour(0xFF00CC00) : juce::Colour(0xFF993333));
+    g.setFont(16.0f);
+    g.drawText(mod.enabled ? "ON" : "OFF",
+               innerX + innerW / 2, headerY, innerW / 2, 24, juce::Justification::centredRight);
+
+    // ── Icon row: STRENGTH (bicep) | ACTION (arrow) ──────────────────────
+    int iconY = headerY + 34;
+    int iconH = 70;
+    int iconColW = innerW / 3;
+
+    // ── STRENGTH: circle that grows and explodes ──────────────────────
+    {
+        int cx = innerX + iconColW / 2;
+        int cy = iconY + 20;
+        int str100 = (int)(mod.strength * 100.0f);
+
+        if (str100 >= 100) {
+            // EXPLODED: empty ring with burst particles
+            g.setColour(juce::Colour(0xFF555555));
+            g.drawEllipse((float)(cx - 12), (float)(cy - 12), 24.0f, 24.0f, 1.5f);
+
+            // Burst rays outward
+            auto spark = [&](int dx, int dy, uint32_t col) {
+                g.setColour(juce::Colour(col));
+                g.fillRect(cx + dx, cy + dy, 3, 3);
+            };
+            spark(-18, -2, 0xFFFF2222); spark(16, -4, 0xFFFF2222);
+            spark(-4, -20, 0xFFFF4444); spark(2, 18, 0xFFFF4444);
+            spark(-16, -14, 0xFFFF8800); spark(14, 12, 0xFFFF8800);
+            spark(14, -14, 0xFFFFAA00); spark(-14, 14, 0xFFFFAA00);
+            spark(-8, -18, 0xFFFFDD00); spark(8, 16, 0xFFFFDD00);
+            spark(-20, 6, 0xFFFFDD00); spark(18, -8, 0xFFFFDD00);
+            // Center flash
+            g.setColour(juce::Colour(0xFFFFFF44));
+            g.fillRect(cx - 2, cy - 2, 4, 4);
+        } else {
+            // Solid circle that grows with strength
+            int radius = 4 + (str100 * 14 / 100);  // 4 to 18 px
+            // Outer ring
+            g.setColour(juce::Colour(0xFFFFAA00));
+            g.fillEllipse((float)(cx - radius), (float)(cy - radius),
+                          (float)(radius * 2), (float)(radius * 2));
+            // Inner highlight
+            int inner = std::max(2, radius - 3);
+            g.setColour(juce::Colour(0xFFFFDD44));
+            g.fillEllipse((float)(cx - inner), (float)(cy - inner + 1),
+                          (float)(inner * 2 - 2), (float)(inner * 2 - 2));
+            // Hot center
+            if (radius > 8) {
+                g.setColour(juce::Colour(0xFFFFFFAA));
+                g.fillEllipse((float)(cx - 3), (float)(cy - 2), 6.0f, 5.0f);
+            }
+        }
+
+        g.setColour(juce::Colour(0xFF999999));
+        g.setFont(14.0f);
+        g.drawText("STRENGTH", innerX, iconY + iconH - 28, iconColW, 14, juce::Justification::centred);
+        g.setColour(juce::Colour(0xFFFFFFFF));
+        g.setFont(20.0f);
+        g.drawText(juce::String(str100) + "%", innerX, iconY + iconH - 12, iconColW, 18, juce::Justification::centred);
+    }
+
+    // ── ACTION: pixel art icon per type ──────────────────────────────────
+    {
+        int cx = innerX + iconColW + iconColW / 2;
+        int cy = iconY + 24;
+        int px = 4;
+
+        switch (mod.action) {
+            case ModAction::Increase: {
+                // Fat up arrow
+                g.setColour(juce::Colour(0xFF44DD44));
+                g.fillRect(cx - 1*px, cy + 2*px, 3*px, 4*px);  // shaft
+                g.fillRect(cx - 2*px, cy + 1*px, 5*px, px);
+                g.fillRect(cx - 3*px, cy + 0*px, 7*px, px);
+                g.fillRect(cx - 2*px, cy - 1*px, 5*px, px);
+                g.fillRect(cx - 1*px, cy - 2*px, 3*px, px);
+                g.fillRect(cx - 0*px, cy - 3*px, 1*px, px);
+                break;
+            }
+            case ModAction::Decrease: {
+                // Fat down arrow
+                g.setColour(juce::Colour(0xFFDD4444));
+                g.fillRect(cx - 1*px, cy - 5*px, 3*px, 4*px);
+                g.fillRect(cx - 2*px, cy - 1*px, 5*px, px);
+                g.fillRect(cx - 3*px, cy + 0*px, 7*px, px);
+                g.fillRect(cx - 2*px, cy + 1*px, 5*px, px);
+                g.fillRect(cx - 1*px, cy + 2*px, 3*px, px);
+                g.fillRect(cx - 0*px, cy + 3*px, 1*px, px);
+                break;
+            }
+            case ModAction::PingPong: {
+                // Two arrows up+down
+                g.setColour(juce::Colour(0xFF44AADD));
+                // Up arrow left side
+                g.fillRect(cx - 5*px, cy - 3*px, px, px);
+                g.fillRect(cx - 6*px, cy - 2*px, 3*px, px);
+                g.fillRect(cx - 5*px, cy - 1*px, px, 4*px);
+                // Down arrow right side
+                g.fillRect(cx + 4*px, cy + 2*px, px, px);
+                g.fillRect(cx + 3*px, cy + 1*px, 3*px, px);
+                g.fillRect(cx + 4*px, cy - 3*px, px, 4*px);
+                // Connecting line
+                g.setColour(juce::Colour(0xFF336688));
+                g.fillRect(cx - 1*px, cy - 1*px, 2*px, px);
+                break;
+            }
+            case ModAction::Random: {
+                // Dice-style scatter dots
+                g.setColour(juce::Colour(0xFFDDDD44));
+                g.fillRect(cx - 4*px, cy - 4*px, 2*px, 2*px);
+                g.fillRect(cx + 2*px, cy - 2*px, 2*px, 2*px);
+                g.fillRect(cx - 1*px, cy + 0*px, 2*px, 2*px);
+                g.fillRect(cx + 3*px, cy + 3*px, 2*px, 2*px);
+                g.fillRect(cx - 5*px, cy + 2*px, 2*px, 2*px);
+                g.fillRect(cx + 0*px, cy - 5*px, 2*px, 2*px);
+                break;
+            }
+            case ModAction::SampleHold: {
+                // Staircase waveform (classic S/H shape)
+                g.setColour(juce::Colour(0xFFDD88FF));
+                // Step 1: high
+                g.fillRect(cx - 6*px, cy - 4*px, 3*px, px);
+                g.fillRect(cx - 4*px, cy - 4*px, px, 3*px);
+                // Step 2: low
+                g.fillRect(cx - 4*px, cy - 1*px, 3*px, px);
+                g.fillRect(cx - 1*px, cy - 1*px, px, 4*px);
+                // Step 3: mid
+                g.fillRect(cx - 1*px, cy + 3*px, 4*px, px);
+                g.fillRect(cx + 3*px, cy + 0*px, px, 3*px);
+                // Step 4: high again
+                g.fillRect(cx + 3*px, cy + 0*px, 3*px, px);
+                break;
+            }
+            default: break;
+        }
+
+        g.setColour(juce::Colour(0xFF999999));
+        g.setFont(14.0f);
+        g.drawText("ACTION", innerX + iconColW, iconY + iconH - 28, iconColW, 14, juce::Justification::centred);
+        g.setColour(juce::Colour(0xFFFFFFFF));
+        g.setFont(20.0f);
+        g.drawText(modActionName(mod.action), innerX + iconColW, iconY + iconH - 12, iconColW, 18, juce::Justification::centred);
+    }
+
+    // ── PRESET: pixel art number or OFF ──────────────────────────────────
+    {
+        int cx = innerX + iconColW * 2 + iconColW / 2;
+        int cy = iconY + 18;
+        int p = 3;  // pixel size for number art
+        int pr = mod.activePreset;  // 0=OFF, 1-10
+
+        if (pr == 0) {
+            // OFF — draw a crossed circle
+            g.setColour(juce::Colour(0xFF555555));
+            g.fillRect(cx - 3*p, cy - 1*p, 6*p, p);  // horizontal
+            g.fillRect(cx - 1*p, cy - 3*p, p, 6*p);  // vertical (cross)
+            g.fillRect(cx - 3*p, cy - 3*p, p, p);
+            g.fillRect(cx + 2*p, cy - 3*p, p, p);
+            g.fillRect(cx - 3*p, cy + 2*p, p, p);
+            g.fillRect(cx + 2*p, cy + 2*p, p, p);
+            // Diagonal slash
+            g.setColour(juce::Colour(0xFF993333));
+            for (int d = -3; d <= 2; ++d)
+                g.fillRect(cx + d*p, cy - d*p, p, p);
+        } else {
+            // Draw number 1-10 in pixel art
+            g.setColour(juce::Colour(0xFF44DDFF));
+            if (pr >= 10) {
+                // "10" — draw 1 and 0 side by side
+                // "1"
+                g.fillRect(cx - 5*p, cy - 3*p, p, 7*p);
+                g.fillRect(cx - 6*p, cy - 2*p, p, p);
+                g.fillRect(cx - 7*p, cy + 3*p, 3*p, p);
+                // "0"
+                g.fillRect(cx - 2*p, cy - 3*p, 4*p, p);
+                g.fillRect(cx - 2*p, cy + 3*p, 4*p, p);
+                g.fillRect(cx - 3*p, cy - 2*p, p, 5*p);
+                g.fillRect(cx + 2*p, cy - 2*p, p, 5*p);
+            } else {
+                // Single digit 1-9, large centered
+                int n = pr;
+                int x0 = cx - 3*p, y0 = cy - 4*p;
+                // 7-segment style pixel art numbers
+                // Segs: 0=top, 1=top-right, 2=mid, 3=top-left, 4=bot-left, 5=bot, 6=bot-right
+                bool segs[10][7] = {
+                    {0,0,0,0,0,0,0}, // unused (0)
+                    {0,1,0,0,0,0,1}, // 1
+                    {1,1,1,0,1,1,0}, // 2
+                    {1,1,1,0,0,1,1}, // 3
+                    {0,1,1,1,0,0,1}, // 4
+                    {1,0,1,1,0,1,1}, // 5
+                    {1,0,1,1,1,1,1}, // 6
+                    {1,1,0,0,0,0,1}, // 7
+                    {1,1,1,1,1,1,1}, // 8
+                    {1,1,1,1,0,1,1}, // 9
+                };
+                // Segments: 0=top, 1=top-right, 2=mid, 3=top-left, 4=bot-left, 5=bot, 6=bot-right
+                int sw = 5*p, sh = p;
+                if (segs[n][0]) g.fillRect(x0, y0, sw, sh);                    // top
+                if (segs[n][1]) g.fillRect(x0+4*p, y0, sh, 4*p);              // top-right
+                if (segs[n][2]) g.fillRect(x0, y0+4*p, sw, sh);               // mid
+                if (segs[n][3]) g.fillRect(x0, y0, sh, 4*p);                  // top-left
+                if (segs[n][4]) g.fillRect(x0, y0+4*p, sh, 4*p);             // bot-left
+                if (segs[n][5]) g.fillRect(x0, y0+8*p, sw, sh);              // bot
+                if (segs[n][6]) g.fillRect(x0+4*p, y0+4*p, sh, 4*p);         // bot-right
+            }
+        }
+
+        g.setColour(juce::Colour(0xFF999999));
+        g.setFont(14.0f);
+        g.drawText("PRESET", innerX + iconColW * 2, iconY + iconH - 28, iconColW, 14, juce::Justification::centred);
+        g.setColour(juce::Colour(0xFFFFFFFF));
+        g.setFont(20.0f);
+        g.drawText(pr == 0 ? "OFF" : juce::String(pr), innerX + iconColW * 2, iconY + iconH - 12, iconColW, 18, juce::Justification::centred);
+    }
+
+    // ── Divider line ─────────────────────────────────────────────────────
+    int divY = iconY + iconH + 6;
+    g.setColour(juce::Colour(0xFF333333));
+    g.fillRect(innerX, divY, innerW, 1);
+
+    // ── 16-step grid: 2 rows of 8, fill available space ────────────────
+    int gridY = divY + 10;
+    int padGap = 6;
+    int padSizeW = (innerW - 7 * padGap) / 8;
+    int availGridH = box.getBottom() - gridY - 28;  // leave room for hint
+    int padSizeH = (availGridH - padGap - 4) / 2;
+    int padSize = std::min(padSizeW, padSizeH);
+    int gridW = 8 * padSize + 7 * padGap;
+    int gridX = innerX + (innerW - gridW) / 2;
+
+    for (int row = 0; row < 2; ++row) {
+        int rowY = gridY + row * (padSize + padGap + 4);
+
+        for (int col = 0; col < 8; ++col) {
+            int stepIdx = row * 8 + col;
+            int px = gridX + col * (padSize + padGap);
+            auto padRect = juce::Rectangle<int>(px, rowY, padSize, padSize);
+
+            bool active = mod.steps[stepIdx];
+            bool isCurrent = (stepIdx == mod.currentStep && mod.enabled);
+            bool inBlock = (col >= modEditorRow_ * 4 && col < modEditorRow_ * 4 + 4);
+
+            if (active) {
+                float glow = inBlock ? 1.0f : 0.4f;
+                g.setColour(juce::Colour(0xFF771111).withAlpha(glow));
+                g.fillRect(padRect);
+                g.setColour(juce::Colour(0xFFDD3333).withAlpha(glow * 0.7f));
+                g.fillRect(padRect.reduced(4));
+                g.setColour(juce::Colour(0xFFFF6644).withAlpha(glow * 0.4f));
+                g.fillRect(padRect.reduced(8));
+            } else {
+                g.setColour(inBlock ? juce::Colour(0xFF151515) : juce::Colour(0xFF0C0C0C));
+                g.fillRect(padRect);
+            }
+
+            if (isCurrent) {
+                g.setColour(juce::Colour(0xFFFFFFFF));
+                g.fillRect(px + 4, rowY + padSize - 4, padSize - 8, 3);
+            }
+
+            g.setColour(inBlock ? juce::Colour(0xFF555555) : juce::Colour(0xFF2A2A2A));
+            g.drawRect(padRect, 1);
+
+            g.setColour(active ? juce::Colour(0xFF1A0505) : juce::Colour(0xFF3A3A3A));
+            g.setFont((float)padSize * 0.55f);
+            g.drawText(juce::String(stepIdx + 1), padRect, juce::Justification::centred);
+        }
+    }
+
+    // ── Active steps counter ─────────────────────────────────────────────
+    int countY = gridY + 2 * (padSize + padGap + 4) + 4;
+    g.setColour(juce::Colour(0xFF777777));
+    g.setFont(13.0f);
+    g.drawText(juce::String(mod.activeStepCount()) + "/16 steps active",
+               innerX, countY, innerW / 2, 16, juce::Justification::centredLeft);
+
+    // ── Bottom hint ──────────────────────────────────────────────────────
+    g.setColour(juce::Colour(0xFF555555));
+    g.setFont(12.0f);
+    g.drawText("Enc1: strength  Enc2: action  Enc3: preset  L/R: block  Buttons: steps  Down: close",
+               box.getX(), box.getBottom() - 20, box.getWidth(), 16, juce::Justification::centred);
+}
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Compressor Editor (v3 — smooth icons, oscilloscope, no pixel jank)
+// ═══════════════════════════════════════════════════════════════════════════
+
+void PluginEditor::enterCompEditor()
+{
+    compEditorOpen_ = true;
+    compEditorRow_ = 0;
+    std::memset(compScopePeak_, 0, sizeof(compScopePeak_));
+    std::memset(compScopeGR_, 0, sizeof(compScopeGR_));
+    std::memset(compIconEnv_, 0, sizeof(compIconEnv_));
+    // Dim encoder labels behind overlay
+    for (int i = 0; i < kEncodersPerPage; ++i) {
+        encoderSlots_[i].nameLabel.setColour(juce::Label::textColourId, juce::Colour(0xFF333333));
+        encoderSlots_[i].valueLabel.setColour(juce::Label::textColourId, juce::Colour(0xFF333333));
+    }
+    repaint();
+}
+
+void PluginEditor::exitCompEditor()
+{
+    compEditorOpen_ = false;
+    updateEncoderDisplay();
+    // Restore encoder label colors
+    for (int i = 0; i < kEncodersPerPage; ++i) {
+        encoderSlots_[i].nameLabel.setColour(juce::Label::textColourId, juce::Colour(kEncLabel));
+        encoderSlots_[i].valueLabel.setColour(juce::Label::textColourId, juce::Colour(kEncValue));
+    }
+    repaint();
+}
+
+void PluginEditor::compScopePush(float peakLin, float grDb)
+{
+    std::memmove(compScopePeak_, compScopePeak_ + 1, (kCompScopeLen - 1) * sizeof(float));
+    std::memmove(compScopeGR_, compScopeGR_ + 1, (kCompScopeLen - 1) * sizeof(float));
+    compScopePeak_[kCompScopeLen - 1] = peakLin;
+    compScopeGR_[kCompScopeLen - 1] = grDb;
+    float grNorm = juce::jlimit(0.0f, 1.0f, grDb / 18.0f);
+    for (int i = 0; i < 8; ++i) {
+        float target = grNorm;
+        compIconEnv_[i] += ((target > compIconEnv_[i]) ? 0.25f : 0.06f) * (target - compIconEnv_[i]);
+    }
+}
+
+void PluginEditor::compEditorEncoderTurn(int enc, float delta)
+{
+    if (enc < 0 || enc > 3) return;
+    int p = compEditorRow_ * 4 + enc;
+    switch (p) {
+        case 0: processor_.setCompThreshDb(processor_.getCompThreshDb() + delta * 2.0f); break;
+        case 1: processor_.setCompRatio(processor_.getCompRatio() + delta * 0.5f); break;
+        case 2: processor_.setCompAttackMs(processor_.getCompAttackMs() + delta * 1.0f); break;
+        case 3: processor_.setCompReleaseMs(processor_.getCompReleaseMs() + delta * 10.0f); break;
+        case 4: processor_.setCompMakeupDb(processor_.getCompMakeupDb() + delta * 0.5f); break;
+        case 5: processor_.setCompMix(processor_.getCompMix() + delta * 0.05f); break;
+        case 6: {
+            const int s[] = { 0, 60, 80, 120, 150 };
+            int c = processor_.getCompSCHpfHz(), idx = 0;
+            for (int i = 0; i < 5; ++i) if (s[i] == c) { idx = i; break; }
+            processor_.setCompSCHpfHz(s[juce::jlimit(0, 4, idx + (delta > 0 ? 1 : -1))]);
+            break;
+        }
+        case 7: {
+            const int s[] = { 0, 20, 25, 30, 40, 50 };
+            int c = processor_.getOutputHpfHz(), idx = 0;
+            for (int i = 0; i < 6; ++i) if (s[i] == c) { idx = i; break; }
+            processor_.setOutputHpfHz(s[juce::jlimit(0, 5, idx + (delta > 0 ? 1 : -1))]);
+            break;
+        }
+    }
+}
+
+// ── Smooth icon painters ─────────────────────────────────────────────────
+
+void PluginEditor::paintCompIconThreshold(juce::Graphics& g, int cx, int cy, int cellH, float env)
+{
+    float threshNorm = juce::jlimit(0.0f, 1.0f, (processor_.getCompThreshDb() + 60.0f) / 60.0f);
+    int iconH = 52, iconBot = cy + iconH / 2;
+    int lineY = iconBot - (int)(threshNorm * (float)iconH);
+    float barNorms[] = { 0.35f, 0.65f, 0.85f, 0.55f, 0.45f };
+    int barW = 7, gap = 3, totalW = 5 * barW + 4 * gap, startX = cx - totalW / 2;
+    for (int i = 0; i < 5; ++i) {
+        int bx = startX + i * (barW + gap);
+        int barH = (int)(barNorms[i] * (float)iconH);
+        int by = iconBot - barH;
+        if (by < lineY) {
+            g.setColour(juce::Colour(0xFF00DDDD).withAlpha(0.5f + env * 0.5f));
+            g.fillRect(bx, by, barW, lineY - by);
+        }
+        if (std::max(by, lineY) < iconBot) {
+            g.setColour(juce::Colour(0xFF004444));
+            g.fillRect(bx, std::max(by, lineY), barW, iconBot - std::max(by, lineY));
+        }
+    }
+    g.setColour(juce::Colour(0xFFFF8800));
+    g.fillRect(startX - 6, lineY - 1, totalW + 12, 3);
+    g.fillRect(startX - 10, lineY - 3, 5, 7);
+    g.fillRect(startX + totalW + 5, lineY - 3, 5, 7);
+}
+
+void PluginEditor::paintCompIconRatio(juce::Graphics& g, int cx, int cy, int cellH)
+{
+    float ratio = processor_.getCompRatio();
+    float slope = 1.0f / ratio;
+    int sz = 50, ox = cx - sz / 2, oy = cy - sz / 2;
+    g.setColour(juce::Colour(0xFF1A1A1A)); g.fillRect(ox, oy, sz, sz);
+    g.setColour(juce::Colour(0xFF2A2A2A)); g.drawRect(ox, oy, sz, sz, 1);
+    // 1:1 reference diagonal (faint)
+    g.setColour(juce::Colour(0xFF333333));
+    g.drawLine((float)ox, (float)(oy + sz), (float)(ox + sz), (float)oy, 1.0f);
+    // Compression curve with knee at 30% (further left = more visible bend)
+    juce::Path curve;
+    float knee = 0.30f;
+    float kneeW = 0.12f;  // smooth knee transition width
+    bool started = false;
+    for (int px = 0; px <= sz; ++px) {
+        float in = (float)px / (float)sz;
+        float out;
+        if (in < knee - kneeW)
+            out = in;  // 1:1 below knee
+        else if (in > knee + kneeW)
+            out = knee + (in - knee) * slope;  // compressed above knee
+        else {
+            // Smooth quadratic blend through the knee region
+            float t = (in - (knee - kneeW)) / (2.0f * kneeW);
+            float lo = in;
+            float hi = knee + (in - knee) * slope;
+            out = lo + (hi - lo) * t * t;
+        }
+        out = juce::jlimit(0.0f, 1.0f, out);
+        float dx = (float)ox + px, dy = (float)(oy + sz) - out * sz;
+        if (!started) { curve.startNewSubPath(dx, dy); started = true; }
+        else curve.lineTo(dx, dy);
+    }
+    g.setColour(juce::Colour(0xFF44DD44));
+    g.strokePath(curve, juce::PathStrokeType(2.5f));
+    // Knee dot
+    float kx = (float)ox + knee * sz, ky = (float)(oy + sz) - knee * sz;
+    g.setColour(juce::Colour(0xFFFFFFFF));
+    g.fillEllipse(kx - 4, ky - 4, 8, 8);
+}
+
+void PluginEditor::paintCompIconAttack(juce::Graphics& g, int cx, int cy, int cellH, float env)
+{
+    // Mirror of release: baseline → rise → plateau (purple, same family)
+    float attackMs = processor_.getCompAttackMs();
+    float speed = juce::jlimit(0.05f, 0.7f, 1.0f - attackMs / 120.0f);
+    int sz = 52, ox = cx - sz / 2, oy = cy + sz / 2;
+    // Mirror the release shape: rise starts early for fast attack, late for slow
+    float riseEnd = 0.85f;
+    float riseStart = std::max(0.05f, riseEnd - (1.0f - speed) * 0.6f - 0.2f);
+    juce::Path shape;
+    shape.startNewSubPath((float)ox, (float)oy);                          // baseline left
+    shape.lineTo((float)ox + riseStart * sz, (float)oy);                  // baseline continues
+    shape.lineTo((float)ox + riseEnd * sz, (float)(oy - sz + 6));         // rise
+    shape.lineTo((float)(ox + sz), (float)(oy - sz + 6));                 // plateau right
+    g.setColour(juce::Colour(0xFF8844DD)); g.strokePath(shape, juce::PathStrokeType(3.0f));
+    juce::Path fill = shape;
+    fill.lineTo((float)(ox + sz), (float)oy); fill.closeSubPath();
+    g.setColour(juce::Colour(0x228844DD)); g.fillPath(fill);
+    if (env > 0.02f) {
+        float dp = std::fmod(env * 3.0f, 1.0f);
+        float dx = (float)ox + (riseStart + dp * (riseEnd - riseStart)) * sz;
+        float dy = (float)oy - dp * (sz - 6);
+        g.setColour(juce::Colour(0xFFBB66FF));
+        g.fillEllipse(dx - 5, dy - 5, 10, 10);
+    }
+}
+
+void PluginEditor::paintCompIconRelease(juce::Graphics& g, int cx, int cy, int cellH, float env)
+{
+    float releaseMs = processor_.getCompReleaseMs();
+    float speed = juce::jlimit(0.1f, 0.7f, 1.0f - releaseMs / 600.0f);
+    int sz = 52, ox = cx - sz / 2, oy = cy + sz / 2;
+    float ds = 0.15f, de = std::min(ds + (1.0f - speed) * 0.6f + 0.2f, 0.95f);
+    juce::Path shape;
+    shape.startNewSubPath((float)ox, (float)(oy - sz + 6));
+    shape.lineTo((float)ox + ds * sz, (float)(oy - sz + 6));
+    shape.lineTo((float)ox + de * sz, (float)oy);
+    shape.lineTo((float)(ox + sz), (float)oy);
+    g.setColour(juce::Colour(0xFF8844DD)); g.strokePath(shape, juce::PathStrokeType(3.0f));
+    juce::Path fill = shape;
+    fill.lineTo((float)ox, (float)oy); fill.closeSubPath();
+    g.setColour(juce::Colour(0x228844DD)); g.fillPath(fill);
+    if (env > 0.02f) {
+        float dp = std::fmod(env * 2.0f, 1.0f);
+        float dx = (float)ox + (ds + dp * (de - ds)) * sz;
+        float fy = (float)(oy - sz + 6), dy = fy + dp * ((float)oy - fy);
+        g.setColour(juce::Colour(0xFFBB66FF));
+        g.fillEllipse(dx - 5, dy - 5, 10, 10);
+    }
+}
+
+void PluginEditor::paintCompIconMakeup(juce::Graphics& g, int cx, int cy, int cellH)
+{
+    float angle = juce::jlimit(0.0f, 1.0f, processor_.getCompMakeupDb() / 24.0f);
+    int r = 24;
+    g.setColour(juce::Colour(0xFF555555));
+    for (int a = 0; a < 11; ++a) {
+        float rad = 3.14159f * (0.75f + a * 0.15f);
+        g.fillEllipse((float)cx + std::cos(rad) * r - 2, (float)cy + std::sin(rad) * r - 2, 5, 5);
+    }
+    g.setColour(juce::Colour(0xFF44AA44));
+    for (int a = 0; a < (int)(angle * 11); ++a) {
+        float rad = 3.14159f * (0.75f + a * 0.15f);
+        g.fillEllipse((float)cx + std::cos(rad) * (r - 4) - 3, (float)cy + std::sin(rad) * (r - 4) - 3, 6, 6);
+    }
+    float na = 3.14159f * (0.75f + angle * 1.5f);
+    g.setColour(juce::Colour(0xFFFFFFFF));
+    g.drawLine((float)cx, (float)cy, (float)cx + std::cos(na) * (r - 6), (float)cy + std::sin(na) * (r - 6), 3.0f);
+    g.setColour(juce::Colour(0xFFE53935));
+    g.fillEllipse((float)(cx - 5), (float)(cy - 5), 10, 10);
+}
+
+void PluginEditor::paintCompIconMix(juce::Graphics& g, int cx, int cy, int cellH)
+{
+    float mix = processor_.getCompMix();
+    int barW = 18, maxH = 48, gap = 8, bot = cy + maxH / 2;
+    int dX = cx - barW - gap / 2, cX = cx + gap / 2;
+    g.setColour(juce::Colour(0xFF555555));
+    g.fillRoundedRectangle((float)dX, (float)(bot - maxH), (float)barW, (float)maxH, 3);
+    g.setColour(juce::Colour(0xFF888888));
+    g.fillRoundedRectangle((float)dX, (float)(bot - (int)((1.0f - mix) * maxH)), (float)barW, (float)((int)((1.0f - mix) * maxH)), 3);
+    g.setColour(juce::Colour(0xFF331111));
+    g.fillRoundedRectangle((float)cX, (float)(bot - maxH), (float)barW, (float)maxH, 3);
+    g.setColour(juce::Colour(0xFFE53935));
+    g.fillRoundedRectangle((float)cX, (float)(bot - (int)(mix * maxH)), (float)barW, (float)((int)(mix * maxH)), 3);
+    g.setColour(juce::Colour(0xFF999999)); g.setFont(11.0f);
+    g.drawText("DRY", dX, bot + 4, barW, 13, juce::Justification::centred);
+    g.drawText("CMP", cX, bot + 4, barW, 13, juce::Justification::centred);
+}
+
+void PluginEditor::paintCompIconSCFilter(juce::Graphics& g, int cx, int cy, int cellH)
+{
+    int scHz = processor_.getCompSCHpfHz(); bool active = (scHz > 0);
+    int sz = 50, ox = cx - sz / 2;
+    if (active) {
+        juce::Path c; c.startNewSubPath((float)ox, (float)(cy + 18));
+        c.quadraticTo((float)(ox + sz * 0.3f), (float)(cy + 14), (float)(ox + sz * 0.4f), (float)(cy - 4));
+        c.lineTo((float)(ox + sz), (float)(cy - 4));
+        g.setColour(juce::Colour(0xFF44AADD)); g.strokePath(c, juce::PathStrokeType(3.0f));
+        g.setColour(juce::Colour(0x22FF4444)); g.fillRect(ox, cy + 2, (int)(sz * 0.35f), 16);
+    } else {
+        g.setColour(juce::Colour(0xFF444444)); g.drawLine((float)ox, (float)cy, (float)(ox + sz), (float)cy, 2.5f);
+    }
+}
+
+void PluginEditor::paintCompIconLowCut(juce::Graphics& g, int cx, int cy, int cellH)
+{
+    int lcHz = processor_.getOutputHpfHz();
+    bool active = (lcHz > 0);
+    int iconH = 52, iconW = 54;
+    int left = cx - iconW / 2, top = cy - iconH / 2, bot = cy + iconH / 2;
+
+    if (active) {
+        // Horizontal line that moves up with higher Hz (like threshold)
+        // 20Hz = near bottom, 50Hz = near middle
+        float norm = juce::jlimit(0.0f, 1.0f, (float)(lcHz - 15) / 50.0f);
+        int lineY = bot - (int)(norm * (float)iconH);
+
+        // Region below line = blocked (red tint, sub-bass cut)
+        g.setColour(juce::Colour(0x33FF4444));
+        g.fillRect(left, lineY, iconW, bot - lineY);
+
+        // Region above line = pass (green tint)
+        g.setColour(juce::Colour(0x1144FF44));
+        g.fillRect(left, top, iconW, lineY - top);
+
+        // The cutoff line itself (bright orange-red, horizontal)
+        g.setColour(juce::Colour(0xFFFF6644));
+        g.fillRect(left, lineY - 1, iconW, 3);
+
+        // Arrow markers at edges
+        g.fillRect(left - 4, lineY - 3, 5, 7);
+        g.fillRect(left + iconW, lineY - 3, 5, 7);
+    } else {
+        // OFF: flat dim horizontal line in center
+        g.setColour(juce::Colour(0xFF444444));
+        g.fillRect(left, cy, iconW, 2);
+    }
+}
+
+// ── Main paint ───────────────────────────────────────────────────────────
+
+void PluginEditor::paintCompEditor(juce::Graphics& g, juce::Rectangle<int> area)
+{
+    const int w = area.getWidth(), h = area.getHeight();
+    g.setColour(juce::Colour(0xF5000000)); g.fillRect(area);
+
+    int boxW = (int)(w * 0.82f), boxH = h - 80;
+    int boxX = (w - boxW) / 2, boxY = 36;
+    auto box = juce::Rectangle<int>(boxX, boxY, boxW, boxH);
+    g.setColour(juce::Colour(0xFF0C0C0C)); g.fillRoundedRectangle(box.toFloat(), 6);
+    g.setColour(juce::Colour(0xFF444444)); g.drawRoundedRectangle(box.toFloat(), 6, 1.5f);
+
+    int margin = 16, innerX = box.getX() + margin, innerW = box.getWidth() - margin * 2;
+    int headerY = box.getY() + 8;
+    g.setColour(juce::Colour(processor_.getCompEnabled() ? 0xFFE53935 : 0xFF555555));
+    g.setFont(24.0f);
+    g.drawText("BUS COMPRESSOR", innerX, headerY, innerW / 2, 28, juce::Justification::centredLeft);
+    g.setColour(juce::Colour(processor_.getCompEnabled() ? 0xFF44FF44 : 0xFF993333));
+    g.setFont(18.0f);
+    g.drawText(processor_.getCompEnabled() ? "ACTIVE" : "BYPASSED", innerX + innerW / 2, headerY, innerW / 2, 28, juce::Justification::centredRight);
+    g.setColour(juce::Colour(0xFF333333)); g.fillRect(innerX, headerY + 32, innerW, 1);
+
+    int scopeW = (int)(innerW * 0.36f), paramW = innerW - scopeW - 16;
+    int contentY = headerY + 40, contentH = box.getHeight() - 78;
+    int cellW = paramW / 4, cellH = contentH / 2;
+
+    const char* names[] = { "Threshold", "Ratio", "Attack", "Release", "Makeup", "Mix", "SC Filter", "Low Cut" };
+    juce::String vals[8];
+    vals[0] = juce::String((int)processor_.getCompThreshDb()) + " dB";
+    vals[1] = juce::String(processor_.getCompRatio(), 1) + ":1";
+    vals[2] = juce::String(processor_.getCompAttackMs(), 1) + " ms";
+    vals[3] = juce::String((int)processor_.getCompReleaseMs()) + " ms";
+    vals[4] = juce::String(processor_.getCompMakeupDb(), 1) + " dB";
+    vals[5] = juce::String((int)(processor_.getCompMix() * 100)) + "%";
+    vals[6] = processor_.getCompSCHpfHz() <= 0 ? "OFF" : juce::String(processor_.getCompSCHpfHz()) + " Hz";
+    vals[7] = processor_.getOutputHpfHz() <= 0 ? "OFF" : juce::String(processor_.getOutputHpfHz()) + " Hz";
+
+    for (int row = 0; row < 2; ++row) {
+        bool act = (row == compEditorRow_);
+        for (int col = 0; col < 4; ++col) {
+            int idx = row * 4 + col, cX = innerX + col * cellW, cY = contentY + row * cellH;
+            auto cr = juce::Rectangle<int>(cX, cY, cellW, cellH);
+            if (act) { g.setColour(juce::Colour(0x12FFFFFF)); g.fillRect(cr); }
+            int icx = cX + cellW / 2, icy = cY + cellH / 2 - 16;
+            float env = compIconEnv_[idx];
+            switch (idx) {
+                case 0: paintCompIconThreshold(g, icx, icy, cellH, env); break;
+                case 1: paintCompIconRatio(g, icx, icy, cellH); break;
+                case 2: paintCompIconAttack(g, icx, icy, cellH, env); break;
+                case 3: paintCompIconRelease(g, icx, icy, cellH, env); break;
+                case 4: paintCompIconMakeup(g, icx, icy, cellH); break;
+                case 5: paintCompIconMix(g, icx, icy, cellH); break;
+                case 6: paintCompIconSCFilter(g, icx, icy, cellH); break;
+                case 7: paintCompIconLowCut(g, icx, icy, cellH); break;
+            }
+            g.setColour(juce::Colour(act ? 0xFFBBBBBB : 0xFF555555)); g.setFont(16.0f);
+            g.drawText(names[idx], cX, cY + cellH - 44, cellW, 16, juce::Justification::centred);
+            g.setColour(juce::Colour(act ? 0xFFFFFFFF : 0xFF777777)); g.setFont(act ? 24.0f : 19.0f);
+            g.drawText(vals[idx], cX, cY + cellH - 26, cellW, 24, juce::Justification::centred);
+        }
+        if (row == 0) { g.setColour(juce::Colour(0xFF222222)); g.fillRect(innerX, contentY + cellH - 1, paramW, 1); }
+    }
+
+    // ── Scope ────────────────────────────────────────────────────────────
+    int sX = innerX + paramW + 16, sY = contentY, sH = contentH;
+    auto sr = juce::Rectangle<int>(sX, sY, scopeW, sH);
+    g.setColour(juce::Colour(0xFF080808)); g.fillRoundedRectangle(sr.toFloat(), 4);
+    g.setColour(juce::Colour(0xFF2A2A2A)); g.drawRoundedRectangle(sr.toFloat(), 4, 1);
+    g.setColour(juce::Colour(0xFF181818));
+    for (int i = 1; i < 4; ++i) g.drawHorizontalLine(sY + i * sH / 4, (float)sX, (float)(sX + scopeW));
+
+    // dB range: -36 to 0 dBFS (tighter zoom for sampler material)
+    const float scopeDbRange = 36.0f;
+
+    // Threshold line (bright, visible, labeled)
+    float tDb = processor_.getCompThreshDb();
+    float tN = juce::jlimit(0.0f, 1.0f, 1.0f - (tDb + scopeDbRange) / scopeDbRange);
+    int tPy = sY + (int)(tN * sH);
+    // Solid orange line (thick, visible)
+    g.setColour(juce::Colour(0xAAFF8800));
+    g.fillRect(sX, tPy - 1, scopeW, 3);
+    // Label
+    g.setColour(juce::Colour(0xDDFFAA00));
+    g.setFont(14.0f);
+    g.drawText("Threshold " + juce::String((int)tDb) + "dB",
+               sX + 4, tPy - 18, scopeW - 8, 16, juce::Justification::centredLeft);
+
+    // Cyan: input peak bars
+    float pps = (float)scopeW / (float)kCompScopeLen;
+    for (int i = 0; i < kCompScopeLen; ++i) {
+        float pk = compScopePeak_[i]; if (pk < 1e-6f) continue;
+        float pDb = 20.0f * std::log10(pk + 1e-30f);
+        float n = juce::jlimit(0.0f, 1.0f, 1.0f - (pDb + scopeDbRange) / scopeDbRange);
+        int py = sY + (int)(n * sH), bH = sY + sH - py;
+        float x = (float)sX + i * pps;
+        g.setColour(juce::Colour(0x3300BBBB)); g.fillRect(x, (float)py, std::max(1.0f, pps), (float)bH);
+        g.setColour(juce::Colour(0x9900FFFF)); g.fillRect(x, (float)py, std::max(1.0f, pps), 2.0f);
+    }
+
+    // Orange: GR envelope line (hangs from threshold line)
+    g.setColour(juce::Colour(0xDDFFAA00));
+    for (int i = 1; i < kCompScopeLen; ++i) {
+        // Map GR to pixels below the threshold line
+        float gr0px = compScopeGR_[i - 1] / scopeDbRange * (float)sH;
+        float gr1px = compScopeGR_[i] / scopeDbRange * (float)sH;
+        float y0 = (float)tPy + gr0px;
+        float y1 = (float)tPy + gr1px;
+        // Clamp to scope bounds
+        y0 = juce::jlimit((float)sY, (float)(sY + sH), y0);
+        y1 = juce::jlimit((float)sY, (float)(sY + sH), y1);
+        g.drawLine((float)sX + (i - 1) * pps, y0, (float)sX + i * pps, y1, 2.5f);
+    }
+
+    // Legend
+    g.setColour(juce::Colour(0xFF00CCCC)); g.setFont(12.0f);
+    g.drawText("INPUT", sX + scopeW - 50, sY + sH - 28, 46, 12, juce::Justification::centredRight);
+    g.setColour(juce::Colour(0xFFFFAA00));
+    g.drawText("GR", sX + scopeW - 50, sY + sH - 14, 46, 12, juce::Justification::centredRight);
+
+    // Current GR readout
+    float cGR = processor_.getCompGainReductionDb();
+    if (cGR > 0.1f) {
+        g.setColour(juce::Colour(0xFFFF6D00)); g.setFont(28.0f);
+        g.drawText("-" + juce::String(cGR, 1) + " dB", sX, sY + 4, scopeW - 8, 28, juce::Justification::centredRight);
+    }
+    g.setColour(juce::Colour(0x44FFFFFF)); g.setFont(13.0f);
+    g.drawText((compEditorRow_ == 0 ? "ROW 1/2" : "ROW 2/2") + juce::String("    L/R: switch    LS/Down: close    Encoders: adjust"),
+               box.getX(), box.getBottom() - 22, box.getWidth(), 18, juce::Justification::centred);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Mixer Popup (8-pad volume overview)
+// ═══════════════════════════════════════════════════════════════════════════
+
+void PluginEditor::enterMixer()
+{
+    mixerOpen_ = true;
+    mixerPad_ = selectedPad_;
+    for (int i = 0; i < kEncodersPerPage; ++i) {
+        encoderSlots_[i].nameLabel.setColour(juce::Label::textColourId, juce::Colour(0xFF333333));
+        encoderSlots_[i].valueLabel.setColour(juce::Label::textColourId, juce::Colour(0xFF333333));
+    }
+    repaint();
+}
+
+void PluginEditor::exitMixer()
+{
+    mixerOpen_ = false;
+    updateEncoderDisplay();
+    for (int i = 0; i < kEncodersPerPage; ++i) {
+        encoderSlots_[i].nameLabel.setColour(juce::Label::textColourId, juce::Colour(kEncLabel));
+        encoderSlots_[i].valueLabel.setColour(juce::Label::textColourId, juce::Colour(kEncValue));
+    }
+    repaint();
+}
+
+void PluginEditor::paintMixer(juce::Graphics& g, juce::Rectangle<int> area)
+{
+    const int w = area.getWidth(), h = area.getHeight();
+
+    // Semi-transparent backdrop
+    g.setColour(juce::Colour(0xCC000000));
+    g.fillRect(area);
+
+    // Popup box
+    int boxW = (int)(w * 0.70f);
+    int boxH = h - 90;
+    int boxX = (w - boxW) / 2;
+    int boxY = 40;
+    auto box = juce::Rectangle<int>(boxX, boxY, boxW, boxH);
+
+    // Background + border
+    g.setColour(juce::Colour(0xFF080808));
+    g.fillRect(box);
+    g.setColour(juce::Colour(0xFF555555));
+    g.drawRect(box, 1);
+    g.setColour(juce::Colour(0xFF333333));
+    g.drawRect(box.expanded(2), 1);
+
+    // Header
+    g.setColour(juce::Colour(0xFFE53935));
+    g.setFont(24.0f);
+    g.drawText("MIXER", box.getX() + 16, box.getY() + 10, box.getWidth() - 32, 28,
+               juce::Justification::centred);
+
+    // 8 vertical fader channels
+    int chanW = (box.getWidth() - 32) / 8;
+    int faderY = box.getY() + 50;
+    int faderH = box.getHeight() - 90;
+
+    for (int pad = 0; pad < kNumPads; ++pad)
+    {
+        auto& slot = processor_.getEngine().getSlot(pad);
+        int cx = box.getX() + 16 + pad * chanW + chanW / 2;
+        bool sel = (pad == mixerPad_);
+        bool muted = processor_.getEngine().isMuted(pad);
+        bool playing = slot.isPlaying();
+
+        // Fader track
+        int trackW = 10;
+        int trackX = cx - trackW / 2;
+        g.setColour(juce::Colour(0xFF222222));
+        g.fillRoundedRectangle((float)trackX, (float)faderY, (float)trackW, (float)faderH, 3.0f);
+
+        // Volume fill (from bottom)
+        float vol = slot.getVolume();
+        int fillH = (int)(vol * (float)faderH);
+        if (fillH > 0) {
+            juce::Colour fillCol = muted ? juce::Colour(0xFF553333) : juce::Colour(0xFF1B5E20);
+            if (playing && !muted) fillCol = juce::Colour(0xFF4CAF50);
+            g.setColour(fillCol);
+            g.fillRoundedRectangle((float)trackX, (float)(faderY + faderH - fillH),
+                                    (float)trackW, (float)fillH, 3.0f);
+        }
+
+        // Fader cap (horizontal bar at current level)
+        int capY = faderY + faderH - fillH;
+        g.setColour(sel ? juce::Colour(0xFFFFFFFF) : juce::Colour(0xFFAAAAAA));
+        g.fillRoundedRectangle((float)(cx - 14), (float)(capY - 4), 28.0f, 8.0f, 3.0f);
+
+        // Selected indicator
+        if (sel) {
+            g.setColour(juce::Colour(kTabActive));
+            g.fillRect(cx - 14, faderY + faderH + 10, 28, 3);
+        }
+
+        // Pad number
+        g.setColour(sel ? juce::Colour(0xFFFFFFFF) : juce::Colour(0xFF888888));
+        g.setFont(sel ? 20.0f : 16.0f);
+        g.drawText(juce::String(pad + 1), cx - 14, faderY + faderH + 16, 28, 20,
+                   juce::Justification::centred);
+
+        // Volume percentage
+        g.setColour(juce::Colour(muted ? 0xFF993333 : 0xFFCCCCCC));
+        g.setFont(14.0f);
+        juce::String volStr = muted ? "MUTE" : juce::String((int)(vol * 100)) + "%";
+        g.drawText(volStr, cx - 24, faderY - 20, 48, 16, juce::Justification::centred);
+    }
+
+    // Footer
+    g.setColour(juce::Colour(0x44FFFFFF));
+    g.setFont(13.0f);
+    g.drawText("Enc0: select pad    Enc1: volume    Down/LS: close",
+               box.getX(), box.getBottom() - 22, box.getWidth(), 18,
+               juce::Justification::centred);
 }
 
 } // namespace grid

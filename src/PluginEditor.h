@@ -13,6 +13,8 @@ public:
     explicit PluginEditor(PluginProcessor& p);
     ~PluginEditor() override;
 
+    static constexpr const char* kFirmwareVersion = "2.4.2-beta";
+
     void paint(juce::Graphics&) override;
     void resized() override;
     void timerCallback() override;
@@ -202,6 +204,47 @@ private:
     void enterSliceEditor();
     void exitSliceEditor();
     void paintSliceEditor(juce::Graphics& g, juce::Rectangle<int> area);
+
+    // ── Mod Editor (popup overlay on MOD page) ──────────────────────────
+    bool modEditorOpen_ = false;
+    int  modEditorSlot_ = 0;   // which mod (0/1/2) opened the editor
+    int  modEditorRow_ = 0;    // 0 = steps 1-8, 1 = steps 9-16
+    void paintModEditor(juce::Graphics& g, juce::Rectangle<int> area);
+
+    // ── Compressor Editor (popup overlay) ───────────────────────────────
+    bool compEditorOpen_ = false;
+    int  compEditorRow_ = 0;   // 0 = THR/RAT/ATK/REL, 1 = MUP/MIX/SCF/PWR
+    static constexpr int kCompScopeLen = 200;
+    float compScopePeak_[kCompScopeLen] = {};  // input peak history (0-1)
+    float compScopeGR_[kCompScopeLen] = {};    // GR history (dB, 0-24)
+    // Per-param animation phase (driven from time + real envelope data)
+    float compIconEnv_[8] = {};   // general env/pulse per cell
+    void enterCompEditor();
+    void exitCompEditor();
+    void paintCompEditor(juce::Graphics& g, juce::Rectangle<int> area);
+    void compEditorEncoderTurn(int enc, float delta);
+    void compScopePush(float peakLin, float grDb);  // shifts history left
+    // Param-specific icon painters (each cell)
+    void paintCompIconThreshold(juce::Graphics& g, int cx, int cy, int cellH, float animPhase);
+    void paintCompIconRatio    (juce::Graphics& g, int cx, int cy, int cellH);
+    void paintCompIconAttack   (juce::Graphics& g, int cx, int cy, int cellH, float animPhase);
+    void paintCompIconRelease  (juce::Graphics& g, int cx, int cy, int cellH, float animPhase);
+    void paintCompIconMakeup   (juce::Graphics& g, int cx, int cy, int cellH);
+    void paintCompIconMix      (juce::Graphics& g, int cx, int cy, int cellH);
+    void paintCompIconSCFilter (juce::Graphics& g, int cx, int cy, int cellH);
+    void paintCompIconLowCut   (juce::Graphics& g, int cx, int cy, int cellH);
+
+    // ── Mixer Popup (all 8 pad volumes in one view) ─────────────────────
+    bool mixerOpen_ = false;
+    int  mixerPad_ = 0;  // selected pad
+    void enterMixer();
+    void exitMixer();
+    void paintMixer(juce::Graphics& g, juce::Rectangle<int> area);
+
+    // Browser font size helper — applies global adjustment
+    float bFont(float base) const {
+        return juce::jlimit(10.0f, 32.0f, base + processor_.getBrowserFontAdj());
+    }
 
     // ── Slice visual effects (arcade-style) ─────────────────────────────
     // Splice impact animation

@@ -166,6 +166,9 @@ private:
     bool debugMsgs_ = false;
     float encoderSpeed_ = 1.0f;
     float muteFadeMs_ = 0.0f;   // 0 = instant mute/unmute
+    bool  progChangeEnabled_ = false;  // respond to MIDI program change for kit switching
+    int   progChangeCC_ = 0;           // 0 = use program change msg, 1-127 = use this CC instead
+    float browserFontSize_ = 0.0f;     // 0 = default, -3..+3 adjustment in 0.5 steps
     int sliceCVPad_[2] = { 0, 1 };  // which pad each Slice CV controls (-1=OFF, 0-7=pad)
 
     // Bus compressor (feedback topology, dual-time-constant release, soft knee)
@@ -182,6 +185,25 @@ private:
     float compDrive_     = 1.03f;  // subtle output saturation (1.0=off, 1.05=warm)
     float compGainReductionDb_ = 0.0f;  // current GR for visualization
     bool  compShowGR_    = false;  // show GR overlay on pads
+    float compMix_       = 1.0f;   // 0.0=dry, 1.0=fully compressed (parallel comp)
+
+    // Display: peak input level for compressor scope (updated each processBlock)
+    float compDisplayInputPeak_ = 0.0f;
+
+    // Output low-cut HPF (end-of-chain utility, 4th order Butterworth -24dB/oct)
+    int outputHpfHz_ = 0;  // 0=OFF, 20/25/30/40/50
+    int hpfLastHz_ = -1;
+    struct BiquadCoeffs { float b0=1,b1=0,b2=0,a1=0,a2=0; };
+    struct BiquadState { float x1=0,x2=0,y1=0,y2=0; };
+    BiquadCoeffs hpfSections_[2];
+    BiquadState hpfL_[2], hpfR_[2];
+    void updateOutputHpfCoeffs();
+
+public:
+    float getCompDisplayInputPeak() const { return compDisplayInputPeak_; }
+    int   getOutputHpfHz() const     { return outputHpfHz_; }
+    void  setOutputHpfHz(int hz)     { outputHpfHz_ = juce::jlimit(0, 60, hz); }
+private:
     float transSensitivity_ = 0.3f;  // transient detection sensitivity (0.1=more, 1.0=fewer)
 
     // Envelope state (dual-time-constant)
@@ -219,6 +241,12 @@ public:
     void setEncoderSpeed(float s) { encoderSpeed_ = juce::jlimit(1.0f, 3.0f, s); }
     float getMuteFadeMs() const { return muteFadeMs_; }
     void setMuteFadeMs(float ms) { muteFadeMs_ = juce::jlimit(0.0f, 500.0f, ms); engine_.setMuteFadeMs(ms); }
+    bool getProgChangeEnabled() const { return progChangeEnabled_; }
+    void setProgChangeEnabled(bool b) { progChangeEnabled_ = b; }
+    int  getProgChangeCC() const { return progChangeCC_; }
+    void setProgChangeCC(int cc) { progChangeCC_ = juce::jlimit(0, 127, cc); }
+    float getBrowserFontAdj() const { return browserFontSize_; }
+    void  setBrowserFontAdj(float adj) { browserFontSize_ = juce::jlimit(-3.0f, 3.0f, adj); }
     int getSliceCVPad(int cv) const { return sliceCVPad_[juce::jlimit(0, 1, cv)]; }
     void setSliceCVPad(int cv, int pad) { sliceCVPad_[juce::jlimit(0, 1, cv)] = juce::jlimit(-1, 7, pad); }
 
@@ -228,7 +256,7 @@ public:
     float getCompThreshDb() const    { return compThreshDb_; }
     void  setCompThreshDb(float db)  { compThreshDb_ = juce::jlimit(-60.0f, 0.0f, db); }
     float getCompRatio() const       { return compRatio_; }
-    void  setCompRatio(float r)      { compRatio_ = juce::jlimit(1.0f, 20.0f, r); }
+    void  setCompRatio(float r)      { compRatio_ = juce::jlimit(1.5f, 20.0f, r); }
     float getCompAttackMs() const    { return compAttackMs_; }
     void  setCompAttackMs(float ms)  { compAttackMs_ = juce::jlimit(0.1f, 100.0f, ms); }
     float getCompReleaseMs() const   { return compReleaseMs_; }
@@ -248,6 +276,8 @@ public:
     float getCompGainReductionDb() const { return compGainReductionDb_; }
     bool  getCompShowGR() const      { return compShowGR_; }
     void  setCompShowGR(bool b)      { compShowGR_ = b; }
+    float getCompMix() const         { return compMix_; }
+    void  setCompMix(float m)        { compMix_ = juce::jlimit(0.0f, 1.0f, m); }
     float getTransSensitivity() const { return transSensitivity_; }
     void  setTransSensitivity(float s) { transSensitivity_ = juce::jlimit(0.05f, 1.0f, s); }
     void rebootPlugin();
@@ -277,9 +307,25 @@ public:
     juce::File getKitsDir() const;
     juce::File getStacksDir() const;
     juce::Array<juce::File> getAvailableKits() const;
+    void loadKitByIndex(int index);
     void createStackFile(const juce::String& name, const juce::StringArray& layerPaths);
+
+    // Autosave: periodically writes state XML to disk (no WAV, lightweight)
+    void performAutosave();
+    void loadAutosave();
+    juce::File getAutosaveFile() const;
+    void tickAutosave() {
+        if (++autosaveFrameCount_ >= kAutosaveIntervalFrames) {
+            autosaveFrameCount_ = 0;
+            performAutosave();
+        }
+    }
+
 private:
-    juce::String currentKitName_ = "Untitled";
+    juce::String currentKitName_ = "Autosave";
+    double lastAutosaveMs_ = 0.0;
+    int autosaveFrameCount_ = 0;
+    static constexpr int kAutosaveIntervalFrames = 150;  // ~5 sec at 30fps
 
     // MIDI state (direct device access, Bear's pattern)
     std::unique_ptr<juce::MidiInput> midiInDevice_;

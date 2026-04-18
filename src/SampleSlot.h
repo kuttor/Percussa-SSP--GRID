@@ -413,6 +413,9 @@ public:
         int deleteLen = sampEnd - sampStart;
         if (deleteLen <= 0 || deleteLen >= ns) return false;
 
+        // Guard: stop audio thread from reading during buffer splice
+        loading_.store(true, std::memory_order_release);
+
         int newLen = ns - deleteLen;
         auto& curBuf = buffers_[activeBuffer_.load(std::memory_order_acquire)];
         int numCh = curBuf.getNumChannels();
@@ -462,6 +465,8 @@ public:
 
         cursorPos = (float)sampStart / (float)newLen;
         cursorPos = juce::jlimit(0.0f, 1.0f, cursorPos);
+
+        loading_.store(false, std::memory_order_release);
         return true;
     }
 
@@ -484,6 +489,7 @@ public:
 
     // Voice access (for UI display)
     const Voice& getVoice(int i) const { return voices_[juce::jlimit(0, kMaxVoices - 1, i)]; }
+    Voice& getVoice(int i) { return voices_[juce::jlimit(0, kMaxVoices - 1, i)]; }
     int getActiveVoiceCount() const;
 
 private:
@@ -556,6 +562,18 @@ private:
     LofiMode lofiMode_ = LofiMode::Off;
     float lofiPhaseL_ = 0.0f, lofiPhaseR_ = 0.0f;
     float lofiHeldL_ = 0.0f, lofiHeldR_ = 0.0f;
+
+    // Step modulation (MOD tab) — 3 independent mod slots per pad
+    static constexpr int kModSlots = 3;
+    PadMod mods_[kModSlots];
+    juce::Random modRng_;
+public:
+    PadMod&       getMod(int slot)       { return mods_[juce::jlimit(0, kModSlots - 1, slot)]; }
+    const PadMod& getMod(int slot) const { return mods_[juce::jlimit(0, kModSlots - 1, slot)]; }
+
+    // Called on trigger — advances all enabled mods, returns per-slot amounts
+    float advanceMod(int slot) { return mods_[juce::jlimit(0, kModSlots - 1, slot)].advance(modRng_); }
+private:
 
     // LPG (Buchla-style Low Pass Gate) — vactrol envelope + one-pole filter + VCA
     float lpgVactrol_    = 0.0f;  // vactrol excitation [0..1]

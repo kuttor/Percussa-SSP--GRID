@@ -85,7 +85,7 @@ inline const char* outputBusName(int i) {
 static constexpr float kTrigThreshold = 0.2f;
 
 // -- Pages --
-enum Page { PAGE_OVERVIEW = 0, PAGE_SAMPLE, PAGE_PLAY, PAGE_PITCH, PAGE_FADE, PAGE_FILTER, PAGE_MIDI, PAGE_OPTIONS };
+enum Page { PAGE_OVERVIEW = 0, PAGE_SAMPLE, PAGE_PLAY, PAGE_PITCH, PAGE_FADE, PAGE_FILTER, PAGE_MIDI, PAGE_MOD };
 
 // -- Per-pad modes --
 enum class PadMode { OneShot = 0, Loop, ClockedLoop, ClockedOneShot };
@@ -107,6 +107,111 @@ enum class ChokeGroup { None = 0, A, B, C, D, E, F, G, H };
 
 // -- Performance mode (muting + preset switching) --
 enum class PerfMode { Immediate = 0, OnRelease, OnBar };
+
+// -- Mod target --
+enum class ModTarget { Velocity = 0, Pitch, Start, End, Filter, Pan, Stretch, kCount };
+
+inline const char* modTargetName(ModTarget t) {
+    static const char* names[] = { "VELOCITY", "PITCH", "START", "END", "FILTER", "PAN", "STRETCH" };
+    return names[std::min((int)t, (int)ModTarget::kCount - 1)];
+}
+
+// -- Mod action --
+enum class ModAction { Increase = 0, PingPong, Decrease, Random, SampleHold, kCount };
+
+inline const char* modActionName(ModAction a) {
+    static const char* names[] = { "INCREASE", "PING/PONG", "DECREASE", "RANDOM", "S/HOLD" };
+    return names[std::min((int)a, (int)ModAction::kCount - 1)];
+}
+
+// -- Per-pad step modulation --
+static constexpr int kModSteps = 16;
+static constexpr int kModPresets = 10;
+
+struct ModPreset {
+    ModTarget target   = ModTarget::Velocity;
+    ModAction action   = ModAction::Increase;
+    float     strength = 0.5f;
+    bool      steps[kModSteps] = {};
+};
+
+struct PadMod {
+    bool      enabled  = false;
+    ModTarget target   = ModTarget::Velocity;
+    ModAction action   = ModAction::Increase;
+    float     strength = 0.5f;   // 0..1
+    bool      steps[kModSteps] = {};  // which steps fire
+    int       currentStep = 0;   // advances on trigger
+    bool      pingDir = true;    // true = ascending for PingPong
+    float     shHeld = 0.0f;    // sample/hold last value
+    int       activePreset = 0;  // 0 = OFF, 1-10 = preset slot
+
+    ModPreset presets[kModPresets];
+
+    void saveToPreset(int slot) {
+        if (slot < 0 || slot >= kModPresets) return;
+        auto& p = presets[slot];
+        p.target = target; p.action = action;
+        p.strength = strength;
+        for (int i = 0; i < kModSteps; ++i) p.steps[i] = steps[i];
+    }
+
+    void loadFromPreset(int slot) {
+        if (slot < 0 || slot >= kModPresets) return;
+        const auto& p = presets[slot];
+        target = p.target; action = p.action;
+        strength = p.strength;
+        for (int i = 0; i < kModSteps; ++i) steps[i] = p.steps[i];
+        currentStep = 0;
+    }
+
+    // Advance step counter, return mod amount for this hit (-1..1 range)
+    float advance(juce::Random& rng) {
+        if (!enabled) return 0.0f;
+
+        float s = strength;
+
+        if (action == ModAction::SampleHold) {
+            // S/Hold: advance one step every trigger, only regenerate on active steps
+            currentStep = (currentStep + 1) % kModSteps;
+            if (steps[currentStep])
+                shHeld = (rng.nextFloat() * 2.0f - 1.0f) * s;
+            return shHeld;  // hold last value on inactive steps
+        }
+
+        // All other modes: find next active step
+        int searched = 0;
+        while (searched < kModSteps) {
+            currentStep = (currentStep + 1) % kModSteps;
+            searched++;
+            if (steps[currentStep]) break;
+        }
+        if (searched >= kModSteps) return 0.0f;  // no active steps
+
+        switch (action) {
+            case ModAction::Increase:
+                return s;
+            case ModAction::Decrease:
+                return -s;
+            case ModAction::PingPong: {
+                float val = pingDir ? s : -s;
+                pingDir = !pingDir;
+                return val;
+            }
+            case ModAction::Random:
+                return (rng.nextFloat() * 2.0f - 1.0f) * s;
+            default:
+                return 0.0f;
+        }
+    }
+
+    int activeStepCount() const {
+        int c = 0;
+        for (int i = 0; i < kModSteps; ++i)
+            if (steps[i]) c++;
+        return c;
+    }
+};
 
 // -- Per-pad CC map (default CC assignments) --
 struct PadCCMap {

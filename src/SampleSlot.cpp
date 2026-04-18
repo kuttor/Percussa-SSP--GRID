@@ -508,6 +508,7 @@ void SampleSlot::processVoice(Voice& v, float* outL, float* outR, int numSamples
                         newPos += offset;
                     }
                 }
+                newPos = juce::jlimit((double)startSample, std::max((double)startSample, (double)endSample - 1.0), newPos);
                 v.grainPos[0] = newPos;
             }
             if (v.grainCounter == halfGrain) {
@@ -520,6 +521,7 @@ void SampleSlot::processVoice(Voice& v, float* outL, float* outR, int numSamples
                         newPos += offset;
                     }
                 }
+                newPos = juce::jlimit((double)startSample, std::max((double)startSample, (double)endSample - 1.0), newPos);
                 v.grainPos[1] = newPos;
             }
 

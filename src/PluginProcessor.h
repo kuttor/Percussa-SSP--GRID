@@ -209,8 +209,6 @@ private:
     // Envelope state (dual-time-constant)
     float compEnvFast_ = 0.0f;     // fast release envelope
     float compEnvSlow_ = 0.0f;     // slow release envelope
-    float compPrevOutL_ = 0.0f;    // feedback: previous output sample
-    float compPrevOutR_ = 0.0f;
 
     // Sidechain HPF state (2nd order Butterworth)
     float scHpfX1_ = 0.0f, scHpfX2_ = 0.0f;
@@ -246,7 +244,7 @@ public:
     int  getProgChangeCC() const { return progChangeCC_; }
     void setProgChangeCC(int cc) { progChangeCC_ = juce::jlimit(0, 127, cc); }
     float getBrowserFontAdj() const { return browserFontSize_; }
-    void  setBrowserFontAdj(float adj) { browserFontSize_ = juce::jlimit(-3.0f, 3.0f, adj); }
+    void  setBrowserFontAdj(float adj) { browserFontSize_ = juce::jlimit(-3.0f, 5.0f, adj); }
     int getSliceCVPad(int cv) const { return sliceCVPad_[juce::jlimit(0, 1, cv)]; }
     void setSliceCVPad(int cv, int pad) { sliceCVPad_[juce::jlimit(0, 1, cv)] = juce::jlimit(-1, 7, pad); }
 
@@ -293,6 +291,7 @@ public:
         int count = 0;
     };
     std::map<juce::String, SliceCache> sliceCache_;
+    juce::CriticalSection sliceCacheLock_;  // protects sliceCache_ from host/GUI thread races
     void cacheSlicesForPad(int pad);
     bool restoreCachedSlices(int pad);
 private:
@@ -300,6 +299,7 @@ private:
     // Kit/Stack management
 public:
     juce::String getCurrentKitName() const { return currentKitName_; }
+    void setCurrentKitName(const juce::String& name) { currentKitName_ = name; }
     void saveCurrentAsKit(const juce::String& name);
     void loadKit(const juce::File& kitFile);
     KitData captureCurrentState() const;
@@ -315,17 +315,33 @@ public:
     void loadAutosave();
     juce::File getAutosaveFile() const;
     void tickAutosave() {
+        if (!autosaveEnabled_) return;
+        if (!stateDirty_) return;
         if (++autosaveFrameCount_ >= kAutosaveIntervalFrames) {
             autosaveFrameCount_ = 0;
             performAutosave();
+            stateDirty_ = false;
         }
     }
+    bool getAutosaveEnabled() const { return autosaveEnabled_; }
+    void setAutosaveEnabled(bool b) { autosaveEnabled_ = b; }
+    void markStateDirty() { stateDirty_ = true; }
+
+    // Recall point: single in-memory snapshot for instant restore
+    void setRecallPoint();
+    bool restoreRecallPoint();
+    bool hasRecallPoint() const { return recallPointSet_; }
 
 private:
     juce::String currentKitName_ = "Autosave";
-    double lastAutosaveMs_ = 0.0;
     int autosaveFrameCount_ = 0;
     static constexpr int kAutosaveIntervalFrames = 150;  // ~5 sec at 30fps
+    bool autosaveEnabled_ = true;
+    bool stateDirty_ = true;  // starts true to save initial state
+
+    // Recall point (RAM snapshot)
+    bool recallPointSet_ = false;
+    juce::MemoryBlock recallPointData_;
 
     // MIDI state (direct device access, Bear's pattern)
     std::unique_ptr<juce::MidiInput> midiInDevice_;

@@ -44,6 +44,7 @@ bool SampleSlot::loadFile(const juce::File& file)
     endPos_ = 1.0f;
     numSamples_.store(newSamples, std::memory_order_release);
 
+    computeOverview();
     loading_.store(false, std::memory_order_release);
     return true;
 }
@@ -76,6 +77,7 @@ bool SampleSlot::loadFromBuffer(const juce::AudioBuffer<float>& src, int numSamp
     endPos_ = 1.0f;
     numSamples_.store(numSamps, std::memory_order_release);
 
+    computeOverview();
     loading_.store(false, std::memory_order_release);
     return true;
 }
@@ -99,6 +101,7 @@ void SampleSlot::clear()
     clearSlices();
     startPos_ = 0.0f;
     endPos_ = 1.0f;
+    overviewReady_ = false;
 
     loading_.store(false, std::memory_order_release);
 }
@@ -278,13 +281,22 @@ float SampleSlot::getPlaybackPosition() const
 
 float SampleSlot::readInterpolated(const float* src, double pos, int limit) const
 {
-    int i0 = static_cast<int>(pos);
-    if (i0 < 0) i0 = 0;
-    if (i0 >= limit) i0 = limit - 1;
-    int i1 = i0 + 1;
-    if (i1 >= limit) i1 = i0;
-    float frac = static_cast<float>(pos - i0);
-    return src[i0] + frac * (src[i1] - src[i0]);
+    int i1 = static_cast<int>(pos);
+    if (i1 < 0) i1 = 0;
+    if (i1 >= limit) i1 = limit - 1;
+    float frac = static_cast<float>(pos - i1);
+
+    // 4-point Hermite interpolation (dramatically cleaner than linear for pitched playback)
+    int i0 = (i1 > 0) ? i1 - 1 : i1;
+    int i2 = (i1 + 1 < limit) ? i1 + 1 : i1;
+    int i3 = (i1 + 2 < limit) ? i1 + 2 : i2;
+
+    float y0 = src[i0], y1 = src[i1], y2 = src[i2], y3 = src[i3];
+    float c0 = y1;
+    float c1 = 0.5f * (y2 - y0);
+    float c2 = y0 - 2.5f * y1 + 2.0f * y2 - 0.5f * y3;
+    float c3 = 0.5f * (y3 - y0) + 1.5f * (y1 - y2);
+    return ((c3 * frac + c2) * frac + c1) * frac + c0;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -463,8 +475,10 @@ void SampleSlot::processVoice(Voice& v, float* outL, float* outR, int numSamples
         if (!useGranular)
         {
             int idx = static_cast<int>(v.readPosition);
+            bool isLoop = (mode_ == PadMode::Loop || mode_ == PadMode::ClockedLoop);
+
             if (idx >= endSample || idx >= ns) {
-                if (mode_ == PadMode::Loop || mode_ == PadMode::ClockedLoop) {
+                if (isLoop) {
                     v.readPosition = static_cast<double>(startSample);
                     idx = startSample;
                 } else {
@@ -474,6 +488,20 @@ void SampleSlot::processVoice(Voice& v, float* outL, float* outR, int numSamples
             }
             sL = readInterpolated(srcL, v.readPosition, ns);
             sR = readInterpolated(srcR, v.readPosition, ns);
+
+            // Loop crossfade: blend with start of loop when approaching end
+            if (isLoop && regionLen > kLoopXfadeSamples * 2) {
+                int distToEnd = endSample - idx;
+                if (distToEnd > 0 && distToEnd < kLoopXfadeSamples) {
+                    float xfade = (float)distToEnd / (float)kLoopXfadeSamples;
+                    double loopPos = (double)startSample + (double)(kLoopXfadeSamples - distToEnd);
+                    float xL = readInterpolated(srcL, loopPos, ns);
+                    float xR = readInterpolated(srcR, loopPos, ns);
+                    sL = sL * xfade + xL * (1.0f - xfade);
+                    sR = sR * xfade + xR * (1.0f - xfade);
+                }
+            }
+
             v.readPosition += rateStep;
             v.sourcePos = v.readPosition;
         }
@@ -705,6 +733,30 @@ float SampleSlot::lpgStepEnvelope()
     lpgMemory_ *= 0.99995f;
 
     return lpgVactrol_;
+}
+
+void SampleSlot::computeOverview()
+{
+    overviewReady_ = false;
+    int ns = numSamples_.load(std::memory_order_acquire);
+    if (ns <= 0) return;
+
+    int active = activeBuffer_.load(std::memory_order_acquire);
+    const float* data = buffers_[active].getReadPointer(0);
+
+    for (int b = 0; b < kOverviewBuckets; ++b) {
+        int s0 = (b * ns) / kOverviewBuckets;
+        int s1 = ((b + 1) * ns) / kOverviewBuckets;
+        s1 = std::min(s1, ns);
+        float mn = 0.0f, mx = 0.0f;
+        for (int s = s0; s < s1; ++s) {
+            if (data[s] < mn) mn = data[s];
+            if (data[s] > mx) mx = data[s];
+        }
+        overviewMin_[b] = mn;
+        overviewMax_[b] = mx;
+    }
+    overviewReady_ = true;
 }
 
 } // namespace grid

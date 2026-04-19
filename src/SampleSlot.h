@@ -157,6 +157,8 @@ public:
     // Compressor send (0.0 = dry, 1.0 = full send to bus compressor)
     void setCompSend(float s)            { compSend_ = juce::jlimit(0.0f, 1.0f, s); }
     float getCompSend() const            { return compSend_; }
+    void setCompBypass(bool b)           { compBypass_ = b; }
+    bool getCompBypass() const           { return compBypass_; }
 
     // Output routing
     int getOutputChannel() const         { return outputChannel_; }
@@ -512,6 +514,7 @@ private:
 
     // Anti-click envelope
     static constexpr int kFadeSamples = 64;   // ~1.3ms at 48kHz crossfade
+    static constexpr int kLoopXfadeSamples = 128; // ~2.7ms loop boundary crossfade
     static constexpr int kRetriggerGuard = 64;  // ~1.3ms at 48kHz
     int samplesSinceLastTrigger_ = 99999;
 
@@ -597,6 +600,7 @@ private:
     // Pitch quantize mode
     bool pitchQuantize_ = false;
     float compSend_ = 0.0f;  // compressor send amount
+    bool compBypass_ = false;  // true = this pad's audio bypasses the bus compressor
     int outputChannel_ = -1;  // -1 = use default (pad index), 0-7 = specific output
     bool sendToMix_ = true;   // send to stereo mix (L/R)
 
@@ -716,6 +720,18 @@ private:
                             const float* prevTail, int overlapLen) const;
 
     float readInterpolated(const float* src, double pos, int limit) const;
+
+    // Pre-computed waveform overview (computed once on load, used by paint)
+public:
+    static constexpr int kOverviewBuckets = 512;
+    void computeOverview();
+    bool hasOverview() const { return overviewReady_; }
+    float getOverviewMin(int bucket) const { return overviewMin_[bucket]; }
+    float getOverviewMax(int bucket) const { return overviewMax_[bucket]; }
+private:
+    float overviewMin_[kOverviewBuckets] = {};
+    float overviewMax_[kOverviewBuckets] = {};
+    bool overviewReady_ = false;
 
     // Internal: start a specific voice at the sample start position
     void startVoice(Voice& v, float vel);

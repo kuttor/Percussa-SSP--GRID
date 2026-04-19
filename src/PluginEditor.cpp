@@ -258,12 +258,25 @@ void PluginEditor::paint(juce::Graphics& g)
     // ── Kit name (right side of encoder bar, tight vertical padding) ──
     {
         juce::String kitName = processor_.getCurrentKitName();
-        // Encoder 0 slot roughly occupies 0..~200px. Kit name anchors on right side.
-        g.setColour(juce::Colour(0xFFEEEEEE));
-        g.setFont(juce::Font(20.0f, juce::Font::bold));
-        // Drop a tight vertical band inside the encoder bar: 6px top/bottom padding
         int bandY = encY + 6;
         int bandH = kEncoderBarH - 12;
+
+        // Recall point indicator (pill left of kit name)
+        if (processor_.hasRecallPoint()) {
+            int pillW = 52, pillH = kEncoderBarH - 4;
+            int pillX = w - 330 - pillW - 8;
+            int pillY = encY + 2;
+            g.setColour(juce::Colour(0xFF1A1A1A));
+            g.fillRoundedRectangle((float)pillX, (float)pillY, (float)pillW, (float)pillH, 6.0f);
+            g.setColour(juce::Colour(kTabActive).withAlpha(0.6f));
+            g.drawRoundedRectangle((float)pillX, (float)pillY, (float)pillW, (float)pillH, 6.0f, 1.5f);
+            g.setColour(juce::Colour(kTabActive));
+            g.setFont(17.0f);
+            g.drawText("RCL", pillX, pillY, pillW, pillH, juce::Justification::centred);
+        }
+
+        g.setColour(juce::Colour(0xFFEEEEEE));
+        g.setFont(juce::Font(20.0f, juce::Font::bold));
         g.drawText(kitName, w - 320, bandY, 310, bandH,
                    juce::Justification::centredRight);
     }
@@ -780,7 +793,16 @@ void PluginEditor::paintMiniWaveform(juce::Graphics& g, juce::Rectangle<int> are
         }
 
         float mn = 0, mx = 0;
-        for (int s = s0; s < s1; ++s) { if (data[s] < mn) mn = data[s]; if (data[s] > mx) mx = data[s]; }
+        if (slot.hasOverview()) {
+            int b0 = juce::jlimit(0, SampleSlot::kOverviewBuckets - 1, (s0 * SampleSlot::kOverviewBuckets) / total);
+            int b1 = juce::jlimit(b0, SampleSlot::kOverviewBuckets - 1, (s1 * SampleSlot::kOverviewBuckets) / total);
+            for (int b = b0; b <= b1; ++b) {
+                if (slot.getOverviewMin(b) < mn) mn = slot.getOverviewMin(b);
+                if (slot.getOverviewMax(b) > mx) mx = slot.getOverviewMax(b);
+            }
+        } else {
+            for (int s = s0; s < s1; ++s) { if (data[s] < mn) mn = data[s]; if (data[s] > mx) mx = data[s]; }
+        }
 
         float peak = std::max(std::abs(mx), std::abs(mn));
         juce::Colour col;
@@ -1263,11 +1285,11 @@ void PluginEditor::paintFileBrowser(juce::Graphics& g, juce::Rectangle<int> area
         g.drawText(displayName, row.getX() + nameOffset, row.getY(), nameW - nameOffset + 8, rowH,
                    juce::Justification::centredLeft);
 
-        // File specs (right-aligned): "1.2s 48k St"
+        // File specs (right-aligned): "1.2s 48k Stereo"
         if (!isDir && idx < browseItemDurations_.size() && browseItemDurations_[idx].isNotEmpty()) {
             juce::String info = browseItemDurations_[idx];
-            g.setColour(sel ? juce::Colour(0xFFFFFFFF) : juce::Colour(0xFF999999));
-            g.setFont(bFont(17.0f));
+            g.setColour(sel ? juce::Colour(0xFFFFFFFF) : juce::Colour(0xFFAAAAAA));
+            g.setFont(bFont(20.0f));
             g.drawText(info, row.getX(), row.getY(), row.getWidth() - 8, rowH,
                        juce::Justification::centredRight);
         }
@@ -1312,14 +1334,19 @@ void PluginEditor::browseScanCurrentDir()
     if (!browseCurrentDir_.isDirectory()) return;
     auto dirs = browseCurrentDir_.findChildFiles(juce::File::findDirectories, false); dirs.sort();
     for (auto& d : dirs) {
+        // Skip hidden directories (macOS .Spotlight, .Trashes, etc)
+        if (d.getFileName().startsWithChar('.')) continue;
         browseItems_.add(d);
         browseItemNames_.add("[" + d.getFileName() + "]");
         browseItemDurations_.add("");
     }
     auto files = browseCurrentDir_.findChildFiles(juce::File::findFiles, false, "*.wav;*.WAV;*.aif;*.aiff;*.AIF;*.AIFF"); files.sort();
     for (auto& f : files) {
+        // Skip macOS resource fork files (._filename) and .DS_Store
+        auto name = f.getFileName();
+        if (name.startsWith("._") || name == ".DS_Store") continue;
         browseItems_.add(f);
-        browseItemNames_.add(f.getFileName());
+        browseItemNames_.add(name);
         // Get properties from file header
         juce::String info;
         if (auto* reader = browseFormatMgr_.createReaderFor(f)) {
@@ -1401,6 +1428,50 @@ void PluginEditor::browseGoHome()
 
     juce::File samplesDir(processor_.getSampleRootPath());
 
+    // ── SAMPLES section (most used — first) ──
+    browseItems_.add(juce::File());
+    browseItemNames_.add("__HDR__SAMPLES");
+    browseItemDurations_.add("__HDR__");
+
+    if (samplesDir.isDirectory()) {
+        auto dirs = samplesDir.findChildFiles(juce::File::findDirectories, false);
+        dirs.sort();
+        for (auto& d : dirs) {
+            auto name = d.getFileName();
+            // Skip special folders (they get their own sections below)
+            auto lower = name.toLowerCase();
+            if (lower == "kits" || lower == "stacks" || lower == "recordings") continue;
+            // Skip hidden directories
+            if (name.startsWithChar('.')) continue;
+            browseItems_.add(d);
+            browseItemNames_.add("[" + name + "]");
+            browseItemDurations_.add("");
+        }
+        auto files = samplesDir.findChildFiles(juce::File::findFiles, false, "*.wav;*.WAV;*.aif;*.aiff;*.AIF;*.AIFF");
+        files.sort();
+        for (auto& f : files) {
+            auto name = f.getFileName();
+            if (name.startsWith("._") || name == ".DS_Store") continue;
+            browseItems_.add(f);
+            browseItemNames_.add(name);
+            juce::String info;
+            if (auto* reader = browseFormatMgr_.createReaderFor(f)) {
+                double secs = (double)reader->lengthInSamples / reader->sampleRate;
+                if (secs < 1.0)
+                    info = juce::String((int)(secs * 1000)) + "ms";
+                else if (secs < 60.0)
+                    info = juce::String(secs, 1) + "s";
+                else
+                    info = juce::String((int)(secs / 60)) + ":" + juce::String((int)secs % 60).paddedLeft('0', 2);
+                int sr = (int)reader->sampleRate;
+                if (sr >= 1000) info += "   " + juce::String(sr / 1000) + "k";
+                info += "   " + juce::String(reader->numChannels > 1 ? "Stereo" : "Mono");
+                delete reader;
+            }
+            browseItemDurations_.add(info);
+        }
+    }
+
     // ── KITS section ──
     browseItems_.add(juce::File());
     browseItemNames_.add("__HDR__KITS");
@@ -1438,46 +1509,6 @@ void PluginEditor::browseGoHome()
         browseItems_.add(recDir);
         browseItemNames_.add("[recordings]");
         browseItemDurations_.add("");
-    }
-
-    // ── SAMPLES section ──
-    browseItems_.add(juce::File());
-    browseItemNames_.add("__HDR__SAMPLES");
-    browseItemDurations_.add("__HDR__");
-
-    // Show root sample folders and files
-    if (samplesDir.isDirectory()) {
-        auto dirs = samplesDir.findChildFiles(juce::File::findDirectories, false);
-        dirs.sort();
-        for (auto& d : dirs) {
-            // Skip kits/stacks/recordings since they're in their own sections
-            auto name = d.getFileName().toLowerCase();
-            if (name == "kits" || name == "stacks" || name == "recordings") continue;
-            browseItems_.add(d);
-            browseItemNames_.add("[" + d.getFileName() + "]");
-            browseItemDurations_.add("");
-        }
-        auto files = samplesDir.findChildFiles(juce::File::findFiles, false, "*.wav;*.WAV;*.aif;*.aiff;*.AIF;*.AIFF");
-        files.sort();
-        for (auto& f : files) {
-            browseItems_.add(f);
-            browseItemNames_.add(f.getFileName());
-            juce::String info;
-            if (auto* reader = browseFormatMgr_.createReaderFor(f)) {
-                double secs = (double)reader->lengthInSamples / reader->sampleRate;
-                if (secs < 1.0)
-                    info = juce::String((int)(secs * 1000)) + "ms";
-                else if (secs < 60.0)
-                    info = juce::String(secs, 1) + "s";
-                else
-                    info = juce::String((int)(secs / 60)) + ":" + juce::String((int)secs % 60).paddedLeft('0', 2);
-                int sr = (int)reader->sampleRate;
-                if (sr >= 1000) info += "   " + juce::String(sr / 1000) + "k";
-                info += "   " + juce::String(reader->numChannels > 1 ? "Stereo" : "Mono");
-                delete reader;
-            }
-            browseItemDurations_.add(info);
-        }
     }
 
     // Clear Pad action
@@ -1916,8 +1947,20 @@ void PluginEditor::timerCallback()
                       processor_.getCompGainReductionDb());
     }
 
-    // Autosave: every ~5 seconds, quietly write state to disk
-    processor_.tickAutosave();
+    // Autosave: only when on the autosave kit (not on named kits)
+    if (kitCurrentIndex_ < 0)
+        processor_.tickAutosave();
+
+    // Arrow repeat for config browser continuous scrolling
+    if (configMode_ && (upArrowHeld_ || downArrowHeld_)) {
+        double now = juce::Time::getMillisecondCounterHiRes();
+        if (now >= arrowRepeatNextMs_) {
+            if (upArrowHeld_ && configIndex_ > 0) { configIndex_--; configEditMode_ = false; }
+            if (downArrowHeld_ && configIndex_ < configSelectableCount() - 1) { configIndex_++; configEditMode_ = false; }
+            arrowRepeatNextMs_ = now + kArrowRepeatRateMs;
+            repaint();
+        }
+    }
 
     // ── Encoder hold detection for browse mode ───────────────────────────
     if (browseMode_) {
@@ -2090,6 +2133,7 @@ void PluginEditor::onButton(int n, bool val)
         processor_.getEngine().triggerWithChoke(n);
     }
     selectedPad_ = n;
+    processor_.markStateDirty();
     repaint();
 }
 
@@ -2140,6 +2184,14 @@ void PluginEditor::onLeftButton(bool val)
     }
     if (modEditorOpen_) {
         modEditorRow_ = (modEditorRow_ == 0) ? 1 : 0;
+        repaint(); return;
+    }
+    // L+R combo: save recall point
+    double nowMs = juce::Time::getMillisecondCounterHiRes();
+    lastLeftArrowMs_ = nowMs;
+    if (nowMs - lastRightArrowMs_ < kComboWindowMs) {
+        processor_.setRecallPoint();
+        processor_.showTickerPublic("Recall point saved");
         repaint(); return;
     }
     int p = currentPage_ - 1;
@@ -2194,6 +2246,14 @@ void PluginEditor::onRightButton(bool val)
         modEditorRow_ = (modEditorRow_ == 0) ? 1 : 0;
         repaint(); return;
     }
+    // L+R combo: save recall point
+    double nowMs = juce::Time::getMillisecondCounterHiRes();
+    lastRightArrowMs_ = nowMs;
+    if (nowMs - lastLeftArrowMs_ < kComboWindowMs) {
+        processor_.setRecallPoint();
+        processor_.showTickerPublic("Recall point saved");
+        repaint(); return;
+    }
     int p = currentPage_ + 1;
     if (p >= kNumPages) p = 0;  // wrap
     switchPage(p);
@@ -2201,7 +2261,9 @@ void PluginEditor::onRightButton(bool val)
 
 void PluginEditor::onUpButton(bool val)
 {
-    if (!val) return;
+    if (!val) { upArrowHeld_ = false; return; }
+    upArrowHeld_ = true;
+    arrowRepeatNextMs_ = juce::Time::getMillisecondCounterHiRes() + kArrowRepeatDelayMs;
     if (keyboardMode_) {
         keyboardRow_ = std::max(0, keyboardRow_ - 1);
         keyboardCol_ = std::min(keyboardCol_, keyboardRowLen(keyboardRow_) - 1);
@@ -2227,15 +2289,38 @@ void PluginEditor::onUpButton(bool val)
         repaint(); return;
     }
 
+    // U+D combo: restore recall point
+    {
+        double nowMs = juce::Time::getMillisecondCounterHiRes();
+        lastUpArrowMs_ = nowMs;
+        if (nowMs - lastDownArrowMs_ < kComboWindowMs) {
+            if (processor_.restoreRecallPoint()) {
+                processor_.showTickerPublic("Recall point restored");
+            } else {
+                processor_.showTickerPublic("No recall point set");
+            }
+            repaint(); return;
+        }
+    }
+
     // Kit switching: up = previous kit (immediate load)
     if (!browseMode_ && !configMode_) {
         refreshAvailableKits();
-        if (availableKits_.isEmpty()) {
-            processor_.showTickerPublic("No saved kits");
+        if (kitCurrentIndex_ <= 0 && kitCurrentIndex_ != -1) {
+            // At first kit — go back to autosave
+            kitCurrentIndex_ = -1;
+            processor_.loadAutosave();
+            processor_.setCurrentKitName("Autosave");
+            processor_.showTickerPublic("Autosave");
+            repaint();
             return;
         }
-        if (kitCurrentIndex_ <= 0) {
-            processor_.showTickerPublic("Already at first kit");
+        if (kitCurrentIndex_ == -1) {
+            if (availableKits_.isEmpty()) {
+                processor_.showTickerPublic("No saved kits");
+            } else {
+                processor_.showTickerPublic("Already at Autosave");
+            }
             return;
         }
         kitCurrentIndex_--;
@@ -2252,7 +2337,9 @@ void PluginEditor::onUpButton(bool val)
 
 void PluginEditor::onDownButton(bool val)
 {
-    if (!val) return;
+    if (!val) { downArrowHeld_ = false; return; }
+    downArrowHeld_ = true;
+    arrowRepeatNextMs_ = juce::Time::getMillisecondCounterHiRes() + kArrowRepeatDelayMs;
     if (keyboardMode_) {
         keyboardRow_ = std::min(3, keyboardRow_ + 1);
         keyboardCol_ = std::min(keyboardCol_, keyboardRowLen(keyboardRow_) - 1);
@@ -2292,6 +2379,20 @@ void PluginEditor::onDownButton(bool val)
         while (browseIndex_ < browseItems_.size() - 1 && browseItemDurations_[browseIndex_] == "__HDR__")
             browseIndex_++;
         repaint(); return;
+    }
+
+    // U+D combo: restore recall point
+    {
+        double nowMs = juce::Time::getMillisecondCounterHiRes();
+        lastDownArrowMs_ = nowMs;
+        if (nowMs - lastUpArrowMs_ < kComboWindowMs) {
+            if (processor_.restoreRecallPoint()) {
+                processor_.showTickerPublic("Recall point restored");
+            } else {
+                processor_.showTickerPublic("No recall point set");
+            }
+            repaint(); return;
+        }
     }
 
     // Kit switching: down = next kit (immediate load)
@@ -2437,6 +2538,18 @@ void PluginEditor::onRightShiftButton(bool val)
         return;
     }
 
+    // Right shift = close comp editor (consistency with mod editor)
+    if (val && compEditorOpen_) {
+        exitCompEditor();
+        return;
+    }
+
+    // Right shift = close mixer
+    if (val && mixerOpen_) {
+        exitMixer();
+        return;
+    }
+
     if (val && leftShiftHeld_) {
         if (configMode_) exitConfigMode();
         else enterConfigMode();
@@ -2526,7 +2639,26 @@ void PluginEditor::onEncoder(int n, float delta)
     // Keyboard: encoder scrolls characters
     if (keyboardMode_) {
         int d = (delta > 0) ? 1 : -1;
-        keyboardCol_ = juce::jlimit(0, keyboardRowLen(keyboardRow_) - 1, keyboardCol_ + d);
+        if (n == 0) {
+            // Left/right with row wrapping
+            int newCol = keyboardCol_ + d;
+            if (newCol >= keyboardRowLen(keyboardRow_)) {
+                // Wrap to next row
+                if (keyboardRow_ < 3) { keyboardRow_++; keyboardCol_ = 0; }
+            } else if (newCol < 0) {
+                // Wrap to previous row
+                if (keyboardRow_ > 0) { keyboardRow_--; keyboardCol_ = keyboardRowLen(keyboardRow_) - 1; }
+            } else {
+                keyboardCol_ = newCol;
+            }
+        } else if (n == 1) {
+            // Up/down rows with wrapping
+            int newRow = keyboardRow_ + d;
+            if (newRow > 3) newRow = 0;
+            if (newRow < 0) newRow = 3;
+            keyboardRow_ = newRow;
+            keyboardCol_ = std::min(keyboardCol_, keyboardRowLen(keyboardRow_) - 1);
+        }
         repaint();
         return;
     }
@@ -2814,6 +2946,7 @@ void PluginEditor::onEncoder(int n, float delta)
             break;
         }
     }
+    processor_.markStateDirty();
 }
 
 void PluginEditor::onEncoderSwitch(int n, bool val)
@@ -2834,10 +2967,73 @@ void PluginEditor::onEncoderSwitch(int n, bool val)
                 return;
             }
 
+            // Keyboard mode: enc0 push = type character (like left shift)
+            if (keyboardMode_ && !encPushHandled_[n] && n == 0 && held < kHoldMs) {
+                keyboardAction();
+                encPushTime_[n] = 0.0;
+                return;
+            }
+
             if (browseMode_ && !encPushHandled_[n]) {
                 if (n == 0 && held < kHoldMs) {
                     if (multiSelectMode_) {
-                        // Finish multi-select
+                        // Enc0 push in multi-select: folder = navigate, file = toggle
+                        if (browseIndex_ >= 0 && browseIndex_ < browseItems_.size()
+                            && browseItemDurations_[browseIndex_] != "__HDR__") {
+                            auto& item = browseItems_.getReference(browseIndex_);
+                            if (item.isDirectory()) {
+                                browseCurrentDir_ = item;
+                                browseScanCurrentDir();
+                            } else {
+                                bool wasSelected = false;
+                                for (int i = 0; i < kNumPads; ++i) {
+                                    if (multiSelected_[i] && multiSelectedIndices_[i] == browseIndex_) {
+                                        multiSelected_[i] = false;
+                                        multiSelectCount_--;
+                                        wasSelected = true;
+                                        break;
+                                    }
+                                }
+                                if (!wasSelected && multiSelectCount_ < kNumPads) {
+                                    for (int i = 0; i < kNumPads; ++i) {
+                                        if (!multiSelected_[i]) {
+                                            multiSelected_[i] = true;
+                                            multiSelectedIndices_[i] = browseIndex_;
+                                            multiSelectCount_++;
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        repaint();
+                    } else {
+                        // Normal: load file / enter directory
+                        browseSelect();
+                        repaint();
+                    }
+                }
+                else if (n == 1 && held < kHoldMs) {
+                    // Short push enc 1: go back
+                    browseGoUp();
+                    repaint();
+                }
+                else if (n == 2 && held < kHoldMs) {
+                    // Short push enc 2: audition (load + play, don't commit)
+                    if (browseIndex_ >= 0 && browseIndex_ < browseItems_.size()) {
+                        auto sel = browseItems_[browseIndex_];
+                        if (!sel.isDirectory() && browseItemNames_[browseIndex_] != ">> Clear Pad") {
+                            processor_.cacheSlicesForPad(selectedPad_);
+                            processor_.getEngine().getSlot(selectedPad_).loadFile(sel);
+                            processor_.restoreCachedSlices(selectedPad_);
+                            processor_.getEngine().trigger(selectedPad_);
+                            repaint();
+                        }
+                    }
+                }
+                else if (n == 3 && held < kHoldMs) {
+                    if (multiSelectMode_) {
+                        // Enc3 push = finish/cancel multi-select
                         multiSelectMode_ = false;
                         if (multiSelectCount_ > 0) {
                             juce::StringArray selectedPaths;
@@ -2873,7 +3069,6 @@ void PluginEditor::onEncoderSwitch(int n, bool val)
                                             processor_.createStackFile(name, relPaths);
                                         });
                                     } else if (result == 2) {
-                                        // Slice Combine: concatenate samples into one, auto-slice at boundaries
                                         sliceCombine(selectedPaths);
                                     } else if (result == 3) {
                                         juce::StringArray confirmOpts;
@@ -2897,35 +3092,14 @@ void PluginEditor::onEncoderSwitch(int n, bool val)
                                     }
                                 });
                         } else {
-                            processor_.showTickerPublic("No files selected");
+                            multiSelectCount_ = 0;
+                            for (int i = 0; i < kNumPads; ++i) multiSelected_[i] = false;
+                            processor_.showTickerPublic("Multi-select cancelled");
                         }
                         repaint();
                     } else {
-                        // Normal: load file / enter directory
-                        browseSelect();
-                        repaint();
+                        browseExecuteFileOp();
                     }
-                }
-                else if (n == 1 && held < kHoldMs) {
-                    // Short push enc 1: go back
-                    browseGoUp();
-                    repaint();
-                }
-                else if (n == 2 && held < kHoldMs) {
-                    // Short push enc 2: audition (load + play, don't commit)
-                    if (browseIndex_ >= 0 && browseIndex_ < browseItems_.size()) {
-                        auto sel = browseItems_[browseIndex_];
-                        if (!sel.isDirectory() && browseItemNames_[browseIndex_] != ">> Clear Pad") {
-                            processor_.cacheSlicesForPad(selectedPad_);
-                            processor_.getEngine().getSlot(selectedPad_).loadFile(sel);
-                            processor_.restoreCachedSlices(selectedPad_);
-                            processor_.getEngine().trigger(selectedPad_);
-                            repaint();
-                        }
-                    }
-                }
-                else if (n == 3 && held < kHoldMs) {
-                    browseExecuteFileOp();
                 }
                 encPushTime_[n] = 0.0;  // prevent timer from firing hold action
                 return;
@@ -3203,6 +3377,8 @@ void PluginEditor::buildConfigRows()
       r.padIndex = selectedPad_; r.paramIndex = 9; configRows_.add(r); }
     { ConfigRow r; r.type = ConfigRowType::Enum; r.label = "Send to Stereo Mix";
       r.padIndex = selectedPad_; r.paramIndex = 10; configRows_.add(r); }
+    { ConfigRow r; r.type = ConfigRowType::Enum; r.label = "Comp Bypass";
+      r.padIndex = selectedPad_; r.paramIndex = 16; configRows_.add(r); }
 
     { ConfigRow s; s.type = ConfigRowType::Spacer; s.padIndex = -1; s.paramIndex = -1;
       configRows_.add(s); }
@@ -3294,6 +3470,8 @@ void PluginEditor::buildConfigRows()
       r.padIndex = -1; r.paramIndex = 25; configRows_.add(r); }
     { ConfigRow r; r.type = ConfigRowType::Enum; r.label = "Sidechain Filter";
       r.padIndex = -1; r.paramIndex = 17; configRows_.add(r); }
+    { ConfigRow r; r.type = ConfigRowType::Enum; r.label = "Sidechain Source";
+      r.padIndex = -1; r.paramIndex = 18; configRows_.add(r); }
     { ConfigRow r; r.type = ConfigRowType::Enum; r.label = "Low Cut";
       r.padIndex = -1; r.paramIndex = 27; configRows_.add(r); }
 
@@ -3320,8 +3498,12 @@ void PluginEditor::buildConfigRows()
       r.padIndex = -1; r.paramIndex = 5; configRows_.add(r); }
     { ConfigRow r; r.type = ConfigRowType::Enum; r.label = "Browser Font";
       r.padIndex = -1; r.paramIndex = 24; configRows_.add(r); }
+    { ConfigRow r; r.type = ConfigRowType::Enum; r.label = "Autosave";
+      r.padIndex = -1; r.paramIndex = 30; configRows_.add(r); }
     { ConfigRow r; r.type = ConfigRowType::Enum; r.label = "Debug Msgs";
       r.padIndex = -1; r.paramIndex = 3; configRows_.add(r); }
+    { ConfigRow r; r.type = ConfigRowType::PushAction; r.label = "Save Kit";
+      r.padIndex = -1; r.paramIndex = 31; configRows_.add(r); }
     { ConfigRow r; r.type = ConfigRowType::PushAction; r.label = "Reboot Plugin";
       r.padIndex = -1; r.paramIndex = 4; configRows_.add(r); }
 
@@ -3407,6 +3589,9 @@ juce::String configGetValueText(const PluginProcessor& proc, const ConfigRow& ro
         if (row.paramIndex == 15) {
             return "[PUSH]";
         }
+        if (row.paramIndex == 16) {
+            return proc.getEngine().getSlot(row.padIndex).getCompBypass() ? "BYPASS" : "OFF";
+        }
     }
     if (row.type == ConfigRowType::Enum && row.padIndex < 0) {
         switch (row.paramIndex) {
@@ -3489,6 +3674,8 @@ juce::String configGetValueText(const PluginProcessor& proc, const ConfigRow& ro
             case 29: {  // Firmware (read-only)
                 return juce::String(PluginEditor::kFirmwareVersion);
             }
+            case 30:  // Autosave
+                return proc.getAutosaveEnabled() ? "ON" : "OFF";
             default: return "?";
         }
     }
@@ -3737,6 +3924,13 @@ void PluginEditor::configAdjustValue(int selIdx, int delta)
         return;
     }
 
+    // Per-pad Comp Bypass (paramIndex 16)
+    if (row.type == ConfigRowType::Enum && row.padIndex >= 0 && row.paramIndex == 16) {
+        auto& slot = processor_.getEngine().getSlot(row.padIndex);
+        slot.setCompBypass(delta > 0);
+        return;
+    }
+
     if (row.type == ConfigRowType::Enum && row.padIndex < 0) {
         switch (row.paramIndex) {
             case 0: {  // Mute Mode
@@ -3836,6 +4030,7 @@ void PluginEditor::configAdjustValue(int selIdx, int delta)
             }
             case 28: break;  // Show Mixer (push action, no turn behavior)
             case 29: break;  // Firmware (read-only)
+            case 30: processor_.setAutosaveEnabled(delta > 0); break;  // Autosave
             default: break;
         }
     }
@@ -3879,6 +4074,13 @@ void PluginEditor::configPushValue(int selIdx)
         if (row.paramIndex == 28) {  // Show Mixer
             exitConfigMode();
             enterMixer();
+        }
+        if (row.paramIndex == 31) {  // Save Kit
+            exitConfigMode();
+            showNameEntryPopup("NAME YOUR KIT", [this](const juce::String& name) {
+                processor_.saveCurrentAsKit(name);
+                processor_.showTickerPublic("Kit saved: " + name);
+            });
         }
         return;
     }

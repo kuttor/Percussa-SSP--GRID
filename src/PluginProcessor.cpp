@@ -514,36 +514,40 @@ void PluginProcessor::processBlock(juce::AudioBuffer<float>& buffer,
 
     // ── Per-pad temp buffers for routing ──────────────────────────────────
     // SSP block sizes are ≤1024, stack allocation is safe
+    // ALL pads get per-pad buffers (needed for comp bypass + individual routing)
     float padBufL[kNumPads][1024];
     float padBufR[kNumPads][1024];
     int safeNumSamples = std::min(numSamples, 1024);
 
-    bool anyRouted = false;
-    for (int i = 0; i < kNumPads; ++i) {
-        int outCh = engine_.getSlot(i).getOutputChannel();
-        bool isSCSrc = (compEnabled_ && compSCSrc_ == i);
-        if (outCh >= 0 || isSCSrc) {
-            engine_.setPadOutputBuffers(i, padBufL[i], padBufR[i]);
-            anyRouted = true;
-        }
-    }
+    for (int i = 0; i < kNumPads; ++i)
+        engine_.setPadOutputBuffers(i, padBufL[i], padBufR[i]);
 
     if (outL && outR)
         engine_.process(outL, outR, safeNumSamples);
 
     // Route per-pad buffers to their assigned output channels
-    if (anyRouted) {
+    for (int i = 0; i < kNumPads; ++i) {
+        int outCh = engine_.getSlot(i).getOutputChannel();
+        if (outCh < 0) continue;
+        int busIdx = O_PAD1 + outCh;
+        if (busIdx < numChannels) {
+            float* dst = buffer.getWritePointer(busIdx);
+            for (int s = 0; s < safeNumSamples; ++s)
+                dst[s] += (padBufL[i][s] + padBufR[i][s]) * 0.5f;
+        }
+    }
+    engine_.clearPadOutputBuffers();
+
+    // ── Comp bypass: subtract bypassed pads from bus before compressor ──
+    if (compEnabled_ && outL && outR) {
         for (int i = 0; i < kNumPads; ++i) {
-            int outCh = engine_.getSlot(i).getOutputChannel();
-            if (outCh < 0) continue;
-            int busIdx = O_PAD1 + outCh;
-            if (busIdx < numChannels) {
-                float* dst = buffer.getWritePointer(busIdx);
-                for (int s = 0; s < safeNumSamples; ++s)
-                    dst[s] += (padBufL[i][s] + padBufR[i][s]) * 0.5f;
+            if (!engine_.getSlot(i).getCompBypass()) continue;
+            if (!engine_.getSlot(i).getSendToMix()) continue;
+            for (int s = 0; s < safeNumSamples; ++s) {
+                outL[s] -= padBufL[i][s];
+                outR[s] -= padBufR[i][s];
             }
         }
-        engine_.clearPadOutputBuffers();
     }
 
     // ── Track peak input level for compressor scope display ──────────────
@@ -661,6 +665,18 @@ void PluginProcessor::processBlock(juce::AudioBuffer<float>& buffer,
 
             outL[s] = outSampleL;
             outR[s] = outSampleR;
+        }
+    }
+
+    // ── Comp bypass: add bypassed pads back to bus (post-compression) ────
+    if (compEnabled_ && outL && outR) {
+        for (int i = 0; i < kNumPads; ++i) {
+            if (!engine_.getSlot(i).getCompBypass()) continue;
+            if (!engine_.getSlot(i).getSendToMix()) continue;
+            for (int s = 0; s < safeNumSamples; ++s) {
+                outL[s] += padBufL[i][s];
+                outR[s] += padBufR[i][s];
+            }
         }
     }
 
@@ -1251,6 +1267,20 @@ void PluginProcessor::loadAutosave()
     }
 }
 
+void PluginProcessor::setRecallPoint()
+{
+    recallPointData_.reset();
+    getStateInformation(recallPointData_);
+    recallPointSet_ = true;
+}
+
+bool PluginProcessor::restoreRecallPoint()
+{
+    if (!recallPointSet_ || recallPointData_.getSize() == 0) return false;
+    setStateInformation(recallPointData_.getData(), (int)recallPointData_.getSize());
+    return true;
+}
+
 void PluginProcessor::setMidiClockEnabled(bool b)
 {
     if (b == midiClockEnabled_) return;
@@ -1378,6 +1408,7 @@ void PluginProcessor::getStateInformation(juce::MemoryBlock& destData)
         pad->setAttribute("filterReso", slot.getFilterResonance());
         pad->setAttribute("lofiMode", static_cast<int>(slot.getLofiMode()));
         pad->setAttribute("compSend", slot.getCompSend());
+        pad->setAttribute("compBypass", slot.getCompBypass() ? 1 : 0);
         pad->setAttribute("outputChannel", slot.getOutputChannel());
         pad->setAttribute("sendToMix", slot.getSendToMix() ? 1 : 0);
         pad->setAttribute("sliceMode", slot.isSliceMode() ? 1 : 0);
@@ -1456,9 +1487,12 @@ void PluginProcessor::getStateInformation(juce::MemoryBlock& destData)
     xml->setAttribute("compShowGR", compShowGR_ ? 1 : 0);
     xml->setAttribute("compMix", compMix_);
     xml->setAttribute("outputHpfHz", outputHpfHz_);
+    xml->setAttribute("autosaveEnabled", autosaveEnabled_ ? 1 : 0);
 
     // Save slice cache (per-file slice persistence)
-    for (auto& pair : sliceCache_) {
+    {
+        const juce::ScopedLock sl(sliceCacheLock_);
+        for (auto& pair : sliceCache_) {
         auto* cacheEl = xml->createNewChildElement("SLICE_CACHE");
         cacheEl->setAttribute("file", pair.first);
         cacheEl->setAttribute("count", pair.second.count);
@@ -1472,7 +1506,8 @@ void PluginProcessor::getStateInformation(juce::MemoryBlock& destData)
         cacheEl->setAttribute("starts", starts);
         cacheEl->setAttribute("ends", ends);
         cacheEl->setAttribute("pitches", pitches);
-    }
+        }
+    }  // end sliceCacheLock_
 
     copyXmlToBinary(*xml, destData);
 }
@@ -1534,6 +1569,7 @@ void PluginProcessor::setStateInformation(const void* data, int sizeInBytes)
         slot.setFilterResonance((float)pad->getDoubleAttribute("filterReso", 0.0));
         slot.setLofiMode(static_cast<LofiMode>(pad->getIntAttribute("lofiMode", 0)));
         slot.setCompSend((float)pad->getDoubleAttribute("compSend", 0.0));
+        slot.setCompBypass(pad->getIntAttribute("compBypass", 0) != 0);
         slot.setOutputChannel(pad->getIntAttribute("outputChannel", -1));
         slot.setSendToMix(pad->getIntAttribute("sendToMix", 1) != 0);
         slot.setSliceMode(pad->getIntAttribute("sliceMode", 0) != 0);
@@ -1641,26 +1677,30 @@ void PluginProcessor::setStateInformation(const void* data, int sizeInBytes)
     compShowGR_ = xml->getIntAttribute("compShowGR", 0) != 0;
     compMix_ = (float)xml->getDoubleAttribute("compMix", 1.0);
     outputHpfHz_ = xml->getIntAttribute("outputHpfHz", 0);
+    autosaveEnabled_ = xml->getIntAttribute("autosaveEnabled", 1) != 0;
 
     // Load slice cache
-    sliceCache_.clear();
-    for (int i = 0; i < xml->getNumChildElements(); ++i) {
-        auto* el = xml->getChildElement(i);
-        if (!el || el->getTagName() != "SLICE_CACHE") continue;
-        juce::String filePath = el->getStringAttribute("file");
-        if (filePath.isEmpty()) continue;
-        SliceCache cache;
-        cache.count = el->getIntAttribute("count", 0);
-        auto starts = juce::StringArray::fromTokens(el->getStringAttribute("starts"), ",", "");
-        auto ends = juce::StringArray::fromTokens(el->getStringAttribute("ends"), ",", "");
-        auto pitches = juce::StringArray::fromTokens(el->getStringAttribute("pitches"), ",", "");
-        for (int s = 0; s < cache.count && s < 128; ++s) {
-            cache.starts[s] = (s < starts.size()) ? starts[s].getFloatValue() : 0.0f;
-            cache.ends[s] = (s < ends.size()) ? ends[s].getFloatValue() : 1.0f;
-            cache.pitches[s] = (s < pitches.size()) ? pitches[s].getFloatValue() : 0.0f;
+    {
+        const juce::ScopedLock sl(sliceCacheLock_);
+        sliceCache_.clear();
+        for (int i = 0; i < xml->getNumChildElements(); ++i) {
+            auto* el = xml->getChildElement(i);
+            if (!el || el->getTagName() != "SLICE_CACHE") continue;
+            juce::String filePath = el->getStringAttribute("file");
+            if (filePath.isEmpty()) continue;
+            SliceCache cache;
+            cache.count = el->getIntAttribute("count", 0);
+            auto starts = juce::StringArray::fromTokens(el->getStringAttribute("starts"), ",", "");
+            auto ends = juce::StringArray::fromTokens(el->getStringAttribute("ends"), ",", "");
+            auto pitches = juce::StringArray::fromTokens(el->getStringAttribute("pitches"), ",", "");
+            for (int s = 0; s < cache.count && s < 128; ++s) {
+                cache.starts[s] = (s < starts.size()) ? starts[s].getFloatValue() : 0.0f;
+                cache.ends[s] = (s < ends.size()) ? ends[s].getFloatValue() : 1.0f;
+                cache.pitches[s] = (s < pitches.size()) ? pitches[s].getFloatValue() : 0.0f;
+            }
+            sliceCache_[filePath] = cache;
         }
-        sliceCache_[filePath] = cache;
-    }
+    }  // end sliceCacheLock_
 }
 
 juce::AudioProcessorEditor* PluginProcessor::createEditor()
@@ -1736,6 +1776,7 @@ void PluginProcessor::cacheSlicesForPad(int pad)
         cache.ends[i] = slot.getSliceEnd(i);
         cache.pitches[i] = slot.getSlicePitch(i);
     }
+    const juce::ScopedLock sl(sliceCacheLock_);
     sliceCache_[slot.getFilePath()] = cache;
 }
 
@@ -1744,6 +1785,7 @@ bool PluginProcessor::restoreCachedSlices(int pad)
     auto& slot = engine_.getSlot(juce::jlimit(0, kNumPads - 1, pad));
     if (!slot.isLoaded()) return false;
 
+    const juce::ScopedLock sl(sliceCacheLock_);
     auto it = sliceCache_.find(slot.getFilePath());
     if (it == sliceCache_.end()) return false;
 

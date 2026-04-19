@@ -301,6 +301,20 @@ private:
     double lastButtonTriggerMs_[kNumPads] = {};
     static constexpr double kButtonDebounceMs = 35.0;
 
+    // Arrow combo detection for recall point (L+R = save, U+D = restore)
+    double lastLeftArrowMs_ = 0.0;
+    double lastRightArrowMs_ = 0.0;
+    double lastUpArrowMs_ = 0.0;
+    double lastDownArrowMs_ = 0.0;
+    static constexpr double kComboWindowMs = 300.0;
+
+    // Arrow key repeat for config browser scrolling
+    bool upArrowHeld_ = false;
+    bool downArrowHeld_ = false;
+    double arrowRepeatNextMs_ = 0.0;
+    static constexpr double kArrowRepeatDelayMs = 400.0;
+    static constexpr double kArrowRepeatRateMs = 80.0;
+
     // ── Colors ───────────────────────────────────────────────────────────
     static constexpr uint32_t kBg             = 0xFF0D0D0D;
     static constexpr uint32_t kTabBg          = 0xFF151515;

@@ -13,7 +13,7 @@ public:
     explicit PluginEditor(PluginProcessor& p);
     ~PluginEditor() override;
 
-    static constexpr const char* kFirmwareVersion = "2.4.2-beta";
+    static constexpr const char* kFirmwareVersion = "2.4.4-beta";
 
     void paint(juce::Graphics&) override;
     void resized() override;
@@ -137,6 +137,7 @@ private:
                    std::function<void(int)> callback);
     void closePopup(int result = -1);
     void paintPopup(juce::Graphics& g, juce::Rectangle<int> area);
+    void paintKitPicker(juce::Graphics& g, juce::Rectangle<int> area);
 
     // ── Multi-select in file browser ──────────────────────────────────
     bool multiSelectMode_ = false;
@@ -149,6 +150,12 @@ private:
     int kitBrowseIndex_ = -1;
     int kitCurrentIndex_ = -1;
     double kitBrowseStartTime_ = 0.0;
+
+    // Kit picker popup (up/down arrows)
+    bool kitPickerOpen_ = false;
+    int kitPickerIndex_ = 0;
+    int kitPickerScrollOffset_ = 0;
+    double kitPickerLastArrowMs_ = 0.0;
     juce::Array<juce::File> availableKits_;
     static constexpr double kKitBrowseTimeoutMs = 3000.0;
 

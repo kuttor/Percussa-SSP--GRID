@@ -13,7 +13,7 @@ public:
     explicit PluginEditor(PluginProcessor& p);
     ~PluginEditor() override;
 
-    static constexpr const char* kFirmwareVersion = "2.4.4-beta";
+    static constexpr const char* kFirmwareVersion = "2.4.3-beta";
 
     void paint(juce::Graphics&) override;
     void resized() override;

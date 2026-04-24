@@ -71,10 +71,14 @@ public:
     void setEndPos(float n)     { endPos_ = juce::jlimit(0.0f, 1.0f, n); }
 
     // Pitch: +-48 semitones (+-4 octaves). Resampling-based.
-    void setPitchSemitones(float st) { pitchSemitones_ = juce::jlimit(-48.0f, 48.0f, st);
-                                        pitchRate_ = std::pow(2.0f, pitchSemitones_ / 12.0f); }
+    void setPitchSemitones(float st) { pitchSemitones_ = juce::jlimit(-48.0f, 48.0f, st); updatePitchRate(); }
+
     float getPitchSemitones() const  { return pitchSemitones_; }
     float getPitchRate() const       { return pitchRate_; }
+
+    // CV pitch offset — adds on top of encoder pitch
+    void setPitchCVOffset(float st)  { pitchCVOffset_ = st; updatePitchRate(); }
+    float getPitchCVOffset() const   { return pitchCVOffset_; }
 
     // Time stretch: 0.25x to 4.0x (user control)
     void setTimeStretch(float t)     { timeStretch_ = juce::jlimit(0.25f, 4.0f, t); }
@@ -526,6 +530,7 @@ private:
     float pitchSemitones_ = 0.0f;
     float pitchRate_      = 1.0f;
     float timeStretch_    = 1.0f;
+    float pitchCVOffset_  = 0.0f;
     float clockStretch_   = 1.0f;
     StretchMode stretchMode_ = StretchMode::WSOLA;  // default to WSOLA
     int   clockBeats_     = 4;
@@ -576,6 +581,9 @@ public:
 
     // Called on trigger — advances all enabled mods, returns per-slot amounts
     float advanceMod(int slot) { return mods_[juce::jlimit(0, kModSlots - 1, slot)].advance(modRng_); }
+
+    // Helper: recalculate pitch rate from semitones + CV offset
+    void updatePitchRate() { pitchRate_ = std::pow(2.0f, (pitchSemitones_ + pitchCVOffset_) / 12.0f); }
 private:
 
     // LPG (Buchla-style Low Pass Gate) — vactrol envelope + one-pole filter + VCA

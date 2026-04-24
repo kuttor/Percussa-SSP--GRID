@@ -12,10 +12,14 @@ PluginProcessor::PluginProcessor()
 
 PluginProcessor::~PluginProcessor()
 {
+    // Stop MIDI device first — prevents callbacks during teardown
     if (midiInDevice_) {
         midiInDevice_->stop();
         midiInDevice_ = nullptr;
     }
+    // Stop all voices to prevent audio callback accessing destroyed state
+    for (int i = 0; i < kNumPads; ++i)
+        engine_.getSlot(i).stopAll();
 }
 
 void PluginProcessor::prepareToPlay(double sampleRate, int samplesPerBlock)
@@ -31,6 +35,9 @@ void PluginProcessor::prepareToPlay(double sampleRate, int samplesPerBlock)
         midiDeviceName_.clear();  // force setMidiDevice to actually open
         setMidiDevice(saved);
     }
+
+    // Load autosave state if available (restores last session)
+    loadAutosave();
 }
 
 void PluginProcessor::releaseResources()
@@ -288,14 +295,22 @@ void PluginProcessor::processBlock(juce::AudioBuffer<float>& buffer,
     // Handled in handleIncomingMidiMessage — midiClockCount_ counts 24 PPQN
 
     // ── Read pitch CVs ───────────────────────────────────────────────────
+    // SSP inputs are normalized ±1.0 = ±5V. V/Oct: 1V = 12 semitones.
+    // So buffer value * 5.0 * 12.0 = buffer value * 60.0 semitones.
+    // CV ADDS to the encoder pitch (doesn't replace it).
     for (int pad = 0; pad < kNumPads; ++pad)
     {
         int ch = pitchChannel(pad);
-        if (ch >= numChannels || !isInputEnabled(ch)) continue;
+        if (ch >= numChannels || !isInputEnabled(ch)) {
+            engine_.getSlot(pad).setPitchCVOffset(0.0f);
+            continue;
+        }
 
         float voct = buffer.getSample(ch, numSamples - 1);
-        if (std::isfinite(voct) && std::abs(voct) > 0.01f)
-            engine_.getSlot(pad).setPitchSemitones(voct * 12.0f);
+        if (std::isfinite(voct) && std::abs(voct) > 0.005f)
+            engine_.getSlot(pad).setPitchCVOffset(voct * 60.0f);
+        else
+            engine_.getSlot(pad).setPitchCVOffset(0.0f);
     }
 
     // ── Filter CV — master strength for all pads ──────────────────────────
@@ -511,172 +526,196 @@ void PluginProcessor::processBlock(juce::AudioBuffer<float>& buffer,
 
     // ── Per-pad temp buffers for routing ──────────────────────────────────
     // SSP block sizes are ≤1024, stack allocation is safe
+    // ALL pads get per-pad buffers (needed for comp bypass + individual routing)
     float padBufL[kNumPads][1024];
     float padBufR[kNumPads][1024];
     int safeNumSamples = std::min(numSamples, 1024);
 
-    bool anyRouted = false;
-    for (int i = 0; i < kNumPads; ++i) {
-        int outCh = engine_.getSlot(i).getOutputChannel();
-        bool isSCSrc = (compEnabled_ && compSCSrc_ == i);
-        if (outCh >= 0 || isSCSrc) {
-            engine_.setPadOutputBuffers(i, padBufL[i], padBufR[i]);
-            anyRouted = true;
-        }
-    }
+    for (int i = 0; i < kNumPads; ++i)
+        engine_.setPadOutputBuffers(i, padBufL[i], padBufR[i]);
 
     if (outL && outR)
         engine_.process(outL, outR, safeNumSamples);
 
     // Route per-pad buffers to their assigned output channels
-    if (anyRouted) {
+    for (int i = 0; i < kNumPads; ++i) {
+        int outCh = engine_.getSlot(i).getOutputChannel();
+        if (outCh < 0) continue;
+        int busIdx = O_PAD1 + outCh;
+        if (busIdx < numChannels) {
+            float* dst = buffer.getWritePointer(busIdx);
+            for (int s = 0; s < safeNumSamples; ++s)
+                dst[s] += (padBufL[i][s] + padBufR[i][s]) * 0.5f;
+        }
+    }
+    engine_.clearPadOutputBuffers();
+
+    // ── Comp bypass: subtract bypassed pads from bus before compressor ──
+    if (compEnabled_ && outL && outR) {
         for (int i = 0; i < kNumPads; ++i) {
-            int outCh = engine_.getSlot(i).getOutputChannel();
-            if (outCh < 0) continue;
-            int busIdx = O_PAD1 + outCh;
-            if (busIdx < numChannels) {
-                float* dst = buffer.getWritePointer(busIdx);
-                for (int s = 0; s < safeNumSamples; ++s)
-                    dst[s] += (padBufL[i][s] + padBufR[i][s]) * 0.5f;
+            if (!engine_.getSlot(i).getCompBypass()) continue;
+            if (!engine_.getSlot(i).getSendToMix()) continue;
+            for (int s = 0; s < safeNumSamples; ++s) {
+                outL[s] -= padBufL[i][s];
+                outR[s] -= padBufR[i][s];
             }
         }
-        engine_.clearPadOutputBuffers();
     }
 
-    // ── Bus compressor (SSL-style feedback, dual-time-constant, soft knee) ──
-    if (compEnabled_ && outL && outR) {
-        // Check if any pad has send > 0
-        bool anySend = false;
-        for (int i = 0; i < kNumPads; ++i)
-            if (engine_.getSlot(i).getCompSend() > 0.01f) { anySend = true; break; }
+    // ── Track peak input level for compressor scope display ──────────────
+    if (outL && outR) {
+        float blockPeak = 0.0f;
+        for (int s = 0; s < safeNumSamples; ++s) {
+            float p = std::max(std::abs(outL[s]), std::abs(outR[s]));
+            if (p > blockPeak) blockPeak = p;
+        }
+        compDisplayInputPeak_ = blockPeak;
+    }
 
-        if (anySend) {
-            // ── Pre-compute coefficients (once per block) ────────────────
-            const float sr = (float)sampleRate_;
-            const float attackCoeff = std::exp(-1.0f / (compAttackMs_ * 0.001f * sr));
-            const float fastRelCoeff = std::exp(-1.0f / (compReleaseMs_ * 0.001f * sr));
-            // Slow release: 8x the fast time constant (SSL-style dual TC)
-            const float slowRelCoeff = std::exp(-1.0f / (compReleaseMs_ * 0.008f * sr));
-            const float makeupLin = std::pow(10.0f, compMakeupDb_ / 20.0f);
-            const float ratio = compRatio_;
-            const float thresh = compThreshDb_;
-            const float knee = compKneeDb_;
-            const float halfK = knee * 0.5f;
-            const float drive = compDrive_;
+    // ── Bus compressor (feedforward, dual-TC auto-release, soft knee, parallel mix) ──
+    // Architecture: processes the full stereo bus. Per-pad mono outputs are NOT
+    // affected (they were written before this point). Mix knob controls parallel
+    // compression blend: 0% = bypass, 100% = fully compressed.
+    if (compEnabled_ && outL && outR && compMix_ > 0.001f) {
+        // ── Pre-compute coefficients (once per block) ────────────────
+        const float sr = (float)sampleRate_;
+        const float attackCoeff = std::exp(-1.0f / (compAttackMs_ * 0.001f * sr));
+        const float fastRelCoeff = std::exp(-1.0f / (compReleaseMs_ * 0.001f * sr));
+        const float slowRelCoeff = std::exp(-1.0f / (compReleaseMs_ * 0.008f * sr));  // 8x slower
+        const float makeupLin = std::pow(10.0f, compMakeupDb_ / 20.0f);
+        const float ratio = compRatio_;
+        const float thresh = compThreshDb_;
+        const float knee = compKneeDb_;
+        const float halfK = knee * 0.5f;
+        const float drive = compDrive_;
+        const float mix = compMix_;
 
-            // ── Update sidechain HPF coefficients if frequency changed ───
-            if (compSCHpfHz_ != scHpfLastHz_) updateSCHpfCoeffs();
+        // ── Update sidechain HPF coefficients if frequency changed ───
+        if (compSCHpfHz_ != scHpfLastHz_) updateSCHpfCoeffs();
 
-            // ── Pre-compute wet blend from active pad sends ──────────────
-            float totalSend = 0.0f;
-            int activePads = 0;
-            for (int p = 0; p < kNumPads; ++p) {
-                if (engine_.getSlot(p).isPlaying() || engine_.getSlot(p).getCompSend() > 0.01f) {
-                    totalSend += engine_.getSlot(p).getCompSend();
-                    activePads++;
-                }
+        // ── Sidechain source: external pad buffer or feedforward ─────
+        const float* scSrcL = nullptr;
+        const float* scSrcR = nullptr;
+        bool scFromPad = (compSCSrc_ >= 0 && compSCSrc_ < kNumPads);
+        if (scFromPad) {
+            scSrcL = padBufL[compSCSrc_];
+            scSrcR = padBufR[compSCSrc_];
+        }
+
+        // ── Per-sample processing ────────────────────────────────────
+        for (int s = 0; s < safeNumSamples; ++s) {
+            // ── 1. Sidechain signal (feedforward from input, or pad) ──
+            float sc;
+            if (scSrcL) {
+                sc = std::max(std::abs(scSrcL[s]), std::abs(scSrcR[s]));
+            } else {
+                // Feedforward: detect from current uncompressed input
+                sc = std::max(std::abs(outL[s]), std::abs(outR[s]));
             }
-            const float wet = (activePads > 0) ? juce::jlimit(0.0f, 1.0f, totalSend / (float)activePads) : 0.0f;
 
-            // ── Sidechain source: external pad or bus feedback ───────────
-            const float* scSrcL = nullptr;
-            const float* scSrcR = nullptr;
-            bool scFromPad = (compSCSrc_ >= 0 && compSCSrc_ < kNumPads);
-            if (scFromPad) {
-                // Per-pad buffers are on the stack (padBufL/padBufR) —
-                // allocated for SC source pads above, still valid here.
-                scSrcL = padBufL[compSCSrc_];
-                scSrcR = padBufR[compSCSrc_];
+            // ── 2. Sidechain HPF (remove sub-bass from detector) ─────
+            if (compSCHpfHz_ > 0) {
+                float x = sc;
+                float y = scHpfB0_ * x + scHpfB1_ * scHpfX1_ + scHpfB2_ * scHpfX2_
+                        - scHpfA1_ * scHpfY1_ - scHpfA2_ * scHpfY2_;
+                scHpfX2_ = scHpfX1_; scHpfX1_ = x;
+                scHpfY2_ = scHpfY1_; scHpfY1_ = y;
+                sc = std::abs(y);
             }
 
-            // ── Per-sample processing ────────────────────────────────────
-            for (int s = 0; s < safeNumSamples; ++s) {
-                // ── 1. Sidechain signal (feedback from output, or pad) ───
-                float sc;
-                if (scSrcL) {
-                    sc = std::max(std::abs(scSrcL[s]), std::abs(scSrcR[s]));
+            // ── 3. Envelope follower (dual-TC auto-release, always on) ─
+            if (sc > compEnvFast_)
+                compEnvFast_ = attackCoeff * compEnvFast_ + (1.0f - attackCoeff) * sc;
+            else
+                compEnvFast_ = fastRelCoeff * compEnvFast_;
+
+            if (sc > compEnvSlow_)
+                compEnvSlow_ = attackCoeff * compEnvSlow_ + (1.0f - attackCoeff) * sc;
+            else
+                compEnvSlow_ = slowRelCoeff * compEnvSlow_;
+
+            float env = std::max(compEnvFast_, compEnvSlow_);
+            if (env < 1e-20f) env = 0.0f;
+
+            // ── 4. Gain computer (log domain, soft knee, Giannoulis) ──
+            float gainReductionDb = 0.0f;
+            if (env > 1e-20f) {
+                float envDb = 20.0f * std::log10(env + 1e-30f);
+
+                if (envDb < thresh - halfK) {
+                    gainReductionDb = 0.0f;
+                } else if (envDb > thresh + halfK) {
+                    gainReductionDb = (1.0f - 1.0f / ratio) * (envDb - thresh);
                 } else {
-                    // Feedback topology: detect from previous output
-                    sc = std::max(std::abs(compPrevOutL_), std::abs(compPrevOutR_));
+                    float x = envDb - thresh + halfK;
+                    gainReductionDb = (1.0f - 1.0f / ratio) * x * x / (2.0f * knee + 1e-10f);
                 }
+            }
 
-                // ── 2. Sidechain HPF (remove sub-bass from detector) ─────
-                if (compSCHpfHz_ > 0) {
-                    float x = sc;
-                    float y = scHpfB0_ * x + scHpfB1_ * scHpfX1_ + scHpfB2_ * scHpfX2_
-                            - scHpfA1_ * scHpfY1_ - scHpfA2_ * scHpfY2_;
-                    scHpfX2_ = scHpfX1_; scHpfX1_ = x;
-                    scHpfY2_ = scHpfY1_; scHpfY1_ = y;
-                    sc = std::abs(y);
+            float gainLin = std::pow(10.0f, -gainReductionDb / 20.0f);
+
+            // GR meter (smoothed peak hold)
+            if (gainReductionDb > compGainReductionDb_)
+                compGainReductionDb_ = gainReductionDb;
+            else
+                compGainReductionDb_ *= 0.9995f;
+
+            // ── 5. Parallel mix: dry * (1-mix) + compressed * mix ─────
+            // Makeup gain only applies to the compressed portion.
+            float compL = outL[s] * gainLin * makeupLin;
+            float compR = outR[s] * gainLin * makeupLin;
+
+            // Subtle output saturation (transformer warmth)
+            if (drive > 1.001f) {
+                float tanhD = std::tanh(drive);
+                compL = std::tanh(drive * compL) / tanhD;
+                compR = std::tanh(drive * compR) / tanhD;
+            }
+
+            float outSampleL = outL[s] * (1.0f - mix) + compL * mix;
+            float outSampleR = outR[s] * (1.0f - mix) + compR * mix;
+
+            outL[s] = outSampleL;
+            outR[s] = outSampleR;
+        }
+    }
+
+    // ── Comp bypass: add bypassed pads back to bus (post-compression) ────
+    if (compEnabled_ && outL && outR) {
+        for (int i = 0; i < kNumPads; ++i) {
+            if (!engine_.getSlot(i).getCompBypass()) continue;
+            if (!engine_.getSlot(i).getSendToMix()) continue;
+            for (int s = 0; s < safeNumSamples; ++s) {
+                outL[s] += padBufL[i][s];
+                outR[s] += padBufR[i][s];
+            }
+        }
+    }
+
+    // ── Output low-cut HPF (end-of-chain, 4th order Butterworth -24dB/oct) ──
+    if (outputHpfHz_ > 0 && outL && outR) {
+        if (outputHpfHz_ != hpfLastHz_) updateOutputHpfCoeffs();
+        for (int s = 0; s < safeNumSamples; ++s) {
+            for (int sec = 0; sec < 2; ++sec) {
+                auto& c = hpfSections_[sec];
+                // Left channel
+                {
+                    auto& st = hpfL_[sec];
+                    float x = outL[s];
+                    float y = c.b0*x + c.b1*st.x1 + c.b2*st.x2 - c.a1*st.y1 - c.a2*st.y2;
+                    st.x2 = st.x1; st.x1 = x;
+                    st.y2 = st.y1; st.y1 = y;
+                    outL[s] = y;
                 }
-
-                // ── 3. Envelope follower (dual-time-constant) ────────────
-                // Fast envelope
-                if (sc > compEnvFast_)
-                    compEnvFast_ = attackCoeff * compEnvFast_ + (1.0f - attackCoeff) * sc;
-                else
-                    compEnvFast_ = fastRelCoeff * compEnvFast_;
-
-                // Slow envelope
-                if (sc > compEnvSlow_)
-                    compEnvSlow_ = attackCoeff * compEnvSlow_ + (1.0f - attackCoeff) * sc;
-                else
-                    compEnvSlow_ = slowRelCoeff * compEnvSlow_;
-
-                // Use whichever is higher (auto-release behavior)
-                float env = compAutoRelease_ ? std::max(compEnvFast_, compEnvSlow_) : compEnvFast_;
-
-                // Denormal guard
-                if (env < 1e-20f) env = 0.0f;
-
-                // ── 4. Gain computer (log domain, soft knee) ─────────────
-                float gainReductionDb = 0.0f;
-                if (env > 1e-20f) {
-                    float envDb = 20.0f * std::log10(env + 1e-30f);
-
-                    if (envDb < thresh - halfK) {
-                        // Below knee: no compression
-                        gainReductionDb = 0.0f;
-                    } else if (envDb > thresh + halfK) {
-                        // Above knee: full ratio
-                        gainReductionDb = (1.0f - 1.0f / ratio) * (envDb - thresh);
-                    } else {
-                        // Inside knee: quadratic interpolation (Giannoulis)
-                        float x = envDb - thresh + halfK;
-                        gainReductionDb = (1.0f - 1.0f / ratio) * x * x / (2.0f * knee + 1e-10f);
-                    }
+                // Right channel
+                {
+                    auto& st = hpfR_[sec];
+                    float x = outR[s];
+                    float y = c.b0*x + c.b1*st.x1 + c.b2*st.x2 - c.a1*st.y1 - c.a2*st.y2;
+                    st.x2 = st.x1; st.x1 = x;
+                    st.y2 = st.y1; st.y1 = y;
+                    outR[s] = y;
                 }
-
-                float gainLin = std::pow(10.0f, -gainReductionDb / 20.0f);
-
-                // Store peak GR for visualization (smoothed)
-                if (gainReductionDb > compGainReductionDb_)
-                    compGainReductionDb_ = gainReductionDb;
-                else
-                    compGainReductionDb_ *= 0.9995f;  // slow decay for meter
-
-                // ── 5. Apply gain with wet/dry blend ─────────────────────
-                // Makeup gain only applies to the compressed (wet) portion.
-                // Dry portion passes at unity so uncompressed pads aren't boosted.
-                float compGainL = (1.0f - wet) + wet * gainLin * makeupLin;
-                float compGainR = compGainL;  // stereo linked
-
-                float outSampleL = outL[s] * compGainL;
-                float outSampleR = outR[s] * compGainR;
-
-                // ── 6. Subtle output saturation (transformer warmth) ─────
-                if (drive > 1.001f) {
-                    // tanh soft clip — adds odd harmonics, very gentle
-                    outSampleL = std::tanh(drive * outSampleL) / std::tanh(drive);
-                    outSampleR = std::tanh(drive * outSampleR) / std::tanh(drive);
-                }
-
-                // Store feedback state
-                compPrevOutL_ = outSampleL;
-                compPrevOutR_ = outSampleR;
-
-                outL[s] = outSampleL;
-                outR[s] = outSampleR;
             }
         }
     }
@@ -708,6 +747,36 @@ void PluginProcessor::updateSCHpfCoeffs()
     scHpfA2_ = (float)((1.0 - alpha) / a0);
     // Reset filter state
     scHpfX1_ = scHpfX2_ = scHpfY1_ = scHpfY2_ = 0.0f;
+}
+
+void PluginProcessor::updateOutputHpfCoeffs()
+{
+    hpfLastHz_ = outputHpfHz_;
+    if (outputHpfHz_ <= 0 || sampleRate_ <= 0.0) {
+        for (int s = 0; s < 2; ++s)
+            hpfSections_[s] = { 1.0f, 0.0f, 0.0f, 0.0f, 0.0f };
+        return;
+    }
+    // 4th order Butterworth HPF = 2 cascaded 2nd-order sections
+    // Q values: Q1 = 0.5412, Q2 = 1.3066 (from Butterworth polynomial)
+    const double qVals[2] = { 0.54119610, 1.30656297 };
+    const double pi = 3.14159265358979323846;
+    for (int s = 0; s < 2; ++s) {
+        double w0 = 2.0 * pi * (double)outputHpfHz_ / sampleRate_;
+        double cosW = std::cos(w0);
+        double sinW = std::sin(w0);
+        double alpha = sinW / (2.0 * qVals[s]);
+        double a0 = 1.0 + alpha;
+        hpfSections_[s].b0 = (float)((1.0 + cosW) * 0.5 / a0);
+        hpfSections_[s].b1 = (float)(-(1.0 + cosW) / a0);
+        hpfSections_[s].b2 = hpfSections_[s].b0;
+        hpfSections_[s].a1 = (float)(-2.0 * cosW / a0);
+        hpfSections_[s].a2 = (float)((1.0 - alpha) / a0);
+    }
+    // Reset state
+    for (int s = 0; s < 2; ++s) {
+        hpfL_[s] = hpfR_[s] = { 0, 0, 0, 0 };
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -978,6 +1047,7 @@ KitData PluginProcessor::captureCurrentState() const
         p.filterReso = slot.getFilterResonance();
         p.lofiMode = static_cast<int>(slot.getLofiMode());
         p.compSend = slot.getCompSend();
+        p.compBypass = slot.getCompBypass();
         p.outputChannel = slot.getOutputChannel();
         p.sendToMix = slot.getSendToMix();
         p.sliceMode = slot.isSliceMode();
@@ -1020,7 +1090,7 @@ void PluginProcessor::applyKitData(const KitData& kit)
         slot.setTimeStretch(p.stretch);
         slot.setChokeGroup(static_cast<ChokeGroup>(p.choke));
         if (p.reversed != slot.isReversed()) slot.setReversed(p.reversed);
-        slot.setMidiChannel(p.midiCh);
+        // MIDI channel preserved across kit switches
         slot.setClockBeats(p.clockBeats);
         slot.setVoiceMode(static_cast<VoiceMode>(p.voiceMode));
         slot.setFilterType(static_cast<FilterType>(p.filterType));
@@ -1028,6 +1098,7 @@ void PluginProcessor::applyKitData(const KitData& kit)
         slot.setFilterResonance(p.filterReso);
         slot.setLofiMode(static_cast<LofiMode>(p.lofiMode));
         slot.setCompSend(p.compSend);
+        slot.setCompBypass(p.compBypass);
         slot.setOutputChannel(p.outputChannel);
         slot.setSendToMix(p.sendToMix);
         slot.setSliceMode(p.sliceMode);
@@ -1151,7 +1222,7 @@ void PluginProcessor::loadKit(const juce::File& kitFile)
         slot.setTimeStretch(p.stretch);
         slot.setChokeGroup(static_cast<ChokeGroup>(p.choke));
         if (p.reversed != slot.isReversed()) slot.setReversed(p.reversed);
-        slot.setMidiChannel(p.midiCh);
+        // MIDI channel preserved across kit switches
         slot.setClockBeats(p.clockBeats);
         slot.setVoiceMode(static_cast<VoiceMode>(p.voiceMode));
         slot.setFilterType(static_cast<FilterType>(p.filterType));
@@ -1159,6 +1230,7 @@ void PluginProcessor::loadKit(const juce::File& kitFile)
         slot.setFilterResonance(p.filterReso);
         slot.setLofiMode(static_cast<LofiMode>(p.lofiMode));
         slot.setCompSend(p.compSend);
+        slot.setCompBypass(p.compBypass);
         slot.setOutputChannel(p.outputChannel);
         slot.setSendToMix(p.sendToMix);
         slot.setSliceMode(p.sliceMode);
@@ -1178,6 +1250,50 @@ void PluginProcessor::createStackFile(const juce::String& name, const juce::Stri
     auto file = getStacksDir().getChildFile(name + ".stack");
     stack.saveToFile(file);
     showTicker("Stack: " + name + " (" + juce::String(layerPaths.size()) + " layers)");
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Autosave — lightweight periodic state persistence (XML only, no WAV)
+// ═══════════════════════════════════════════════════════════════════════════
+
+juce::File PluginProcessor::getAutosaveFile() const
+{
+    return juce::File(sampleRootPath_).getChildFile("autosave.gridstate");
+}
+
+void PluginProcessor::performAutosave()
+{
+    juce::MemoryBlock state;
+    getStateInformation(state);
+    auto file = getAutosaveFile();
+    if (auto stream = file.createOutputStream()) {
+        stream->write(state.getData(), state.getSize());
+        stream->flush();
+    }
+}
+
+void PluginProcessor::loadAutosave()
+{
+    auto file = getAutosaveFile();
+    if (!file.existsAsFile()) return;
+    juce::MemoryBlock state;
+    if (file.loadFileAsData(state) && state.getSize() > 0) {
+        setStateInformation(state.getData(), (int)state.getSize());
+    }
+}
+
+void PluginProcessor::setRecallPoint()
+{
+    recallPointData_.reset();
+    getStateInformation(recallPointData_);
+    recallPointSet_ = true;
+}
+
+bool PluginProcessor::restoreRecallPoint()
+{
+    if (!recallPointSet_ || recallPointData_.getSize() == 0) return false;
+    setStateInformation(recallPointData_.getData(), (int)recallPointData_.getSize());
+    return true;
 }
 
 void PluginProcessor::setMidiClockEnabled(bool b)
@@ -1202,7 +1318,7 @@ void PluginProcessor::setMidiClockEnabled(bool b)
 void PluginProcessor::handleIncomingMidiMessage(juce::MidiInput* source, const juce::MidiMessage& msg)
 {
     // ── MIDI Transport ──────────────────────────────────────────────────
-    if (msg.isMidiStart()) {
+    if (msg.isMidiStart() && midiTransportEnabled_) {
         midiTransportRunning_ = true;
         midiClockCount_ = 0;
         midiClockLastBeatMs_ = 0.0;
@@ -1211,12 +1327,12 @@ void PluginProcessor::handleIncomingMidiMessage(juce::MidiInput* source, const j
         if (midiClockEnabled_) clockActive_ = true;
         return;
     }
-    if (msg.isMidiContinue()) {
+    if (msg.isMidiContinue() && midiTransportEnabled_) {
         midiTransportRunning_ = true;
         if (midiClockEnabled_) clockActive_ = true;
         return;
     }
-    if (msg.isMidiStop()) {
+    if (msg.isMidiStop() && midiTransportEnabled_) {
         midiTransportRunning_ = false;
         return;
     }
@@ -1307,6 +1423,7 @@ void PluginProcessor::getStateInformation(juce::MemoryBlock& destData)
         pad->setAttribute("filterReso", slot.getFilterResonance());
         pad->setAttribute("lofiMode", static_cast<int>(slot.getLofiMode()));
         pad->setAttribute("compSend", slot.getCompSend());
+        pad->setAttribute("compBypass", slot.getCompBypass() ? 1 : 0);
         pad->setAttribute("outputChannel", slot.getOutputChannel());
         pad->setAttribute("sendToMix", slot.getSendToMix() ? 1 : 0);
         pad->setAttribute("sliceMode", slot.isSliceMode() ? 1 : 0);
@@ -1367,6 +1484,7 @@ void PluginProcessor::getStateInformation(juce::MemoryBlock& destData)
     xml->setAttribute("muteFadeMs", muteFadeMs_);
     xml->setAttribute("progChangeEnabled", progChangeEnabled_ ? 1 : 0);
     xml->setAttribute("progChangeCC", progChangeCC_);
+    xml->setAttribute("midiTransportEnabled", midiTransportEnabled_ ? 1 : 0);
     xml->setAttribute("browserFontAdj", (double)browserFontSize_);
     xml->setAttribute("sliceCVPad1", sliceCVPad_[0]);
     xml->setAttribute("sliceCVPad2", sliceCVPad_[1]);
@@ -1383,9 +1501,14 @@ void PluginProcessor::getStateInformation(juce::MemoryBlock& destData)
     xml->setAttribute("compDrive", compDrive_);
     xml->setAttribute("transSensitivity", transSensitivity_);
     xml->setAttribute("compShowGR", compShowGR_ ? 1 : 0);
+    xml->setAttribute("compMix", compMix_);
+    xml->setAttribute("outputHpfHz", outputHpfHz_);
+    xml->setAttribute("autosaveEnabled", autosaveEnabled_ ? 1 : 0);
 
     // Save slice cache (per-file slice persistence)
-    for (auto& pair : sliceCache_) {
+    {
+        const juce::ScopedLock sl(sliceCacheLock_);
+        for (auto& pair : sliceCache_) {
         auto* cacheEl = xml->createNewChildElement("SLICE_CACHE");
         cacheEl->setAttribute("file", pair.first);
         cacheEl->setAttribute("count", pair.second.count);
@@ -1399,7 +1522,8 @@ void PluginProcessor::getStateInformation(juce::MemoryBlock& destData)
         cacheEl->setAttribute("starts", starts);
         cacheEl->setAttribute("ends", ends);
         cacheEl->setAttribute("pitches", pitches);
-    }
+        }
+    }  // end sliceCacheLock_
 
     copyXmlToBinary(*xml, destData);
 }
@@ -1461,6 +1585,7 @@ void PluginProcessor::setStateInformation(const void* data, int sizeInBytes)
         slot.setFilterResonance((float)pad->getDoubleAttribute("filterReso", 0.0));
         slot.setLofiMode(static_cast<LofiMode>(pad->getIntAttribute("lofiMode", 0)));
         slot.setCompSend((float)pad->getDoubleAttribute("compSend", 0.0));
+        slot.setCompBypass(pad->getIntAttribute("compBypass", 0) != 0);
         slot.setOutputChannel(pad->getIntAttribute("outputChannel", -1));
         slot.setSendToMix(pad->getIntAttribute("sendToMix", 1) != 0);
         slot.setSliceMode(pad->getIntAttribute("sliceMode", 0) != 0);
@@ -1550,6 +1675,7 @@ void PluginProcessor::setStateInformation(const void* data, int sizeInBytes)
     setMuteFadeMs((float)xml->getDoubleAttribute("muteFadeMs", 0.0));
     progChangeEnabled_ = xml->getIntAttribute("progChangeEnabled", 0) != 0;
     progChangeCC_ = juce::jlimit(0, 127, xml->getIntAttribute("progChangeCC", 0));
+    midiTransportEnabled_ = xml->getIntAttribute("midiTransportEnabled", 1) != 0;
     browserFontSize_ = juce::jlimit(-3.0f, 3.0f, (float)xml->getDoubleAttribute("browserFontAdj", 0.0));
     sliceCVPad_[0] = juce::jlimit(-1, 7, xml->getIntAttribute("sliceCVPad1", 0));
     sliceCVPad_[1] = juce::jlimit(-1, 7, xml->getIntAttribute("sliceCVPad2", 1));
@@ -1566,26 +1692,32 @@ void PluginProcessor::setStateInformation(const void* data, int sizeInBytes)
     compDrive_ = (float)xml->getDoubleAttribute("compDrive", 1.03);
     transSensitivity_ = (float)xml->getDoubleAttribute("transSensitivity", 0.3);
     compShowGR_ = xml->getIntAttribute("compShowGR", 0) != 0;
+    compMix_ = (float)xml->getDoubleAttribute("compMix", 1.0);
+    outputHpfHz_ = xml->getIntAttribute("outputHpfHz", 0);
+    autosaveEnabled_ = xml->getIntAttribute("autosaveEnabled", 1) != 0;
 
     // Load slice cache
-    sliceCache_.clear();
-    for (int i = 0; i < xml->getNumChildElements(); ++i) {
-        auto* el = xml->getChildElement(i);
-        if (!el || el->getTagName() != "SLICE_CACHE") continue;
-        juce::String filePath = el->getStringAttribute("file");
-        if (filePath.isEmpty()) continue;
-        SliceCache cache;
-        cache.count = el->getIntAttribute("count", 0);
-        auto starts = juce::StringArray::fromTokens(el->getStringAttribute("starts"), ",", "");
-        auto ends = juce::StringArray::fromTokens(el->getStringAttribute("ends"), ",", "");
-        auto pitches = juce::StringArray::fromTokens(el->getStringAttribute("pitches"), ",", "");
-        for (int s = 0; s < cache.count && s < 128; ++s) {
-            cache.starts[s] = (s < starts.size()) ? starts[s].getFloatValue() : 0.0f;
-            cache.ends[s] = (s < ends.size()) ? ends[s].getFloatValue() : 1.0f;
-            cache.pitches[s] = (s < pitches.size()) ? pitches[s].getFloatValue() : 0.0f;
+    {
+        const juce::ScopedLock sl(sliceCacheLock_);
+        sliceCache_.clear();
+        for (int i = 0; i < xml->getNumChildElements(); ++i) {
+            auto* el = xml->getChildElement(i);
+            if (!el || el->getTagName() != "SLICE_CACHE") continue;
+            juce::String filePath = el->getStringAttribute("file");
+            if (filePath.isEmpty()) continue;
+            SliceCache cache;
+            cache.count = el->getIntAttribute("count", 0);
+            auto starts = juce::StringArray::fromTokens(el->getStringAttribute("starts"), ",", "");
+            auto ends = juce::StringArray::fromTokens(el->getStringAttribute("ends"), ",", "");
+            auto pitches = juce::StringArray::fromTokens(el->getStringAttribute("pitches"), ",", "");
+            for (int s = 0; s < cache.count && s < 128; ++s) {
+                cache.starts[s] = (s < starts.size()) ? starts[s].getFloatValue() : 0.0f;
+                cache.ends[s] = (s < ends.size()) ? ends[s].getFloatValue() : 1.0f;
+                cache.pitches[s] = (s < pitches.size()) ? pitches[s].getFloatValue() : 0.0f;
+            }
+            sliceCache_[filePath] = cache;
         }
-        sliceCache_[filePath] = cache;
-    }
+    }  // end sliceCacheLock_
 }
 
 juce::AudioProcessorEditor* PluginProcessor::createEditor()
@@ -1661,6 +1793,7 @@ void PluginProcessor::cacheSlicesForPad(int pad)
         cache.ends[i] = slot.getSliceEnd(i);
         cache.pitches[i] = slot.getSlicePitch(i);
     }
+    const juce::ScopedLock sl(sliceCacheLock_);
     sliceCache_[slot.getFilePath()] = cache;
 }
 
@@ -1669,6 +1802,7 @@ bool PluginProcessor::restoreCachedSlices(int pad)
     auto& slot = engine_.getSlot(juce::jlimit(0, kNumPads - 1, pad));
     if (!slot.isLoaded()) return false;
 
+    const juce::ScopedLock sl(sliceCacheLock_);
     auto it = sliceCache_.find(slot.getFilePath());
     if (it == sliceCache_.end()) return false;
 

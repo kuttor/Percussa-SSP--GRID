@@ -139,6 +139,8 @@ public:
     void flushBarMutes();
     int getPendingBarCountdown() const { return pendingBarCountdown_; }
     int getBeatCount() const { return beatCount_; }
+    int getBarCount() const { return barCount_; }
+    bool isTransportRunning() const { return midiTransportRunning_; }
 private:
 
     // Recording
@@ -168,6 +170,7 @@ private:
     float muteFadeMs_ = 0.0f;   // 0 = instant mute/unmute
     bool  progChangeEnabled_ = false;  // respond to MIDI program change for kit switching
     int   progChangeCC_ = 0;           // 0 = use program change msg, 1-127 = use this CC instead
+    bool  midiTransportEnabled_ = true; // respond to MIDI start/stop/continue
     float browserFontSize_ = 0.0f;     // 0 = default, -3..+3 adjustment in 0.5 steps
     int sliceCVPad_[2] = { 0, 1 };  // which pad each Slice CV controls (-1=OFF, 0-7=pad)
 
@@ -243,6 +246,8 @@ public:
     void setProgChangeEnabled(bool b) { progChangeEnabled_ = b; }
     int  getProgChangeCC() const { return progChangeCC_; }
     void setProgChangeCC(int cc) { progChangeCC_ = juce::jlimit(0, 127, cc); }
+    bool getMidiTransportEnabled() const { return midiTransportEnabled_; }
+    void setMidiTransportEnabled(bool b) { midiTransportEnabled_ = b; }
     float getBrowserFontAdj() const { return browserFontSize_; }
     void  setBrowserFontAdj(float adj) { browserFontSize_ = juce::jlimit(-3.0f, 5.0f, adj); }
     int getSliceCVPad(int cv) const { return sliceCVPad_[juce::jlimit(0, 1, cv)]; }

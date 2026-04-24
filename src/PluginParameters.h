@@ -88,7 +88,7 @@ static constexpr float kTrigThreshold = 0.2f;
 enum Page { PAGE_OVERVIEW = 0, PAGE_SAMPLE, PAGE_PLAY, PAGE_PITCH, PAGE_FADE, PAGE_FILTER, PAGE_MIDI, PAGE_MOD };
 
 // -- Per-pad modes --
-enum class PadMode { OneShot = 0, Loop, ClockedLoop, ClockedOneShot };
+enum class PadMode { OneShot = 0, Loop, ClockedLoop, ClockedOneShot, Gate };
 
 // -- Time stretch algorithm --
 enum class StretchMode { OLA = 0, WSOLA };  // OLA = current, WSOLA = cross-correlation aligned
@@ -313,6 +313,7 @@ struct KitPadSlot {
     float filterReso = 0.0f;
     int   lofiMode = 0;         // LofiMode enum
     float compSend = 0.0f;
+    bool  compBypass = false;
     int   outputChannel = -1;  // -1 = default
     bool  sendToMix = true;
     // Slice system — paired regions
@@ -356,6 +357,7 @@ struct KitData {
             pad->setAttribute("filterReso", pads[i].filterReso);
             pad->setAttribute("lofiMode", pads[i].lofiMode);
             pad->setAttribute("compSend", pads[i].compSend);
+            pad->setAttribute("compBypass", pads[i].compBypass ? 1 : 0);
             pad->setAttribute("outputChannel", pads[i].outputChannel);
             pad->setAttribute("sendToMix", pads[i].sendToMix ? 1 : 0);
             pad->setAttribute("sliceMode", pads[i].sliceMode ? 1 : 0);
@@ -407,6 +409,7 @@ struct KitData {
             k.pads[i].filterReso = (float)pad->getDoubleAttribute("filterReso", 0.0);
             k.pads[i].lofiMode = pad->getIntAttribute("lofiMode", 0);
             k.pads[i].compSend = (float)pad->getDoubleAttribute("compSend", 0.0);
+            k.pads[i].compBypass = pad->getIntAttribute("compBypass", 0) != 0;
             k.pads[i].outputChannel = pad->getIntAttribute("outputChannel", -1);
             k.pads[i].sendToMix = pad->getIntAttribute("sendToMix", 1) != 0;
             k.pads[i].sliceMode = pad->getIntAttribute("sliceMode", 0) != 0;

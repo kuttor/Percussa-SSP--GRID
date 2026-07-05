@@ -16,12 +16,23 @@ void GridEngine::process(float* outL, float* outR, int numSamples)
 
     for (int i = 0; i < kNumPads; ++i) {
         slots_[i].advanceRetriggerGuard(numSamples);
-        if (muted_[i]) continue;
 
+        // Per-pad outputs must be silenced every block regardless of mute
+        // state, otherwise stale data leaks out the physical pad output
+        // when the slot is muted (the SSP host reads the buffer either way).
         if (padOutL_[i] != nullptr) {
-            // Render into per-pad temp buffer
             std::memset(padOutL_[i], 0, sizeof(float) * static_cast<size_t>(numSamples));
             std::memset(padOutR_[i], 0, sizeof(float) * static_cast<size_t>(numSamples));
+        }
+
+        if (muted_[i]) continue;
+
+        // MIDI-CV pads (2.4.9): don't render audio. The pad's per-pad output
+        // channel becomes a gate output written by PluginProcessor::processBlock.
+        if (slots_[i].getMode() == PadMode::MidiCV) continue;
+
+        if (padOutL_[i] != nullptr) {
+            // Render into per-pad temp buffer (already zeroed above)
             slots_[i].process(padOutL_[i], padOutR_[i], numSamples);
 
             // Add to stereo mix if enabled

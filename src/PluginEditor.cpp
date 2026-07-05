@@ -37,6 +37,30 @@ PluginEditor::PluginEditor(PluginProcessor& p)
 
 PluginEditor::~PluginEditor() {}
 
+// ═════════════════════════════════════════════════════════════════════════
+// clearAllHoldState (2.4.9) — nuke every transient hold-tracking field.
+// Safe to call from any modal entry point, plugin activation, or the
+// idle-drift watchdog. Fixes the stuck-roll bug at every root cause.
+// ═════════════════════════════════════════════════════════════════════════
+void PluginEditor::clearAllHoldState()
+{
+    rollPad_ = -1;
+    rollNextTriggerMs_ = 0.0;
+    rollPressTime_ = 0.0;
+    for (int i = 0; i < kNumPads; ++i) padButtonHeld_[i] = false;
+    for (int e = 0; e < 4; ++e) {
+        encPushTime_[e] = 0.0;
+        encPushHandled_[e] = false;
+        encHoldProgress_[e] = 0.0f;
+    }
+    leftArrowHeld_ = false;
+    rightArrowHeld_ = false;
+    upArrowHeld_ = false;
+    downArrowHeld_ = false;
+    leftShiftHeld_ = false;
+    rightShiftHeld_ = false;
+}
+
 void PluginEditor::resized()
 {
     const int encY = getHeight() - kEncoderBarH;
@@ -50,7 +74,10 @@ void PluginEditor::resized()
     {
         int x = i * encW + nudge[i];
         encoderSlots_[i].nameLabel.setBounds(x, encY, encW, 20);
-        encoderSlots_[i].valueLabel.setBounds(x, encY + 18, encW, 28);
+        // Clamp value label to screen edge (enc0 nudge goes negative)
+        int vx = std::max(0, x);
+        int vw = encW - (vx - x);  // compensate width for the clamp
+        encoderSlots_[i].valueLabel.setBounds(vx, encY + 18, vw, 28);
     }
 
     const int w = getWidth();
@@ -70,7 +97,7 @@ void PluginEditor::paint(juce::Graphics& g)
     g.setColour(juce::Colour(kTabBg));
     g.fillRect(0, 0, w, kTabHeight);
 
-    const char* pages[] = { "PADS", "SAMPLE", "PLAY", "WARP", "FADE", "FILTER", "MIDI", "MOD" };
+    const char* pages[] = { "PADS", "SAMPLE", "PLAY", "WARP", "FADE", "FILTER", "SLICE", "MOD" };
     int tabW = 110;
     for (int i = 0; i < kNumPages; ++i)
     {
@@ -258,11 +285,47 @@ void PluginEditor::paint(juce::Graphics& g)
         g.fillRect(sx, encY + kEncoderBarH / 2, 1, kEncoderBarH / 2);
     }
 
+    // ── Encoder hold progress bars (red fill, replaces broken Unicode) ───
+    {
+        static constexpr int nudge[] = { -14, 0, 52, 86 };
+        for (int i = 0; i < kEncodersPerPage; ++i) {
+            if (encHoldProgress_[i] > 0.01f) {
+                int ex = i * encSlotW + nudge[i];
+                int barH = 12;
+                int barY = encY + (kEncoderBarH - barH) / 2;  // vertically centered
+                int barMaxW = encSlotW - 120;  // much narrower
+                int barX = ex + (encSlotW - barMaxW) / 2;  // centered horizontally
+                // Background track
+                g.setColour(juce::Colour(0xFF222222));
+                g.fillRoundedRectangle((float)barX, (float)barY, (float)barMaxW, (float)barH, 4.0f);
+                // Red fill
+                float fillW = encHoldProgress_[i] * (float)barMaxW;
+                g.setColour(juce::Colour(kTabActive).withAlpha(0.7f + encHoldProgress_[i] * 0.3f));
+                g.fillRoundedRectangle((float)barX, (float)barY, fillW, (float)barH, 4.0f);
+            }
+        }
+    }
+
     // ── Kit name (right side of encoder bar, tight vertical padding) ──
     {
         juce::String kitName = processor_.getCurrentKitName();
         int bandY = encY + 6;
         int bandH = kEncoderBarH - 12;
+
+        // Autosave flash: show "Saved" briefly after autosave completes
+        double sinceAutosave = juce::Time::getMillisecondCounterHiRes() - processor_.getLastAutosaveTimeMs();
+        bool showSaved = (sinceAutosave >= 0.0 && sinceAutosave < 2000.0 && processor_.getLastAutosaveTimeMs() > 0.0);
+        if (showSaved) {
+            float fadeAlpha = (sinceAutosave < 1000.0) ? 0.9f : 0.9f * (1.0f - (float)((sinceAutosave - 1000.0) / 1000.0));
+            int pillW = 80, pillH = kEncoderBarH - 6;
+            int pillX = w - 410;
+            int pillY = encY + 3;
+            g.setColour(juce::Colour(0xFF4CAF50).withAlpha(fadeAlpha * 0.3f));
+            g.fillRoundedRectangle((float)pillX, (float)pillY, (float)pillW, (float)pillH, 8.0f);
+            g.setColour(juce::Colour(0xFF4CAF50).withAlpha(fadeAlpha));
+            g.setFont(18.0f);
+            g.drawText("SAVED", pillX, pillY, pillW, pillH, juce::Justification::centred);
+        }
 
         // Recall point indicator (pill left of kit name)
         if (processor_.hasRecallPoint()) {
@@ -292,10 +355,21 @@ void PluginEditor::paint(juce::Graphics& g)
             g.drawText(counter, ctrX, ctrY, ctrW, ctrH, juce::Justification::centred);
         }
 
+        // Modified indicator — red dot after kit name when dirty
+        bool showDirty = processor_.isStateDirty() && processor_.getAutosaveEnabled();
+
         g.setColour(juce::Colour(0xFFEEEEEE));
         g.setFont(juce::Font(20.0f, juce::Font::bold));
         g.drawText(kitName, w - 320, bandY, 310, bandH,
                    juce::Justification::centredRight);
+
+        if (showDirty) {
+            // Red dot to the left of kit name
+            int dotX = w - 328;
+            int dotY = bandY + bandH / 2 - 5;
+            g.setColour(juce::Colour(kTabActive).withAlpha(0.9f));
+            g.fillEllipse((float)dotX, (float)dotY, 10.0f, 10.0f);
+        }
     }
 
     // ── Popup overlay (renders on top of everything) ─────────────────
@@ -303,6 +377,9 @@ void PluginEditor::paint(juce::Graphics& g)
         auto fullArea = juce::Rectangle<int>(0, 0, w, h);
         paintPopup(g, fullArea);
     }
+
+    // (Bubble paint moved to end of paint() so it renders on top of every
+    // overlay — slice editor, mod editor, comp editor, mixer, etc.)
 
     // ── Keyboard overlay ─────────────────────────────────────────────
     if (keyboardMode_) {
@@ -314,6 +391,18 @@ void PluginEditor::paint(juce::Graphics& g)
     if (kitPickerOpen_) {
         auto fullArea = juce::Rectangle<int>(0, 0, w, h);
         paintKitPicker(g, fullArea);
+    }
+
+    // ── Cheat sheet overlay ─────────────────────────────────────────
+    if (cheatSheetOpen_) {
+        auto fullArea = juce::Rectangle<int>(0, 0, w, h);
+        paintCheatSheet(g, fullArea);
+    }
+
+    // ── About overlay ───────────────────────────────────────────────
+    if (aboutOpen_) {
+        auto fullArea = juce::Rectangle<int>(0, 0, w, h);
+        paintAbout(g, fullArea);
     }
 
     // ── Mod editor overlay ──────────────────────────────────────────
@@ -338,6 +427,12 @@ void PluginEditor::paint(juce::Graphics& g)
     if (mixerOpen_) {
         auto fullArea = juce::Rectangle<int>(0, 0, w, h);
         paintMixer(g, fullArea);
+    }
+
+    // ── Bubble popup overlay (ALWAYS LAST so it renders above any
+    // active overlay — slice editor, mod editor, comp editor, mixer) ─
+    if (bubble_.isOpen()) {
+        bubble_.paint(g, juce::Rectangle<int>(0, 0, w, h));
     }
 }
 
@@ -368,6 +463,13 @@ void PluginEditor::paintOverviewPage(juce::Graphics& g, juce::Rectangle<int> are
 void PluginEditor::paintPadBox(juce::Graphics& g, juce::Rectangle<int> box, int padIndex)
 {
     auto& slot = processor_.getEngine().getSlot(padIndex);
+
+    // ── MIDI-CV mode (2.4.9): skip normal sample paint, draw CV card ──
+    if (slot.getMode() == PadMode::MidiCV) {
+        paintMidiCVPad(g, box, padIndex);
+        return;
+    }
+
     bool selected = (padIndex == selectedPad_);
     bool playing = slot.isPlaying();
     float pos = slot.getPlaybackPosition();
@@ -379,8 +481,11 @@ void PluginEditor::paintPadBox(juce::Graphics& g, juce::Rectangle<int> box, int 
     // ── Progress fill: shaped by fade curves ────────────────────────────
     if (playing && slot.isLoaded())
     {
-        float regionStart = slot.getStartPos();
-        float regionEnd = slot.getEndPos();
+        // Use the voice's playing region (slice during audition, slot trim
+        // otherwise) so the red fill draws from slice-start to playhead
+        // instead of from sample-start.
+        float regionStart, regionEnd;
+        slot.getPlayingRegion(regionStart, regionEnd);
         float regionFrac = 0.0f;
         if (regionEnd > regionStart)
             regionFrac = juce::jlimit(0.0f, 1.0f, (pos - regionStart) / (regionEnd - regionStart));
@@ -487,7 +592,7 @@ void PluginEditor::paintPadBox(juce::Graphics& g, juce::Rectangle<int> box, int 
 
     // Waveform + fade overlay
     auto wfArea = box.reduced(4, 2);
-    paintMiniWaveform(g, wfArea, slot);
+    paintMiniWaveform(g, wfArea, slot, padIndex);
 
     // ── Dark overlay: everything outside the envelope shape ─────────────
     {
@@ -714,6 +819,51 @@ void PluginEditor::paintPadBox(juce::Graphics& g, juce::Rectangle<int> box, int 
         }
     }
 
+    // ── Roll indicator (buildup + active) ──────────────────────────────
+    if (rollPad_ == padIndex) {
+        double now = juce::Time::getMillisecondCounterHiRes();
+        double held = now - rollPressTime_;
+        bool rollActive = (held >= kRollActivateMs);
+
+        g.saveState();
+        g.reduceClipRegion(box);
+
+        if (rollActive) {
+            // Active roll: mute-style dark overlay
+            g.setColour(juce::Colour(0xCC0D0D0D));
+            g.fillRoundedRectangle(box.toFloat(), 6.0f);
+            // Red fill left-to-right (like normal playback progress)
+            float pulse = 0.5f + 0.5f * std::sin((float)now * 0.012f);
+            float fillFrac = 0.5f + pulse * 0.5f;
+            g.setColour(juce::Colour(kTabActive).withAlpha(0.3f));
+            g.fillRect((float)box.getX(), (float)box.getY(),
+                       fillFrac * (float)box.getWidth(), (float)box.getHeight());
+            // Speed label — matching mute text style
+            juce::String speedStr;
+            if (rollIntervalMs_ < 50.0f) speedStr = "1/32";
+            else if (rollIntervalMs_ < 80.0f) speedStr = "1/16";
+            else if (rollIntervalMs_ < 160.0f) speedStr = "1/8";
+            else if (rollIntervalMs_ < 300.0f) speedStr = "1/4";
+            else speedStr = "1/2";
+            g.setColour(juce::Colour(kTabActive).withAlpha(0.7f));
+            g.setFont(20.0f);
+            g.drawText("ROLL " + speedStr, box, juce::Justification::centred);
+        } else {
+            // Buildup: mute-style overlay fills left to right
+            float progress = juce::jlimit(0.0f, 1.0f, (float)(held / kRollActivateMs));
+            g.setColour(juce::Colour(0x880D0D0D));
+            g.fillRoundedRectangle(box.toFloat(), 6.0f);
+            // Red fill left to right
+            float fillW = progress * (float)box.getWidth();
+            g.setColour(juce::Colour(kTabActive).withAlpha(0.2f + progress * 0.15f));
+            g.fillRect((float)box.getX(), (float)box.getY(), fillW, (float)box.getHeight());
+            // Border
+            g.setColour(juce::Colour(kTabActive).withAlpha(0.4f + progress * 0.4f));
+            g.drawRoundedRectangle(box.toFloat().reduced(1.0f), 6.0f, 1.5f + progress * 1.5f);
+        }
+        g.restoreState();
+    }
+
     // ── Compressor GR meter (auto-visible when compressor is ON) ───────
     if (processor_.getCompEnabled()) {
         int barW = 5;
@@ -742,9 +892,80 @@ void PluginEditor::paintPadBox(juce::Graphics& g, juce::Rectangle<int> box, int 
             g.fillRect(barX, barY, barW, grH);
         }
     }
+
+    // ── COPIED flash overlay ─────────────────────────────────────────────
+    {
+        double elapsed = juce::Time::getMillisecondCounterHiRes() - padCopyFlashTime_[padIndex];
+        if (elapsed < kPadCopyFlashMs && elapsed >= 0) {
+            float alpha = 1.0f - (float)(elapsed / kPadCopyFlashMs);
+            alpha = alpha * alpha;  // ease out
+            g.saveState();
+            g.reduceClipRegion(box);
+            g.setColour(juce::Colour(0xFFFFFFFF).withAlpha(alpha * 0.4f));
+            g.fillRoundedRectangle(box.toFloat(), 6.0f);
+            g.setColour(juce::Colour(0xFFFFFFFF).withAlpha(alpha));
+            g.setFont(juce::Font(22.0f, juce::Font::bold));
+            g.drawText("COPIED", box, juce::Justification::centred);
+            g.restoreState();
+        }
+    }
 }
 
-void PluginEditor::paintMiniWaveform(juce::Graphics& g, juce::Rectangle<int> area, const SampleSlot& slot)
+// ═════════════════════════════════════════════════════════════════════════
+// paintMidiCVPad (2.4.9)
+// MidiCV pads are pure CV outputs — no sample playback, no waveform.
+// Renders a dark card with an "M-CV" glyph, the destination channel
+// number, and a red tally dot when the gate is high.
+// ═════════════════════════════════════════════════════════════════════════
+void PluginEditor::paintMidiCVPad(juce::Graphics& g, juce::Rectangle<int> box, int padIndex)
+{
+    const bool selected = (padIndex == selectedPad_);
+    const bool gateOn   = processor_.getMidiCVGate(padIndex);
+
+    // Dark background — pad is audibly empty here
+    g.setColour(juce::Colour(selected ? 0xFF2A1A1A : 0xFF0A0A0A));
+    g.fillRoundedRectangle(box.toFloat(), 6.0f);
+
+    // Gate-active glow
+    if (gateOn) {
+        g.setColour(juce::Colour(kTabActive).withAlpha(0.20f));
+        g.fillRoundedRectangle(box.toFloat(), 6.0f);
+    }
+
+    // Border
+    juce::Colour border = selected ? juce::Colour(kPadSelBorder)
+                        : gateOn   ? juce::Colour(kTabActive)
+                                   : juce::Colour(0xFF2A2A2A);
+    g.setColour(border);
+    g.drawRoundedRectangle(box.toFloat().reduced(0.5f), 6.0f, selected ? 2.5f : 1.0f);
+
+    // Pad number, dim (top-left)
+    g.setColour(juce::Colour(0xFF666666));
+    g.setFont(32.0f);
+    g.drawText(juce::String(padIndex + 1), box.getX() + 6, box.getY() + 2, 36, 36,
+               juce::Justification::topLeft);
+
+    // "M-CV" badge centre
+    g.setColour(juce::Colour(gateOn ? kTabActive : 0xFF888888));
+    g.setFont(28.0f);
+    g.drawText("M-CV", box.reduced(0, 4), juce::Justification::centred);
+
+    // Route label — pad N gate emits on plugin output "Pad N"
+    g.setColour(juce::Colour(0xFF888888));
+    g.setFont(14.0f);
+    g.drawText(juce::String::formatted("-> PAD %d OUT", padIndex + 1),
+               box.getX(), box.getBottom() - 22, box.getWidth(), 16,
+               juce::Justification::centred);
+
+    // Tally dot (gate high)
+    if (gateOn) {
+        g.setColour(juce::Colour(kTabActive));
+        g.fillEllipse((float)box.getRight() - 14.0f, (float)box.getBottom() - 14.0f,
+                      8.0f, 8.0f);
+    }
+}
+
+void PluginEditor::paintMiniWaveform(juce::Graphics& g, juce::Rectangle<int> area, const SampleSlot& slot, int padIndex)
 {
     if (!slot.isLoaded() || slot.isLoading() || area.getWidth() <= 0) return;
 
@@ -907,6 +1128,60 @@ void PluginEditor::paintMiniWaveform(juce::Graphics& g, juce::Rectangle<int> are
         // No fade = simple vertical line
         g.fillRect(regionEndPx - 1.0f, areaTop, 1.5f, areaH);
     }
+
+    // ── Slice markers (visible on all tabs once slices exist) ───────────
+    int sliceCount = slot.getSliceCount();
+    if (sliceCount > 0) {
+        // On the SLICE tab, mirror the slice editor's "active slice" look:
+        // a soft WHITE fill over the cursor slice. Other slices stay fully
+        // lit — only the cursor slice is highlighted.
+        int hiSlice = -1;
+        if (currentPage_ == PAGE_SLICE && padIndex == selectedPad_) {
+            hiSlice = slot.findSliceAt(sliceTabCursorPos_);
+        }
+
+        const double nowMs = juce::Time::getMillisecondCounterHiRes();
+        constexpr double kAuditionFlashMs = 350.0;
+        const bool isSelectedPad = (padIndex == selectedPad_);
+
+        for (int i = 0; i < sliceCount; ++i) {
+            float s = slot.getSliceStart(i);
+            float e = slot.getSliceEnd(i);
+            float sx = (float)area.getX() + s * (float)area.getWidth();
+            float ex = (float)area.getX() + e * (float)area.getWidth();
+
+            if (i == hiSlice) {
+                // White wash on active slice — matches the slice editor's
+                // active-slice treatment for visual consistency
+                g.setColour(juce::Colour(0xFFFFFFFF).withAlpha(0.32f));
+                g.fillRect(sx, areaTop, ex - sx, areaH);
+            }
+
+            // Red audition flash — same fade-out animation as the slice
+            // editor, mirrored to the grid mini-waveform so triggering a
+            // slice (cursor push, MIDI/CV, pad button) flashes here too
+            if (isSelectedPad && i < kMaxSliceAuditionFlashes
+                && sliceAuditionTimeMs_[i] > 0.0) {
+                double age = nowMs - sliceAuditionTimeMs_[i];
+                if (age < kAuditionFlashMs) {
+                    float a = (float)(1.0 - age / kAuditionFlashMs) * 0.55f;
+                    g.setColour(juce::Colour(kTabActive).withAlpha(a));
+                    g.fillRect(sx, areaTop, ex - sx, areaH);
+                }
+            }
+
+            // Slice boundary line (uniform across all slices)
+            g.setColour(juce::Colour(0xFFFFFFFF).withAlpha(0.35f));
+            g.fillRect(sx, areaTop, 1.0f, areaH);
+        }
+
+        // Slice count badge
+        g.setColour(juce::Colour(kTabActive).withAlpha(0.7f));
+        g.setFont(11.0f);
+        g.drawText(juce::String(sliceCount) + "sl",
+                   area.getRight() - 32, area.getY() + 2, 30, 12,
+                   juce::Justification::topRight);
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1062,7 +1337,7 @@ void PluginEditor::paintPlayPage(juce::Graphics& g, juce::Rectangle<int> area)
     g.drawText("PAD " + juce::String(selectedPad_ + 1), area.getX() + 12, area.getY() + 4, 100, 22,
                juce::Justification::centredLeft);
 
-    const char* modeNames[] = { "ONE-SHOT", "LOOP", "CLOCKED LOOP", "CLOCKED BAR", "GATE" };
+    const char* modeNames[] = { "ONE-SHOT", "LOOP", "CLOCKED LOOP", "CLOCKED BAR", "GATE", "MIDI-CV" };
     int mode = static_cast<int>(slot.getMode());
     g.setColour(juce::Colour(kPadText));
     g.setFont(28.0f);
@@ -1198,30 +1473,64 @@ void PluginEditor::paintFileBrowser(juce::Graphics& g, juce::Rectangle<int> area
     if (browseIndex_ >= browseScrollOffset_ + visibleRows) browseScrollOffset_ = browseIndex_ - visibleRows + 1;
     browseScrollOffset_ = juce::jlimit(0, std::max(0, fileCount - visibleRows), browseScrollOffset_);
 
+    // Smart Home collapse helper — walks backwards from `idx` to find the
+    // closest header and returns whether that section is collapsed. Returns
+    // false on real directories (only Smart Home has sections).
+    auto sectionIsCollapsed = [this](int idx) -> bool {
+        if (browseCurrentDir_.isDirectory()) return false;  // only Smart Home
+        for (int j = idx; j >= 0; --j) {
+            if (browseItemDurations_[j] == "__HDR__") {
+                juce::String label = browseItemNames_[j].substring(7);
+                return smartHomeCollapsed_.contains(label);
+            }
+        }
+        return false;
+    };
+
+    // Build a list of visible row indices (skipping items in collapsed sections)
+    juce::Array<int> visibleIndices;
+    visibleIndices.ensureStorageAllocated(fileCount);
+    for (int j = 0; j < fileCount; ++j) {
+        bool isHdr = (browseItemDurations_[j] == "__HDR__");
+        if (isHdr || !sectionIsCollapsed(j))
+            visibleIndices.add(j);
+    }
+    int visibleCount = visibleIndices.size();
+
+    // Clamp scroll offset against visible (not raw) count
+    if (browseScrollOffset_ > std::max(0, visibleCount - visibleRows))
+        browseScrollOffset_ = std::max(0, visibleCount - visibleRows);
+
     for (int i = 0; i < visibleRows; ++i)
     {
-        int idx = browseScrollOffset_ + i;
-        if (idx >= fileCount) break;
+        int vi = browseScrollOffset_ + i;
+        if (vi >= visibleCount) break;
+        int idx = visibleIndices[vi];
         auto row = juce::Rectangle<int>(content.getX(), content.getY() + i * rowH, content.getWidth(), rowH);
 
         // ── Section header (divider style) ──
         bool isHeader = (browseItemDurations_[idx] == "__HDR__");
         if (isHeader) {
             juce::String label = browseItemNames_[idx].substring(7);  // strip "__HDR__"
+            bool collapsed = smartHomeCollapsed_.contains(label);
+            // Collapse indicator using ASCII (SSP font lacks UTF-8 triangle glyphs)
+            juce::String marker = collapsed ? juce::String("[+]") : juce::String("[-]");
+            juce::String shownLabel = marker + "  " + label;
             int divY = row.getCentreY();
-            g.setFont(bFont(13.0f));
-            int textW = g.getCurrentFont().getStringWidth(label) + 16;
+            g.setFont(bFont(20.0f));  // bigger — was 13, too small to read
+            int textW = g.getCurrentFont().getStringWidth(shownLabel) + 20;
             int textX = row.getCentreX() - textW / 2;
             // Dashes left
             g.setColour(juce::Colour(0x55FFFFFF));
-            for (int dx = row.getX(); dx < textX - 4; dx += 10)
+            for (int dx = row.getX(); dx < textX - 6; dx += 10)
                 g.fillRect(dx, divY, 5, 1);
             // Dashes right
-            for (int dx = textX + textW + 4; dx < row.getRight(); dx += 10)
+            for (int dx = textX + textW + 6; dx < row.getRight(); dx += 10)
                 g.fillRect(dx, divY, 5, 1);
-            // Label centered
-            g.setColour(juce::Colour(0x88FFFFFF));
-            g.drawText(label, textX, row.getY(), textW, row.getHeight(),
+            // Highlight header if browseIndex_ is on it
+            bool hdrSel = (idx == browseIndex_);
+            g.setColour(juce::Colour(hdrSel ? 0xFFE53935 : 0xCCFFFFFF));
+            g.drawText(shownLabel, textX, row.getY(), textW, row.getHeight(),
                        juce::Justification::centred);
             continue;
         }
@@ -1293,7 +1602,7 @@ void PluginEditor::paintFileBrowser(juce::Graphics& g, juce::Rectangle<int> area
             nameColour = juce::Colour(0xFFFFDD00);  // COPY: yellow text
 
         g.setColour(nameColour);
-        g.setFont(bFont(18.0f));
+        g.setFont(bFont(sel ? 22.0f : 18.0f));
         juce::String displayName = browseItemNames_[idx];
         if (!isDir && displayName.contains("."))
             displayName = displayName.upToLastOccurrenceOf(".", false, false);
@@ -1312,7 +1621,7 @@ void PluginEditor::paintFileBrowser(juce::Graphics& g, juce::Rectangle<int> area
         if (!isDir && idx < browseItemDurations_.size() && browseItemDurations_[idx].isNotEmpty()) {
             juce::String info = browseItemDurations_[idx];
             g.setColour(sel ? juce::Colour(0xFFFFFFFF) : juce::Colour(0xFFAAAAAA));
-            g.setFont(bFont(20.0f));
+            g.setFont(bFont(sel ? 20.0f : 17.0f));
             g.drawText(info, row.getX(), row.getY(), row.getWidth() - 8, rowH,
                        juce::Justification::centredRight);
         }
@@ -1321,15 +1630,25 @@ void PluginEditor::paintFileBrowser(juce::Graphics& g, juce::Rectangle<int> area
 
 void PluginEditor::enterBrowseMode()
 {
-    browseMode_ = true; browseIndex_ = 0; browseScrollOffset_ = 0;
+    browseMode_ = true;
     browseFileOp_ = 0;
-    // First open: go to Smart Home. Subsequent opens: stay where we were.
-    if (!browseCurrentDir_.isDirectory())
-    {
-        browseGoHome();
-    } else {
+    clearAllHoldState();  // 2.4.9 — belt-and-suspenders
+
+    if (browseCurrentDir_.isDirectory()) {
+        // Re-entering a real directory: preserve position
+        int savedIndex = browseIndex_;
+        int savedScroll = browseScrollOffset_;
         browseScanCurrentDir();
+        if (savedIndex < browseItems_.size()) {
+            browseIndex_ = savedIndex;
+            browseScrollOffset_ = savedScroll;
+        }
     }
+    else if (browseItems_.isEmpty()) {
+        // First open ever, or items lost: go to Smart Home
+        browseGoHome();
+    }
+    // else: Smart Home items still in browseItems_, position preserved
     encoderSlots_[0].nameLabel.setText("FILES", juce::dontSendNotification);
     encoderSlots_[0].valueLabel.setText("Load", juce::dontSendNotification);
     encoderSlots_[1].nameLabel.setText("NAV", juce::dontSendNotification);
@@ -1345,6 +1664,7 @@ void PluginEditor::exitBrowseMode() {
     browseMode_ = false;
     multiSelectMode_ = false;
     multiSelectCount_ = 0;
+    fileOpActive_ = false;
     leftShiftHeld_ = false;  // prevent stuck shift from clearing pads
     for (int i = 0; i < kNumPads; ++i) multiSelected_[i] = false;
     updateEncoderDisplay();
@@ -1397,28 +1717,85 @@ void PluginEditor::browseSelect()
 {
     if (browseIndex_ < 0 || browseIndex_ >= browseItems_.size()) return;
 
-    // Skip headers
-    if (browseItemDurations_[browseIndex_] == "__HDR__") return;
+    // Header: toggle collapse state for Smart Home sections
+    if (browseItemDurations_[browseIndex_] == "__HDR__") {
+        juce::String label = browseItemNames_[browseIndex_].substring(7);
+        if (smartHomeCollapsed_.contains(label))
+            smartHomeCollapsed_.removeString(label);
+        else
+            smartHomeCollapsed_.add(label);
+        repaint();
+        return;
+    }
 
     auto sel = browseItems_[browseIndex_];
 
     // Special "Clear Pad" action (smart home item with empty path)
     if (browseItemNames_[browseIndex_] == ">> Clear Pad") {
-        processor_.getEngine().getSlot(selectedPad_).clear();
+        processor_.initPad(selectedPad_);
+        processor_.showTickerPublic("Pad " + juce::String(selectedPad_ + 1) + " cleared");
         repaint();
         return;
     }
 
     if (sel.isDirectory()) { browseCurrentDir_ = sel; browseScanCurrentDir(); repaint(); }
     else {
-        // Cache current slices before replacing sample
         auto& slot = processor_.getEngine().getSlot(selectedPad_);
-        processor_.cacheSlicesForPad(selectedPad_);
-        slot.loadFile(sel);
-        // Restore cached slices if this file was previously sliced
-        processor_.restoreCachedSlices(selectedPad_);
+        // Skip reload if the same file is already in this pad — saves a
+        // pointless cache save/restore cycle that could resurrect old slice
+        // state from stale entries.
+        if (slot.getFilePath() != sel.getFullPathName()) {
+            processor_.cacheSlicesForPad(selectedPad_);
+            slot.loadFile(sel);
+            // Restore cached slices if this file was previously sliced
+            processor_.restoreCachedSlices(selectedPad_);
+        }
         repaint();
     }
+}
+
+// Helpers for Smart Home collapse-aware navigation.
+// browseSectionForIndex: walks backwards from idx to find the closest
+// header label. Returns "" if none / not Smart Home.
+juce::String PluginEditor::browseSectionForIndex(int idx) const
+{
+    if (browseCurrentDir_.isDirectory()) return {};   // only Smart Home
+    for (int j = idx; j >= 0; --j) {
+        if (j < browseItemDurations_.size()
+            && browseItemDurations_[j] == "__HDR__")
+        {
+            return browseItemNames_[j].substring(7);  // strip "__HDR__"
+        }
+    }
+    return {};
+}
+
+bool PluginEditor::browseIsItemNavigable(int idx) const
+{
+    if (idx < 0 || idx >= browseItems_.size()) return false;
+    bool isHdr = (browseItemDurations_[idx] == "__HDR__");
+    // Outside Smart Home, headers should be skipped (defensive — there
+    // shouldn't BE any headers outside Smart Home).
+    if (isHdr && shouldSkipHeadersInNav()) return false;
+    // Items in a collapsed section are not navigable (but headers themselves
+    // are — they're how you re-expand the section).
+    if (!isHdr) {
+        auto sec = browseSectionForIndex(idx);
+        if (sec.isNotEmpty() && smartHomeCollapsed_.contains(sec))
+            return false;
+    }
+    return true;
+}
+
+// Move the cursor to the next/prev navigable index. step = +1 or -1.
+void PluginEditor::browseAdvanceCursor(int step)
+{
+    if (step == 0) return;
+    int idx = browseIndex_ + step;
+    while (idx >= 0 && idx < browseItems_.size() && !browseIsItemNavigable(idx))
+        idx += step;
+    if (idx < 0 || idx >= browseItems_.size()) return;  // ran off the end
+    browseIndex_ = idx;
 }
 
 void PluginEditor::browseGoUp()
@@ -1429,15 +1806,36 @@ void PluginEditor::browseGoUp()
     juce::File root(processor_.getSampleRootPath());
     auto parent = browseCurrentDir_.getParentDirectory();
 
+    // Remember which directory we're leaving so we can cursor to it
+    juce::String leavingName = browseCurrentDir_.getFileName();
+
     // Go to Smart Home if: at root, parent IS root, or outside root
     if (browseCurrentDir_ == root || parent == root || !browseCurrentDir_.isAChildOf(root)) {
         browseGoHome();
+        // Find the folder we came from and position cursor there
+        for (int i = 0; i < browseItemNames_.size(); ++i) {
+            if (browseItemNames_[i] == "[" + leavingName + "]") {
+                browseIndex_ = i;
+                browseScrollOffset_ = std::max(0, i - 3);
+                break;
+            }
+        }
+        repaint();
         return;
     }
 
     if (parent.isDirectory() && parent != browseCurrentDir_) {
+        juce::String childName = browseCurrentDir_.getFileName();
         browseCurrentDir_ = parent;
         browseScanCurrentDir();
+        // Find the folder we came from
+        for (int i = 0; i < browseItemNames_.size(); ++i) {
+            if (browseItemNames_[i] == "[" + childName + "]") {
+                browseIndex_ = i;
+                browseScrollOffset_ = std::max(0, i - 3);
+                break;
+            }
+        }
         repaint();
     }
 }
@@ -1542,11 +1940,8 @@ void PluginEditor::browseGoHome()
     browseCurrentDir_ = juce::File();  // no real dir — we're in smart home
     browseIndex_ = 0;
     browseScrollOffset_ = 0;
-    // Skip first header so cursor starts on first selectable item
-    while (browseIndex_ < browseItemDurations_.size()
-           && browseItemDurations_[browseIndex_] == "__HDR__")
-        browseIndex_++;
-    if (browseIndex_ >= browseItems_.size()) browseIndex_ = 0;
+    // Cursor starts on the first item. Headers ARE selectable in Smart Home
+    // (push toggles collapse), so no need to skip past them.
     repaint();
 }
 
@@ -1715,8 +2110,6 @@ void PluginEditor::switchPage(int page) {
     // Clear encoder push timestamps to prevent stale holds triggering on new page
     for (int e = 0; e < 4; ++e) { encPushTime_[e] = 0.0; encPushHandled_[e] = true; }
     currentPage_ = juce::jlimit(0, kNumPages - 1, page);
-    if (currentPage_ == PAGE_MIDI)
-        processor_.refreshMidiDevices();
     updateEncoderDisplay(); repaint();
 }
 
@@ -1728,6 +2121,97 @@ void PluginEditor::updateEncoderDisplay()
 {
     // Keep processor's rec target in sync with UI selection
     processor_.setRecTargetPad(selectedPad_);
+
+    // Bubble owns the encoder bar while open
+    if (bubble_.isOpen()) {
+        for (int i = 0; i < kEncodersPerPage; ++i) {
+            encoderSlots_[i].nameLabel.setText(bubble_.getEncoderLabel(i),
+                                                juce::dontSendNotification);
+            encoderSlots_[i].valueLabel.setText(bubble_.getEncoderValue(i),
+                                                juce::dontSendNotification);
+            encoderSlots_[i].nameLabel.setColour(juce::Label::textColourId, juce::Colour(kEncLabel));
+            encoderSlots_[i].valueLabel.setColour(juce::Label::textColourId, juce::Colour(kEncValue));
+        }
+        return;
+    }
+
+    // About / cheat sheet: blank the encoder bar (the page paints over the
+    // background, but JUCE labels are child components and would leak through)
+    if (aboutOpen_ || cheatSheetOpen_) {
+        for (int i = 0; i < kEncodersPerPage; ++i) {
+            encoderSlots_[i].nameLabel.setText(i == 0 ? "SCROLL" : "",
+                                                juce::dontSendNotification);
+            encoderSlots_[i].valueLabel.setText(i == 0 ? "Turn / UP-DOWN" : "",
+                                                juce::dontSendNotification);
+            encoderSlots_[i].nameLabel.setColour(juce::Label::textColourId, juce::Colour(kEncLabel));
+            encoderSlots_[i].valueLabel.setColour(juce::Label::textColourId, juce::Colour(kEncValue));
+        }
+        return;
+    }
+
+    // Slice editor: reactive labels — E3 mirrors the EDIT action from
+    // sliceEditAction_ (set by the hold-bubble action picker).
+    if (sliceEditorMode_) {
+        auto& slot = processor_.getEngine().getSlot(selectedPad_);
+        int sc = slot.getSliceCount();
+        int hdrSlice = slot.findSliceAt(sliceCursorPos_);
+
+        encoderSlots_[0].nameLabel.setText("Cursor", juce::dontSendNotification);
+        {
+            juce::String curVal;
+            if (sc > 0 && hdrSlice >= 0) {
+                curVal = juce::String(hdrSlice + 1) + "/" + juce::String(sc);
+            } else {
+                curVal = juce::String((int)(sliceCursorPos_ * 100.0f)) + "%";
+            }
+            encoderSlots_[0].valueLabel.setText(curVal, juce::dontSendNotification);
+        }
+
+        encoderSlots_[1].nameLabel.setText("Zoom", juce::dontSendNotification);
+        encoderSlots_[1].valueLabel.setText(
+            juce::String(sliceZoom_, sliceZoom_ < 10.0f ? 1 : 0) + "x",
+            juce::dontSendNotification);
+
+        encoderSlots_[2].nameLabel.setText("Slice", juce::dontSendNotification);
+        {
+            int val = sliceAutoValue(sliceAutoPreset_);
+            juce::String s = (val < 0) ? juce::String("Transient")
+                           : (val == 0) ? juce::String("OFF")
+                                        : juce::String(val);
+            encoderSlots_[2].valueLabel.setText(s, juce::dontSendNotification);
+        }
+
+        // EDIT label reflects the selected action; value shows the current
+        // value for value-types or [PUSH] for action-types.
+        {
+            const char* actions[] = { "Pitch", "Time Stretch", "Tape Speed",
+                                      "Clear All", "Delete Region",
+                                      "Export Slices to Samples" };
+            juce::String label = juce::String("Edit: ") + actions[juce::jlimit(0, 5, sliceEditAction_)];
+            encoderSlots_[3].nameLabel.setText(label, juce::dontSendNotification);
+
+            juce::String val;
+            int curS = (hdrSlice < 0) ? 0 : hdrSlice;
+            if (sliceEditAction_ == 0) {
+                float p = slot.getSlicePitch(curS);
+                juce::String sign = (p >= 0.0f) ? "+" : "";
+                val = sign + juce::String(p, 1) + "st";
+            } else if (sliceEditAction_ == 1) {
+                val = juce::String(slot.getTimeStretch(), 2) + "x";
+            } else if (sliceEditAction_ == 2) {
+                val = juce::String(slot.getTapeRate(), 2) + "x";
+            } else {
+                val = "[PUSH]";
+            }
+            encoderSlots_[3].valueLabel.setText(val, juce::dontSendNotification);
+        }
+
+        for (int i = 0; i < kEncodersPerPage; ++i) {
+            encoderSlots_[i].nameLabel.setColour(juce::Label::textColourId, juce::Colour(kEncLabel));
+            encoderSlots_[i].valueLabel.setColour(juce::Label::textColourId, juce::Colour(kEncValue));
+        }
+        return;
+    }
 
     for (int i = 0; i < kEncodersPerPage; ++i)
     {
@@ -1744,6 +2228,13 @@ void PluginEditor::updateEncoderDisplay()
         } else {
             encoderSlots_[i].valueLabel.setColour(juce::Label::textColourId, juce::Colour(kEncValue));
             encoderSlots_[i].nameLabel.setColour(juce::Label::textColourId, juce::Colour(kEncLabel));
+        }
+
+        // PLAY page enc2: red when volume > 100% (overdrive)
+        if (currentPage_ == PAGE_PLAY && i == 2) {
+            float vol = processor_.getEngine().getSlot(selectedPad_).getVolume();
+            if (vol > 1.01f)
+                encoderSlots_[i].valueLabel.setColour(juce::Label::textColourId, juce::Colour(kTabActive));
         }
     }
 }
@@ -1769,8 +2260,8 @@ juce::String PluginEditor::getEncoderLabel(int page, int enc) const
             const char* l[] = { "", "MODE", "VOL", "PAN" };
             return l[enc];
         }
-        case PAGE_PITCH: {
-            const char* l[] = { "", "TIME", "CLK M/D", "SLICE" };
+        case PAGE_WARP: {
+            const char* l[] = { "", "TIME", "CLK M/D", "TAPE" };
             return l[enc];
         }
         case PAGE_FADE: {
@@ -1783,12 +2274,36 @@ juce::String PluginEditor::getEncoderLabel(int page, int enc) const
                 const char* l[] = { "", "TYPE", "STRIKE", "DECAY" };
                 return l[enc];
             }
+            if (ft == FilterType::RingMod) {
+                const char* l[] = { "", "TYPE", "FREQ", "MIX" };
+                return l[enc];
+            }
+            if (ft == FilterType::WaveFolder) {
+                const char* l[] = { "", "TYPE", "DRIVE", "SYMM" };
+                return l[enc];
+            }
+            if (ft == FilterType::CombFilter) {
+                const char* l[] = { "", "TYPE", "FREQ", "FEED" };
+                return l[enc];
+            }
             const char* l[] = { "", "TYPE", "CUTOFF", "RESO" };
             return l[enc];
         }
-        case PAGE_MIDI: {
-            const char* l[] = { "", "CHANNEL", "DEVICE", "CLK" };
-            return l[enc];
+        case PAGE_SLICE: {
+            if (enc == 0) return "FILE";
+            if (enc == 1) return "Cursor";
+            if (enc == 2) {
+                const char* styles[] = { "Division", "Transients", "Crossfade" };
+                return juce::String("Slices: ") + styles[juce::jlimit(0, 2, sliceMethod_)];
+            }
+            if (enc == 3) {
+                const char* actions[] = { "Pitch", "Time Stretch", "Tape Speed",
+                                          "Clear All", "Delete Region",
+                                          "Export Slices to Samples",
+                                          "MIDI CC" };
+                return juce::String("Edit: ") + actions[juce::jlimit(0, 6, sliceEditAction_)];
+            }
+            return "";
         }
         case PAGE_MOD: {
             const char* l[] = { "", "MOD A", "MOD B", "MOD C" };
@@ -1845,7 +2360,7 @@ juce::String PluginEditor::getEncoderValue(int page, int enc) const
             return "---";
         }
         case PAGE_PLAY: {
-            const char* modes[] = { "ONE-SHOT", "LOOP", "CLK:LOOP", "CLK:1SHOT", "GATE" };
+            const char* modes[] = { "ONE-SHOT", "LOOP", "CLK:LOOP", "CLK:1SHOT", "GATE", "MIDI-CV" };
             if (enc == 1) return modes[static_cast<int>(slot.getMode())];
             if (enc == 2) {
                 if (processor_.getEngine().isMuted(selectedPad_))
@@ -1855,7 +2370,7 @@ juce::String PluginEditor::getEncoderValue(int page, int enc) const
             if (enc == 3) return juce::String(slot.getPan(), 2);
             return "---";
         }
-        case PAGE_PITCH: {
+        case PAGE_WARP: {
             if (enc == 1) {
                 bool clocked = (slot.getMode() == PadMode::ClockedLoop || slot.getMode() == PadMode::ClockedOneShot);
                 if (clocked && (processor_.hasClockInput() || processor_.isMidiClockEnabled())) {
@@ -1870,9 +2385,9 @@ juce::String PluginEditor::getEncoderValue(int page, int enc) const
                 return "/" + juce::String(1 << d);
             }
             if (enc == 3) {
-                int sc = slot.getSliceCount();
-                if (sc == 0) return "[PUSH]";
-                return juce::String(sc) + " pts";
+                float t = slot.getTapeRate();
+                if (std::abs(t - 1.0f) < 0.005f) return "1.00x";
+                return juce::String(t, 2) + "x";
             }
             return "---";
         }
@@ -1893,18 +2408,32 @@ juce::String PluginEditor::getEncoderValue(int page, int enc) const
         }
         case PAGE_FILTER: {
             if (enc == 1) {
-                const char* types[] = { "OFF", "LPF", "HPF", "BPF", "NOTCH", "FORMANT", "MS-20", "LPG" };
+                const char* types[] = { "OFF", "LPF", "HPF", "BPF", "NOTCH", "FORMANT", "MS-20", "LPG", "RING", "FOLD", "COMB" };
                 return types[static_cast<int>(slot.getFilterType())];
             }
             if (enc == 2) {
                 float hz = slot.getFilterCutoff();
                 FilterType ft = slot.getFilterType();
                 if (ft == FilterType::LPG) {
-                    // Strike: show as percentage of max gate opening
                     float pct = (hz / 20000.0f) * 100.0f;
                     return juce::String((int)pct) + "%";
                 }
-                // Strength: 0% = no filtering, 100% = max filtering
+                if (ft == FilterType::RingMod) {
+                    // Freq: 20Hz to 2000Hz
+                    float freq = 20.0f + (hz / 20000.0f) * 1980.0f;
+                    return juce::String((int)freq) + "Hz";
+                }
+                if (ft == FilterType::WaveFolder) {
+                    // Drive: 1x to 10x
+                    float drive = 1.0f + (hz / 20000.0f) * 9.0f;
+                    return juce::String(drive, 1) + "x";
+                }
+                if (ft == FilterType::CombFilter) {
+                    // Freq: 40Hz to 1000Hz (maps to delay time)
+                    float freq = 40.0f + (hz / 20000.0f) * 960.0f;
+                    return juce::String((int)freq) + "Hz";
+                }
+                // Standard filters: Strength %
                 float pct;
                 if (ft == FilterType::HPF)
                     pct = std::log(hz / 20.0f) / std::log(1000.0f);
@@ -1918,32 +2447,60 @@ juce::String PluginEditor::getEncoderValue(int page, int enc) const
                 return juce::String((int)pct) + "% / " + hzStr + "Hz";
             }
             if (enc == 3) {
-                if (slot.getFilterType() == FilterType::LPG) {
-                    // Decay: show as time description
+                FilterType ft = slot.getFilterType();
+                if (ft == FilterType::LPG) {
                     float d = slot.getFilterResonance();
-                    float ms = 20.0f + d * 2980.0f;  // 20ms to 3000ms
+                    float ms = 20.0f + d * 2980.0f;
                     if (ms >= 1000.0f) return juce::String(ms / 1000.0f, 1) + "s";
                     return juce::String((int)ms) + "ms";
+                }
+                if (ft == FilterType::RingMod) {
+                    return juce::String((int)(slot.getFilterResonance() * 100)) + "%";
+                }
+                if (ft == FilterType::WaveFolder) {
+                    float sym = slot.getFilterResonance() * 2.0f - 1.0f;
+                    return juce::String(sym, 2);
+                }
+                if (ft == FilterType::CombFilter) {
+                    float fb = slot.getFilterResonance();
+                    return juce::String((int)(fb * 100)) + "%";
                 }
                 return juce::String((int)(slot.getFilterResonance() * 100)) + "%";
             }
             return "---";
         }
-        case PAGE_MIDI: {
+        case PAGE_SLICE: {
             if (enc == 1) {
-                int ch = slot.getMidiChannel();
-                if (ch == 0) return "OFF";
-                if (ch == 17) return "OMNI";
-                return "CH " + juce::String(ch);
+                // CURSOR: shows slice index (N/total) or 0/0 when no slices
+                int sc = slot.getSliceCount();
+                if (sc == 0) return "0/0";
+                int idx = slot.findSliceAt(sliceTabCursorPos_);
+                if (idx < 0) idx = 0;
+                return juce::String(idx + 1) + "/" + juce::String(sc);
             }
             if (enc == 2) {
-                auto name = processor_.getMidiDeviceName();
-                return name.isEmpty() ? "None" : name;
+                // SLICE: count (always shown; ignored for Transients on push)
+                return juce::String(sliceTabCount_);
             }
             if (enc == 3) {
-                if (processor_.getMidiDeviceName().isEmpty())
-                    return "---";
-                return processor_.isMidiClockEnabled() ? "ON" : "OFF";
+                // EDIT: current value of the selected action
+                if (!slot.isLoaded()) return "--";
+                int sliceIdx = slot.findSliceAt(sliceTabCursorPos_);
+                if (sliceIdx < 0) sliceIdx = 0;
+                if (sliceEditAction_ == 0) {
+                    float p = slot.getSlicePitch(sliceIdx);
+                    return (p >= 0 ? "+" : "") + juce::String(p, 1) + "st";
+                }
+                if (sliceEditAction_ == 1) return juce::String(slot.getTimeStretch(), 2) + "x";
+                if (sliceEditAction_ == 2) return juce::String(slot.getTapeRate(), 2) + "x";
+                if (sliceEditAction_ == 3) return "[PUSH]";  // Clear All
+                if (sliceEditAction_ == 4) return "[PUSH]";  // Delete Region
+                if (sliceEditAction_ == 5) return "[PUSH]";  // Export Slices
+                if (sliceEditAction_ == 6) {                  // MIDI CC
+                    if (slot.getSliceCount() == 0) return "--";
+                    int cc = slot.getSliceCC(sliceIdx);
+                    return (cc < 0) ? "OFF" : ("CC " + juce::String(cc));
+                }
             }
             return "---";
         }
@@ -1976,13 +2533,69 @@ void PluginEditor::timerCallback()
     if (kitCurrentIndex_ < 0)
         processor_.tickAutosave();
 
+    // ── Idle-drift + roll watchdog (2.4.9 — fixes stuck roll bug) ──
+    // If the timer callback has been silent for a long time (host
+    // suspend/wake, display sleep), any accumulated hold-tracking
+    // state is untrustworthy — millisecond deltas will look "held"
+    // even though the user wasn't touching anything. Clear it.
+    // Then, independently, if a roll is active but its pad button
+    // isn't physically held, clear it — this is the direct fix for
+    // SSP dropping button-release events during long idle.
+    {
+        const double nowMs = juce::Time::getMillisecondCounterHiRes();
+        if (lastTimerFrameMs_ > 0.0
+            && (nowMs - lastTimerFrameMs_) > kTimerIdleThresholdMs)
+        {
+            clearAllHoldState();
+            if (processor_.getDebugMsgs())
+                processor_.showTickerPublic("Idle drift: hold state cleared");
+        }
+        lastTimerFrameMs_ = nowMs;
+
+        if (rollPad_ >= 0 && !padButtonHeld_[rollPad_]) {
+            if (processor_.getDebugMsgs())
+                processor_.showTickerPublic("Roll cleared (button not held)");
+            rollPad_ = -1;
+        }
+    }
+
+    // ── Pad roll: retrigger while button held past threshold ─────────
+    if (rollPad_ >= 0 && !browseMode_ && !configMode_ && !popupMode_) {
+        double now = juce::Time::getMillisecondCounterHiRes();
+        if (now >= rollNextTriggerMs_) {
+            processor_.getEngine().triggerWithChoke(rollPad_);
+            rollNextTriggerMs_ = now + (double)rollIntervalMs_;
+        }
+    }
+
     // Arrow repeat for config browser continuous scrolling
     if (configMode_ && (upArrowHeld_ || downArrowHeld_)) {
         double now = juce::Time::getMillisecondCounterHiRes();
         if (now >= arrowRepeatNextMs_) {
             if (upArrowHeld_ && configIndex_ > 0) { configIndex_--; configEditMode_ = false; }
             if (downArrowHeld_ && configIndex_ < configSelectableCount() - 1) { configIndex_++; configEditMode_ = false; }
-            arrowRepeatNextMs_ = now + kArrowRepeatRateMs;
+            arrowRepeatCount_++;
+            double rate = kArrowRepeatRateMs;
+            if (arrowRepeatCount_ > kAccelThreshold2) rate = kArrowFasterRateMs;
+            else if (arrowRepeatCount_ > kAccelThreshold1) rate = kArrowFastRateMs;
+            arrowRepeatNextMs_ = now + rate;
+            repaint();
+        }
+    }
+
+    // Arrow repeat for file browser continuous scrolling
+    if (browseMode_ && (upArrowHeld_ || downArrowHeld_)) {
+        double now = juce::Time::getMillisecondCounterHiRes();
+        if (now >= arrowRepeatNextMs_) {
+            int fc = browseItems_.size();
+            if (upArrowHeld_) browseAdvanceCursor(-1);
+            if (downArrowHeld_) browseAdvanceCursor(+1);
+            (void)fc;
+            arrowRepeatCount_++;
+            double rate = kArrowRepeatRateMs;
+            if (arrowRepeatCount_ > kAccelThreshold2) rate = kArrowFasterRateMs;
+            else if (arrowRepeatCount_ > kAccelThreshold1) rate = kArrowFastRateMs;
+            arrowRepeatNextMs_ = now + rate;
             repaint();
         }
     }
@@ -1993,26 +2606,36 @@ void PluginEditor::timerCallback()
         for (int e = 0; e < 4; ++e) {
             if (encPushHandled_[e]) continue;
             double held = now - encPushTime_[e];
-            if (held < kHoldMs || encPushTime_[e] == 0.0) continue;
+            if (encPushTime_[e] == 0.0) continue;
 
-            encPushHandled_[e] = true;
+            if (held >= kHoldMs) {
+                encPushHandled_[e] = true;
+                encHoldProgress_[e] = 0.0f;  // clear progress bar
 
-            if (e == 0) {
-                // Hold enc 0: close file browser
-                exitBrowseMode();
-                repaint();
+                if (e == 0) {
+                    // Hold enc 0: close file browser
+                    exitBrowseMode();
+                    repaint();
+                }
+                else if (e == 1) {
+                    // Hold enc 1: return to smart home
+                    browseGoHome();
+                    processor_.showTickerPublic("Smart Home");
+                    repaint();
+                }
+                else if (e == 2) {
+                    // Hold enc 2: toggle auto-preview
+                    browseAutoPreview_ = !browseAutoPreview_;
+                    processor_.showTickerPublic(browseAutoPreview_ ? "Auto Preview ON" : "Auto Preview OFF");
+                    repaint();
+                }
             }
-            else if (e == 1) {
-                // Hold enc 1: return to smart home
-                browseGoHome();
-                processor_.showTickerPublic("Smart Home");
-                repaint();
-            }
-            else if (e == 2) {
-                // Hold enc 2: toggle auto-preview
-                browseAutoPreview_ = !browseAutoPreview_;
-                processor_.showTickerPublic(browseAutoPreview_ ? "Auto Preview ON" : "Auto Preview OFF");
-                repaint();
+            else if (held > 150.0 && e <= 2) {
+                // Show hold progress bar (painted in paint())
+                encHoldProgress_[e] = juce::jlimit(0.0f, 1.0f, (float)(held / kHoldMs));
+                encoderSlots_[e].valueLabel.setText("", juce::dontSendNotification);
+            } else if (encPushTime_[e] == 0.0 || held < 150.0) {
+                encHoldProgress_[e] = 0.0f;
             }
         }
     }
@@ -2025,6 +2648,7 @@ void PluginEditor::timerCallback()
             double held = now - encPushTime_[e];
             if (held >= 1500.0) {
                 encPushHandled_[e] = true;
+                encHoldProgress_[e] = 0.0f;
                 int modSlot = e - 1;
                 modEditorOpen_ = true;
                 modEditorSlot_ = modSlot;
@@ -2035,20 +2659,144 @@ void PluginEditor::timerCallback()
         }
     }
 
+    // ── Encoder hold detection for bubble popups ────────────────────────
+    // Hold detection. Disabled while modal overlays are up (browse, config,
+    // popup, keyboard, mod editor, kit picker, about, cheat sheet). It IS
+    // allowed in the slice editor — E3 hold opens the action selector bubble.
+    if (!bubble_.isOpen() && !browseMode_ && !configMode_ && !popupMode_
+        && !keyboardMode_ && !modEditorOpen_
+        && !kitPickerOpen_ && !aboutOpen_ && !cheatSheetOpen_) {
+        double now = juce::Time::getMillisecondCounterHiRes();
+        for (int e = 0; e < 4; ++e) {
+            if (encPushHandled_[e] || encPushTime_[e] == 0.0) continue;
+            // While in slice editor, only E3 is hold-active. Otherwise consult
+            // hasHoldAction for the current page.
+            bool holdEligible = sliceEditorMode_
+                ? (e == 3)
+                : hasHoldAction(currentPage_, e);
+            if (!holdEligible) continue;
+            double held = now - encPushTime_[e];
+            if (held >= kHoldMs) {
+                encPushHandled_[e] = true;
+                encHoldProgress_[e] = 0.0f;
+                if (sliceEditorMode_) openSliceEditorHoldBubble(e);
+                else                  openHoldBubble(e);
+                repaint();
+            }
+            else if (held > 150.0) {
+                encHoldProgress_[e] = juce::jlimit(0.0f, 1.0f, (float)(held / kHoldMs));
+            }
+        }
+    }
+
     if (browseMode_) {
         // Update enc 3 label dynamically
         if (browseClipboardOp_ > 0) {
             encoderSlots_[3].nameLabel.setText("PASTE", juce::dontSendNotification);
             encoderSlots_[3].valueLabel.setText(
                 juce::File(browseClipboardPath_).getFileName(), juce::dontSendNotification);
+        } else if (fileOpActive_) {
+            if (browseFileOp_ == 2)
+                encoderSlots_[3].valueLabel.setText("PAD/FILE", juce::dontSendNotification);
+            else if (browseFileOp_ == 3)
+                encoderSlots_[3].valueLabel.setText("PAD/FILE", juce::dontSendNotification);
+            encoderSlots_[3].nameLabel.setText("SELECT", juce::dontSendNotification);
         } else {
             encoderSlots_[3].nameLabel.setText("FILE OP", juce::dontSendNotification);
             encoderSlots_[3].valueLabel.setText(browseFileOpName(browseFileOp_), juce::dontSendNotification);
         }
         repaint(); return;
     }
-    if (sliceEditorMode_) { repaint(); return; }  // encoder labels managed by paintSliceEditor
+    if (sliceEditorMode_) {
+        // Slice editor manages its own paint but labels need refreshing each
+        // tick (sliceEditAction_ changes via the hold-bubble, slice index
+        // changes as cursor moves, etc.)
+        updateEncoderDisplay();
+        repaint();
+        return;
+    }
     updateEncoderDisplay();
+
+    // ── Encoder hold progress AFTER updateEncoderDisplay (so it overrides) ──
+    if (currentPage_ == PAGE_MOD && !modEditorOpen_ && !browseMode_) {
+        double now = juce::Time::getMillisecondCounterHiRes();
+        for (int e = 1; e <= 3; ++e) {
+            if (encPushHandled_[e] || encPushTime_[e] == 0.0) {
+                encHoldProgress_[e] = 0.0f;
+                continue;
+            }
+            double held = now - encPushTime_[e];
+            if (held > 200.0 && held < 1500.0) {
+                encHoldProgress_[e] = juce::jlimit(0.0f, 1.0f, (float)(held / 1500.0));
+                encoderSlots_[e].valueLabel.setText("", juce::dontSendNotification);
+            } else {
+                encHoldProgress_[e] = 0.0f;
+            }
+        }
+    }
+
+    // ── Roll: keep enc0 showing speed while rolling ─────────────────────
+    if (rollPad_ >= 0) {
+        juce::String speedStr;
+        if (rollIntervalMs_ < 50.0f) speedStr = "1/32";
+        else if (rollIntervalMs_ < 80.0f) speedStr = "1/16";
+        else if (rollIntervalMs_ < 160.0f) speedStr = "1/8";
+        else if (rollIntervalMs_ < 300.0f) speedStr = "1/4";
+        else speedStr = "1/2";
+        encoderSlots_[0].nameLabel.setText("ROLL", juce::dontSendNotification);
+        encoderSlots_[0].valueLabel.setText(speedStr, juce::dontSendNotification);
+    }
+
+    // ── Arrow hold-repeat for tab navigation ─────────────────────────
+    if ((leftArrowHeld_ || rightArrowHeld_) && !browseMode_ && !configMode_
+        && !popupMode_ && !keyboardMode_ && !kitPickerOpen_ && !sliceEditorMode_) {
+        double now = juce::Time::getMillisecondCounterHiRes();
+        double held = now - arrowHoldStartMs_;
+        if (held > kArrowRepeatDelayMs && (now - arrowLastRepeatMs_) > kArrowRepeatRateMs) {
+            arrowLastRepeatMs_ = now;
+            if (leftArrowHeld_) {
+                int p = currentPage_ - 1;
+                if (p < 0) p = kNumPages - 1;
+                switchPage(p);
+            } else {
+                int p = currentPage_ + 1;
+                if (p >= kNumPages) p = 0;
+                switchPage(p);
+            }
+        }
+    }
+
+    // ── Encoder value enlargement when recently turned ──────────────────
+    if (!browseMode_ && !configMode_ && !popupMode_ && !keyboardMode_
+        && !mixerOpen_ && !compEditorOpen_) {
+        double now = juce::Time::getMillisecondCounterHiRes();
+        static constexpr int kEncZW = 800;
+        const int encW = kEncZW / kEncodersPerPage;
+        static constexpr int nudge[] = { -14, 0, 52, 86 };
+        const int encY = getHeight() - kEncoderBarH;
+
+        for (int i = 1; i < kEncodersPerPage; ++i) {  // skip enc0 (pad select)
+            double since = now - encLastTurnMs_[i];
+            bool active = (since < kEncActiveMs && encLastTurnMs_[i] > 0.0);
+            int x = i * encW + nudge[i];
+            int vx = std::max(0, x);
+            int vw = encW - (vx - x);
+
+            if (active) {
+                // Value takes over the whole encoder slot
+                encoderSlots_[i].nameLabel.setVisible(false);
+                encoderSlots_[i].valueLabel.setBounds(vx, encY + 2, vw, kEncoderBarH - 4);
+                encoderSlots_[i].valueLabel.setFont(juce::Font(32.0f));
+            } else {
+                // Restore normal layout
+                encoderSlots_[i].nameLabel.setVisible(true);
+                encoderSlots_[i].nameLabel.setBounds(x, encY, encW, 20);
+                encoderSlots_[i].valueLabel.setBounds(vx, encY + 18, vw, 28);
+                encoderSlots_[i].valueLabel.setFont(juce::Font(18.0f));
+            }
+        }
+    }
+
     repaint();
 }
 
@@ -2061,8 +2809,15 @@ void PluginEditor::onButton(int n, bool val)
     if (n < 0 || n >= kNumPads) return;
     auto& slot = processor_.getEngine().getSlot(n);
 
-    // ── Button RELEASE: gate mode stops playback ─────────────────────────
+    // 2.4.9: track physical hold state per pad (roll watchdog uses this)
+    padButtonHeld_[n] = val;
+
+    // ── Button RELEASE: gate mode stops, roll stops ────────────────────
     if (!val) {
+        // Stop roll
+        if (rollPad_ == n) {
+            rollPad_ = -1;
+        }
         if (slot.getMode() == PadMode::Gate && slot.isPlaying() && !slot.isStopping()) {
             slot.stop();
         }
@@ -2072,8 +2827,21 @@ void PluginEditor::onButton(int n, bool val)
     // Popup blocks everything
     if (popupMode_) return;
 
+    // Cheat sheet / About: any button closes
+    if (cheatSheetOpen_) { cheatSheetOpen_ = false; returnToConfig(); repaint(); return; }
+    if (aboutOpen_) { aboutOpen_ = false; returnToConfig(); repaint(); return; }
+
     // Keyboard blocks everything
     if (keyboardMode_) return;
+
+    // Mixer: trigger pad + update mixer selection
+    if (mixerOpen_) {
+        processor_.getEngine().triggerWithChoke(n);
+        mixerPad_ = n;
+        selectedPad_ = n;
+        repaint();
+        return;
+    }
 
     // Mod editor: buttons map to 2x4 block selected by modEditorRow_
     if (modEditorOpen_ && currentPage_ == PAGE_MOD) {
@@ -2097,10 +2865,33 @@ void PluginEditor::onButton(int n, bool val)
     // Left shift + pad = clear pad (only on OVERVIEW/OPTIONS page, not in any overlay)
     if (leftShiftHeld_ && !browseMode_ && !muteMode_ && !configMode_
         && (currentPage_ == PAGE_OVERVIEW || currentPage_ == PAGE_MOD)) {
-        processor_.getEngine().getSlot(n).clear();
-        processor_.getEngine().setMuted(n, false);
+        processor_.initPad(n);
         selectedPad_ = n;
         processor_.showTickerPublic("Pad " + juce::String(n + 1) + " cleared");
+        repaint();
+        return;
+    }
+
+    // Slice editor: pad buttons audition slices in a sliding window from cursor.
+    // Button 1 = slice at cursor, Button 2 = next, ... Button 8 = cursor+7.
+    // Wraps to 0 if pad index exceeds slice count.
+    // Cursor does NOT move — auditioning is a read op, not a navigation op.
+    // Uses triggerSlice so slot trim stays put (no visual blackout).
+    if (sliceEditorMode_) {
+        auto& slot = processor_.getEngine().getSlot(selectedPad_);
+        if (!slot.isLoaded() || slot.getSliceCount() == 0) {
+            processor_.showTickerPublic(slot.isLoaded() ? "No slices to audition" : "No sample loaded");
+            return;
+        }
+        int sliceCount = slot.getSliceCount();
+        int cursorSlice = slot.findSliceAt(sliceCursorPos_);
+        if (cursorSlice < 0) cursorSlice = 0;
+        int target = (cursorSlice + n) % sliceCount;
+
+        slot.triggerSlice(target);
+
+        // Visual flash: record audition time per slice so paint can fade it
+        sliceAuditionTimeMs_[target] = juce::Time::getMillisecondCounterHiRes();
         repaint();
         return;
     }
@@ -2136,6 +2927,59 @@ void PluginEditor::onButton(int n, bool val)
     }
 
     if (browseMode_) {
+        // ── File op active: pad buttons do pad operations ────────────
+        if (fileOpActive_) {
+            if (browseFileOp_ == 2 && n != selectedPad_) {
+                // COPY: clone selectedPad → pressed pad
+                auto& src = processor_.getEngine().getSlot(selectedPad_);
+                auto& dst = processor_.getEngine().getSlot(n);
+                if (src.isLoaded()) {
+                    // Copy audio buffer via loadFile on the same file
+                    dst.loadFile(juce::File(src.getFilePath()));
+                    // Copy all settings
+                    dst.setMode(src.getMode());
+                    dst.setVolume(src.getVolume());
+                    dst.setPan(src.getPan());
+                    dst.setPitchSemitones(src.getPitchSemitones());
+                    dst.setTimeStretch(src.getTimeStretch());
+                    dst.setStartPos(src.getStartPos());
+                    dst.setEndPos(src.getEndPos());
+                    dst.setFadeInMs(src.getFadeInMs());
+                    dst.setFadeOutMs(src.getFadeOutMs());
+                    dst.setFadeInCurve(src.getFadeInCurve());
+                    dst.setFadeOutCurve(src.getFadeOutCurve());
+                    dst.setChokeGroup(src.getChokeGroup());
+                    if (src.isReversed() != dst.isReversed()) dst.setReversed(src.isReversed());
+                    dst.setClockBeats(src.getClockBeats());
+                    dst.setVoiceMode(src.getVoiceMode());
+                    dst.setFilterType(src.getFilterType());
+                    dst.setFilterCutoff(src.getFilterCutoff());
+                    dst.setFilterResonance(src.getFilterResonance());
+                    dst.setPitchMode(src.getPitchMode());
+                    // Flash animation
+                    padCopyFlashTime_[n] = juce::Time::getMillisecondCounterHiRes();
+                    processor_.showTickerPublic("Pad " + juce::String(selectedPad_ + 1)
+                                                + " -> Pad " + juce::String(n + 1));
+                }
+                repaint();
+                return;
+            }
+            if (browseFileOp_ == 3) {
+                // DELETE: confirm clear pad
+                int padToClear = n;
+                showPopup("CLEAR PAD " + juce::String(n + 1) + "?", { "Yes", "Cancel" },
+                    [this, padToClear](int r) {
+                        if (r == 0) {
+                            processor_.initPad(padToClear);
+                            processor_.showTickerPublic("Pad " + juce::String(padToClear + 1) + " cleared");
+                        }
+                    });
+                repaint();
+                return;
+            }
+        }
+
+        // Regular browse: load highlighted file to this pad + trigger
         if (browseIndex_ >= 0 && browseIndex_ < browseItems_.size()) {
             auto sel = browseItems_[browseIndex_];
             if (!sel.isDirectory() && browseItemNames_[browseIndex_] != ">> Clear Pad") {
@@ -2145,6 +2989,25 @@ void PluginEditor::onButton(int n, bool val)
                 processor_.getEngine().trigger(n);
             }
         }
+        selectedPad_ = n;
+        repaint();
+        return;
+    }
+
+    // Slice TAB (not editor): pad buttons audition slices via the sliding-
+    // window pattern from the editor. Uses triggerSlice so slot trim stays
+    // put — same fix that already exists in the editor. Without this, pad
+    // buttons in slice tab play the whole sample which is wrong.
+    if (currentPage_ == PAGE_SLICE && slot.isLoaded() && slot.getSliceCount() > 0
+        && !muteMode_ && !soloMode_ && !browseMode_ && !configMode_)
+    {
+        int sliceCount = slot.getSliceCount();
+        int cursorSlice = slot.findSliceAt(sliceTabCursorPos_);
+        if (cursorSlice < 0) cursorSlice = 0;
+        int target = (cursorSlice + n) % sliceCount;
+
+        slot.triggerSlice(target);
+        sliceAuditionTimeMs_[target] = juce::Time::getMillisecondCounterHiRes();
         selectedPad_ = n;
         repaint();
         return;
@@ -2164,6 +3027,16 @@ void PluginEditor::onButton(int n, bool val)
         }
         lastButtonTriggerMs_[n] = nowMs;
         processor_.getEngine().triggerWithChoke(n);
+        // Start roll tracking (only for non-gate, non-loop-stop)
+        if (slot.getMode() != PadMode::Gate
+            && slot.getMode() != PadMode::MidiCV
+            && slot.isLoaded()) {
+            rollPad_ = n;
+            rollPressTime_ = nowMs;
+            static constexpr float rollSpeeds[] = { 400.0f, 200.0f, 125.0f, 62.5f, 31.25f };
+            rollIntervalMs_ = rollSpeeds[juce::jlimit(0, 4, processor_.getRollStartDiv())];
+            rollNextTriggerMs_ = nowMs + kRollActivateMs;  // first retrigger after hold threshold
+        }
     }
     selectedPad_ = n;
     processor_.markStateDirty();
@@ -2172,9 +3045,33 @@ void PluginEditor::onButton(int n, bool val)
 
 void PluginEditor::onLeftButton(bool val)
 {
+    leftArrowHeld_ = val;
+    if (val) {
+        arrowHoldStartMs_ = juce::Time::getMillisecondCounterHiRes();
+        arrowLastRepeatMs_ = arrowHoldStartMs_;
+    }
     if (!val) return;
+
+    // Any arrow closes an open bubble (cancel without commit)
+    if (bubble_.isOpen()) {
+        bubble_.close();
+        updateEncoderDisplay();
+        repaint();
+        return;
+    }
+
+    if (cheatSheetOpen_) { cheatSheetOpen_ = false; returnToConfig(); repaint(); return; }
+    if (aboutOpen_) { aboutOpen_ = false; returnToConfig(); repaint(); return; }
     if (kitPickerOpen_) {
         kitPickerOpen_ = false;
+        repaint(); return;
+    }
+    if (mixerOpen_) {
+        exitMixer();
+        repaint(); return;
+    }
+    if (compEditorOpen_) {
+        exitCompEditor();
         repaint(); return;
     }
     if (keyboardMode_) {
@@ -2208,13 +3105,45 @@ void PluginEditor::onLeftButton(bool val)
     }
     if (popupMode_) { closePopup(-1); return; }
     if (configMode_) {
-        if (configEditMode_) {
+        // Check if on a SubHeader — left arrow collapses
+        int visIdx = configSelectableToVisual(configIndex_);
+        if (visIdx >= 0 && visIdx < configRows_.size()
+            && configRows_[visIdx].type == ConfigRowType::SubHeader) {
+            int si = configRows_[visIdx].sectionIndex;
+            if (si >= 0 && si < kMaxConfigSections && !configCollapsed_[si]) {
+                configCollapsed_[si] = true;  // collapse
+                int maxSel = configSelectableCount();
+                if (configIndex_ >= maxSel) configIndex_ = std::max(0, maxSel - 1);
+            }
+        } else if (visIdx >= 0 && visIdx < configRows_.size()
+                   && configRows_[visIdx].type == ConfigRowType::PushAction) {
+            // Do nothing on push actions
+        } else {
             configAdjustValue(configIndex_, -1);
+            configEditMode_ = true;
         }
         repaint();
         return;
     }
-    if (browseMode_) return;
+    if (browseMode_) {
+        // If cursor is on a Smart Home header, left arrow toggles its
+        // collapse state. Otherwise, left arrow goes up one directory
+        // (same as enc2 push). On Smart Home root with cursor NOT on a
+        // header, goUp is a no-op.
+        if (browseIndex_ >= 0 && browseIndex_ < browseItemDurations_.size()
+            && browseItemDurations_[browseIndex_] == "__HDR__")
+        {
+            juce::String label = browseItemNames_[browseIndex_].substring(7);
+            if (smartHomeCollapsed_.contains(label))
+                smartHomeCollapsed_.removeString(label);
+            else
+                smartHomeCollapsed_.add(label);
+            repaint();
+            return;
+        }
+        browseGoUp();
+        return;
+    }
     if (compEditorOpen_) {
         compEditorRow_ = (compEditorRow_ == 0) ? 1 : 0;
         repaint(); return;
@@ -2238,9 +3167,24 @@ void PluginEditor::onLeftButton(bool val)
 
 void PluginEditor::onRightButton(bool val)
 {
+    rightArrowHeld_ = val;
+    if (val) {
+        arrowHoldStartMs_ = juce::Time::getMillisecondCounterHiRes();
+        arrowLastRepeatMs_ = arrowHoldStartMs_;
+    }
     if (!val) return;
+
+    // Any arrow closes an open bubble (cancel without commit)
+    if (bubble_.isOpen()) {
+        bubble_.close();
+        updateEncoderDisplay();
+        repaint();
+        return;
+    }
+
+    if (cheatSheetOpen_) { cheatSheetOpen_ = false; returnToConfig(); repaint(); return; }
+    if (aboutOpen_) { aboutOpen_ = false; returnToConfig(); repaint(); return; }
     if (kitPickerOpen_) {
-        // Load selected kit
         if (kitPickerIndex_ == 0) {
             // Autosave
             kitCurrentIndex_ = -1;
@@ -2287,13 +3231,37 @@ void PluginEditor::onRightButton(bool val)
         repaint(); return;
     }
     if (configMode_) {
-        if (configEditMode_) {
+        // Check if on a SubHeader — right arrow expands
+        int visIdx = configSelectableToVisual(configIndex_);
+        if (visIdx >= 0 && visIdx < configRows_.size()
+            && configRows_[visIdx].type == ConfigRowType::SubHeader) {
+            int si = configRows_[visIdx].sectionIndex;
+            if (si >= 0 && si < kMaxConfigSections && configCollapsed_[si]) {
+                configCollapsed_[si] = false;  // expand
+            }
+        } else if (visIdx >= 0 && visIdx < configRows_.size()
+                   && configRows_[visIdx].type == ConfigRowType::PushAction) {
+            configPushValue(configIndex_);  // right arrow activates push actions
+        } else {
             configAdjustValue(configIndex_, 1);
+            configEditMode_ = true;
         }
         repaint();
         return;
     }
-    if (browseMode_) return;
+    if (browseMode_) {
+        // Right = if cursor on a folder, enter it. If on a file, no-op (file
+        // load is enc1 push to avoid accidental loads via arrow navigation).
+        if (browseIndex_ >= 0 && browseIndex_ < browseItems_.size()) {
+            auto& sel = browseItems_.getReference(browseIndex_);
+            if (sel.isDirectory()) {
+                browseCurrentDir_ = sel;
+                browseScanCurrentDir();
+                repaint();
+            }
+        }
+        return;
+    }
     if (compEditorOpen_) {
         compEditorRow_ = (compEditorRow_ == 0) ? 1 : 0;
         repaint(); return;
@@ -2317,9 +3285,21 @@ void PluginEditor::onRightButton(bool val)
 
 void PluginEditor::onUpButton(bool val)
 {
-    if (!val) { upArrowHeld_ = false; return; }
+    if (!val) { upArrowHeld_ = false; arrowRepeatCount_ = 0; return; }
+
+    // Up arrow closes any open bubble (matches down arrow — either arrow
+    // cancels out of the bubble without committing onSelect)
+    if (bubble_.isOpen()) {
+        bubble_.close();
+        updateEncoderDisplay();
+        repaint();
+        return;
+    }
+
     upArrowHeld_ = true;
     arrowRepeatNextMs_ = juce::Time::getMillisecondCounterHiRes() + kArrowRepeatDelayMs;
+    if (cheatSheetOpen_) { aboutScrollOffset_ = std::max(0, aboutScrollOffset_ - 1); repaint(); return; }
+    if (aboutOpen_) { aboutScrollOffset_ = std::max(0, aboutScrollOffset_ - 1); repaint(); return; }
     if (keyboardMode_) {
         keyboardRow_ = std::max(0, keyboardRow_ - 1);
         keyboardCol_ = std::min(keyboardCol_, keyboardRowLen(keyboardRow_) - 1);
@@ -2338,10 +3318,9 @@ void PluginEditor::onUpButton(bool val)
         repaint(); return;
     }
     if (browseMode_) {
-        browseIndex_ = std::max(0, browseIndex_ - 1);
-        // Skip headers
-        while (browseIndex_ > 0 && browseItemDurations_[browseIndex_] == "__HDR__")
-            browseIndex_--;
+        // Use collapse-aware nav: skips headers outside Smart Home AND skips
+        // items in collapsed Smart Home sections.
+        browseAdvanceCursor(-1);
         repaint(); return;
     }
 
@@ -2380,9 +3359,20 @@ void PluginEditor::onUpButton(bool val)
 
 void PluginEditor::onDownButton(bool val)
 {
-    if (!val) { downArrowHeld_ = false; return; }
+    if (!val) { downArrowHeld_ = false; arrowRepeatCount_ = 0; return; }
+
+    // Down arrow closes any open bubble
+    if (bubble_.isOpen()) {
+        bubble_.close();
+        updateEncoderDisplay();
+        repaint();
+        return;
+    }
+
     downArrowHeld_ = true;
     arrowRepeatNextMs_ = juce::Time::getMillisecondCounterHiRes() + kArrowRepeatDelayMs;
+    if (cheatSheetOpen_) { aboutScrollOffset_ = std::min(1, aboutScrollOffset_ + 1); repaint(); return; }
+    if (aboutOpen_) { aboutScrollOffset_++; repaint(); return; }
     if (keyboardMode_) {
         keyboardRow_ = std::min(3, keyboardRow_ + 1);
         keyboardCol_ = std::min(keyboardCol_, keyboardRowLen(keyboardRow_) - 1);
@@ -2417,10 +3407,7 @@ void PluginEditor::onDownButton(bool val)
         repaint(); return;
     }
     if (browseMode_) {
-        browseIndex_ = std::min(std::max(0, browseItems_.size() - 1), browseIndex_ + 1);
-        // Skip headers
-        while (browseIndex_ < browseItems_.size() - 1 && browseItemDurations_[browseIndex_] == "__HDR__")
-            browseIndex_++;
+        browseAdvanceCursor(+1);
         repaint(); return;
     }
 
@@ -2477,23 +3464,15 @@ void PluginEditor::onLeftShiftButton(bool val)
         return;
     }
 
-    // Slice editor: LS = audition current slice
+    // Cheat sheet / About: any button closes
+    if (cheatSheetOpen_) { cheatSheetOpen_ = false; returnToConfig(); repaint(); return; }
+    if (aboutOpen_) { aboutOpen_ = false; returnToConfig(); repaint(); return; }
+
+    // Slice editor: LS is intentionally a no-op. Exit paths are:
+    //   • DOWN arrow (matches the rest of the editor's "exit" convention)
+    //   • RIGHT SHIFT (alternate exit, same as config mode)
+    //   • DOWN arrow is the documented exit per Andy
     if (sliceEditorMode_) {
-        auto& slot = processor_.getEngine().getSlot(selectedPad_);
-        if (slot.isLoaded()) {
-            int curSlice = slot.findSliceAt(sliceCursorPos_);
-            if (curSlice >= 0) {
-                float slStart, slEnd;
-                slot.getSliceRegion(curSlice, slStart, slEnd);
-                slot.setStartPos(slStart);
-                slot.setEndPos(slEnd);
-                slot.setSelectedSlice(curSlice);
-                slot.setSlicePitchOffset(slot.getSlicePitch(curSlice));
-            }
-            slot.stop();
-            processor_.getEngine().trigger(selectedPad_);
-        }
-        repaint();
         return;
     }
 
@@ -2666,8 +3645,57 @@ void PluginEditor::onRightShiftButton(bool val)
 // Encoder Handlers
 // ═══════════════════════════════════════════════════════════════════════════
 
+bool PluginEditor::acceptEncoderDelta(int n, float delta)
+{
+    if (n < 0 || n >= 4) return true;
+    if (std::abs(delta) < 1e-6f) return false;  // null delta
+
+    auto& f = encFilter_[n];
+    const double nowMs = juce::Time::getMillisecondCounterHiRes();
+    const int dir = (delta > 0) ? 1 : -1;
+
+    // Reversal during a fast same-direction spin? Likely bounce, drop it.
+    if (f.dirRunLength >= kEncMinRunForFilter
+        && dir != f.recentDir
+        && (nowMs - f.lastMs) < kEncBounceWindowMs)
+    {
+        // Don't update state — keep the run intact so subsequent same-direction
+        // deltas keep the high-speed filter active without re-priming.
+        return false;
+    }
+
+    if (dir == f.recentDir) {
+        f.dirRunLength++;
+    } else {
+        f.recentDir    = dir;
+        f.dirRunLength = 1;
+    }
+    f.lastMs = nowMs;
+    return true;
+}
+
 void PluginEditor::onEncoder(int n, float delta)
 {
+    // Filter quadrature bounce — drop spurious reversal pulses during fast spins
+    if (!acceptEncoderDelta(n, delta)) return;
+
+    // Bubble owns encoder turns while open
+    if (bubble_.isOpen()) {
+        bubble_.onEncoderTurn(n, delta);
+        updateEncoderDisplay();
+        repaint();
+        return;
+    }
+
+    // About / cheat sheet: any encoder turn scrolls
+    if (aboutOpen_ || cheatSheetOpen_) {
+        int step = (delta > 0) ? 1 : -1;
+        int maxOff = cheatSheetOpen_ ? 1 : 999;  // cheat sheet has 2 pages, about scrolls freely
+        aboutScrollOffset_ = juce::jlimit(0, maxOff, aboutScrollOffset_ + step);
+        repaint();
+        return;
+    }
+
     // Popup: encoder scrolls options
     if (popupMode_) {
         int d = (delta > 0) ? 1 : -1;
@@ -2699,6 +3727,23 @@ void PluginEditor::onEncoder(int n, float delta)
             keyboardRow_ = newRow;
             keyboardCol_ = std::min(keyboardCol_, keyboardRowLen(keyboardRow_) - 1);
         }
+        repaint();
+        return;
+    }
+
+    // Roll speed: enc0 adjusts interval while rolling
+    if (rollPad_ >= 0 && n == 0) {
+        // Turn right = faster (shorter interval), left = slower
+        float factor = (delta > 0) ? 0.85f : 1.18f;
+        rollIntervalMs_ = juce::jlimit(kRollMinMs, kRollMaxMs, rollIntervalMs_ * factor);
+        // Show current speed
+        juce::String speedStr;
+        if (rollIntervalMs_ < 50.0f) speedStr = "1/32";
+        else if (rollIntervalMs_ < 80.0f) speedStr = "1/16";
+        else if (rollIntervalMs_ < 160.0f) speedStr = "1/8";
+        else if (rollIntervalMs_ < 300.0f) speedStr = "1/4";
+        else speedStr = "1/2";
+        encoderSlots_[0].valueLabel.setText("ROLL " + speedStr, juce::dontSendNotification);
         repaint();
         return;
     }
@@ -2738,13 +3783,23 @@ void PluginEditor::onEncoder(int n, float delta)
             sliceAutoPreset_ = juce::jlimit(0, kSliceAutoCount - 1, sliceAutoPreset_ + d);
         }
         else if (n == 3) {
-            // Per-slice pitch: adjust pitch for the slice the cursor is in
-            auto& slot = processor_.getEngine().getSlot(selectedPad_);
+            // EDIT: adjust value of the currently-selected action.
+            // sliceEditAction_ is shared with grid view (0=Pitch, 1=Time,
+            // 2=Tape, 3=ClearAll, 4=Delete). Use HOLD to change action.
             int curSlice = slot.findSliceAt(sliceCursorPos_);
-            if (curSlice >= 0) {
+            if (curSlice < 0) curSlice = 0;
+            if (sliceEditAction_ == 0) {
                 float cur = slot.getSlicePitch(curSlice);
-                slot.setSlicePitch(curSlice, cur + delta * 1.0f);
+                slot.setSlicePitch(curSlice,
+                    juce::jlimit(-24.0f, 24.0f, cur + delta * 0.5f));
+            } else if (sliceEditAction_ == 1) {
+                slot.setTimeStretch(juce::jlimit(0.25f, 4.0f,
+                    slot.getTimeStretch() + delta * 0.02f));
+            } else if (sliceEditAction_ == 2) {
+                slot.setTapeRate(juce::jlimit(0.25f, 4.0f,
+                    slot.getTapeRate() + delta * 0.02f));
             }
+            // Clear / Delete: push-actions only
         }
         repaint();
         return;
@@ -2764,7 +3819,7 @@ void PluginEditor::onEncoder(int n, float delta)
         }
         if (n == 1) {
             auto& slot = processor_.getEngine().getSlot(mixerPad_);
-            slot.setVolume(juce::jlimit(0.0f, 1.0f, slot.getVolume() + delta * 0.02f));
+            slot.setVolume(juce::jlimit(0.0f, 1.2f, slot.getVolume() + delta * 0.02f));
         }
         repaint();
         return;
@@ -2796,15 +3851,7 @@ void PluginEditor::onEncoder(int n, float delta)
         if (n == 0) {
             int fc = browseItems_.size();
             if (fc > 0) {
-                browseIndex_ = delta > 0 ? std::min(fc - 1, browseIndex_ + 1) : std::max(0, browseIndex_ - 1);
-                // Skip headers
-                if (delta > 0) {
-                    while (browseIndex_ < fc - 1 && browseItemDurations_[browseIndex_] == "__HDR__")
-                        browseIndex_++;
-                } else {
-                    while (browseIndex_ > 0 && browseItemDurations_[browseIndex_] == "__HDR__")
-                        browseIndex_--;
-                }
+                browseAdvanceCursor(delta > 0 ? +1 : -1);
                 // Auto-preview: play sample on scroll
                 if (browseAutoPreview_ && browseIndex_ >= 0 && browseIndex_ < fc) {
                     auto sel = browseItems_[browseIndex_];
@@ -2824,6 +3871,7 @@ void PluginEditor::onEncoder(int n, float delta)
         // Enc 3 turn: cycle file operations
         if (n == 3) {
             browseFileOp_ = juce::jlimit(0, 4, browseFileOp_ + (delta > 0 ? 1 : -1));
+            fileOpActive_ = false;  // reset activation on change
             repaint();
         }
         return;
@@ -2840,6 +3888,10 @@ void PluginEditor::onEncoder(int n, float delta)
 
     // Apply global encoder speed (doesn't affect enum steps which use delta > 0 ? 1 : -1)
     delta *= processor_.getEncoderSpeed();
+
+    // Track last turn time for value enlargement animation
+    if (n >= 0 && n < 4)
+        encLastTurnMs_[n] = juce::Time::getMillisecondCounterHiRes();
 
     switch (currentPage_)
     {
@@ -2868,19 +3920,20 @@ void PluginEditor::onEncoder(int n, float delta)
         case PAGE_PLAY:
             if (n == 1) {
                 int m = static_cast<int>(slot.getMode()) + (delta > 0 ? 1 : -1);
-                slot.setMode(static_cast<PadMode>(juce::jlimit(0, 4, m)));
+                slot.setMode(static_cast<PadMode>(juce::jlimit(0, 5, m)));
                 slot.setTimeStretch(1.0f);
             }
-            if (n == 2) slot.setVolume(juce::jlimit(0.0f, 1.0f, slot.getVolume() + delta * 0.02f));
+            if (n == 2) slot.setVolume(juce::jlimit(0.0f, 1.2f, slot.getVolume() + delta * 0.02f));
             if (n == 3) slot.setPan(juce::jlimit(-1.0f, 1.0f, slot.getPan() + delta * 0.05f));
             break;
 
-        case PAGE_PITCH:
+        case PAGE_WARP:
             if (n == 1) slot.setTimeStretch(slot.getTimeStretch() + delta * 0.01f);
             if (n == 2) {
                 int cur = processor_.getClockDiv();
                 processor_.setClockDiv(cur + (delta > 0 ? 1 : -1));
             }
+            if (n == 3) slot.setTapeRate(slot.getTapeRate() + delta * 0.01f);
             break;
 
         case PAGE_FADE: {
@@ -2901,26 +3954,17 @@ void PluginEditor::onEncoder(int n, float delta)
         case PAGE_FILTER: {
             if (n == 1) {
                 int t = static_cast<int>(slot.getFilterType()) + (delta > 0 ? 1 : -1);
-                auto newType = static_cast<FilterType>(juce::jlimit(0, 7, t));
+                auto newType = static_cast<FilterType>(juce::jlimit(0, 10, t));
                 slot.setFilterType(newType);
                 // Keep current cutoff — don't reset on type change
             }
             if (n == 2) {
-                // Work in strength % space: right = more filtering
+                // Logarithmic frequency control: right = higher frequency
                 float hz = slot.getFilterCutoff();
-                FilterType ft = slot.getFilterType();
-                float pct;
-                if (ft == FilterType::HPF)
-                    pct = std::log(hz / 20.0f) / std::log(1000.0f);
-                else
-                    pct = 1.0f - std::log(hz / 20.0f) / std::log(1000.0f);
+                float pct = std::log(hz / 20.0f) / std::log(1000.0f);
                 pct += delta * 0.02f;  // 2% per click (scaled by encoder speed)
                 pct = juce::jlimit(0.0f, 1.0f, pct);
-                float newHz;
-                if (ft == FilterType::HPF)
-                    newHz = 20.0f * std::pow(1000.0f, pct);
-                else
-                    newHz = 20.0f * std::pow(1000.0f, 1.0f - pct);
+                float newHz = 20.0f * std::pow(1000.0f, pct);
                 slot.setFilterCutoff(newHz);
             }
             if (n == 3) {
@@ -2929,23 +3973,54 @@ void PluginEditor::onEncoder(int n, float delta)
             break;
         }
 
-        case PAGE_MIDI:
+        case PAGE_SLICE:
             if (n == 1) {
-                int ch = slot.getMidiChannel() + (delta > 0 ? 1 : -1);
-                slot.setMidiChannel(juce::jlimit(0, 17, ch));
+                // CURSOR: navigate slice-by-slice. No-op when no slices exist
+                // (the value reads "0/0" — encoder turn does nothing).
+                int sc = slot.getSliceCount();
+                if (sc > 0) {
+                    int cur = slot.findSliceAt(sliceTabCursorPos_);
+                    if (cur < 0) cur = 0;
+                    cur = juce::jlimit(0, sc - 1, cur + (delta > 0 ? 1 : -1));
+                    float s = slot.getSliceStart(cur);
+                    float e = slot.getSliceEnd(cur);
+                    sliceTabCursorPos_ = (s + e) * 0.5f;  // center of slice
+                }
+                // sc == 0: do nothing — cursor is meaningless without slices
             }
             if (n == 2) {
-                auto devs = processor_.getMidiDeviceNames();
-                if (devs.size() > 0) {
-                    auto curName = processor_.getMidiDeviceName();
-                    int cur = curName.isEmpty() ? 0 : devs.indexOf(curName);
-                    if (cur < 0) cur = 0;
-                    int next = juce::jlimit(0, devs.size() - 1, cur + (delta > 0 ? 1 : -1));
-                    processor_.setMidiDevice(devs[next]);
-                }
+                // SLICE count: 1..128 stepwise
+                sliceTabCount_ = juce::jlimit(1, 128, sliceTabCount_ + (delta > 0 ? 1 : -1));
             }
-            if (n == 3 && processor_.getMidiDeviceName().isNotEmpty()) {
-                processor_.setMidiClockEnabled(delta > 0);  // turn right = ON, left = OFF
+            if (n == 3) {
+                // EDIT turn: adjust the value of the currently-selected action.
+                // Action-types (Clear All, Delete Region, Export) have no
+                // adjustable value — turn is a no-op for those. Use HOLD to
+                // pick a different action.
+                int sliceIdx = slot.findSliceAt(sliceTabCursorPos_);
+                if (sliceIdx < 0) sliceIdx = 0;
+                if (sliceEditAction_ == 0) {
+                    // Pitch: per-slice, ±0.5st per click
+                    float p = slot.getSlicePitch(sliceIdx);
+                    slot.setSlicePitch(sliceIdx,
+                        juce::jlimit(-24.0f, 24.0f, p + (float)delta * 0.5f));
+                } else if (sliceEditAction_ == 1) {
+                    // Time stretch (slot-level — per-slice version pending)
+                    slot.setTimeStretch(juce::jlimit(0.25f, 4.0f,
+                        slot.getTimeStretch() + (float)delta * 0.02f));
+                } else if (sliceEditAction_ == 2) {
+                    // Tape speed (slot-level)
+                    slot.setTapeRate(juce::jlimit(0.25f, 4.0f,
+                        slot.getTapeRate() + (float)delta * 0.02f));
+                } else if (sliceEditAction_ == 6) {
+                    // MIDI CC: per-slice. -1 = OFF, 0..127 = CC number.
+                    if (slot.getSliceCount() > 0) {
+                        int cc = slot.getSliceCC(sliceIdx);
+                        cc = juce::jlimit(-1, 127, cc + (delta > 0 ? 1 : -1));
+                        slot.setSliceCC(sliceIdx, cc);
+                    }
+                }
+                // Clear All / Delete Region / Export are push-actions only
             }
             break;
 
@@ -2991,6 +4066,12 @@ void PluginEditor::onEncoder(int n, float delta)
 
 void PluginEditor::onEncoderSwitch(int n, bool val)
 {
+    // Bubble owns encoder pushes while open
+    if (bubble_.isOpen()) {
+        if (val) bubble_.onEncoderPush(n);
+        return;
+    }
+
     // ── Track push/release for hold detection ────────────────────────────
     if (n >= 0 && n < 4) {
         if (val) {
@@ -3012,6 +4093,14 @@ void PluginEditor::onEncoderSwitch(int n, bool val)
                 keyboardAction();
                 encPushTime_[n] = 0.0;
                 return;
+            }
+
+            // Cheat sheet / About: any encoder push closes
+            if (cheatSheetOpen_ && !encPushHandled_[n] && held < kHoldMs) {
+                cheatSheetOpen_ = false; returnToConfig(); repaint(); return;
+            }
+            if (aboutOpen_ && !encPushHandled_[n] && held < kHoldMs) {
+                aboutOpen_ = false; returnToConfig(); repaint(); return;
             }
 
             if (browseMode_ && !encPushHandled_[n]) {
@@ -3063,9 +4152,16 @@ void PluginEditor::onEncoderSwitch(int n, bool val)
                     if (browseIndex_ >= 0 && browseIndex_ < browseItems_.size()) {
                         auto sel = browseItems_[browseIndex_];
                         if (!sel.isDirectory() && browseItemNames_[browseIndex_] != ">> Clear Pad") {
-                            processor_.cacheSlicesForPad(selectedPad_);
-                            processor_.getEngine().getSlot(selectedPad_).loadFile(sel);
-                            processor_.restoreCachedSlices(selectedPad_);
+                            auto& sslot = processor_.getEngine().getSlot(selectedPad_);
+                            // Only reload if it's actually a different file.
+                            // Reloading the same file runs the cache-save +
+                            // restore dance which could resurrect stale slice
+                            // state in odd edge cases.
+                            if (sslot.getFilePath() != sel.getFullPathName()) {
+                                processor_.cacheSlicesForPad(selectedPad_);
+                                sslot.loadFile(sel);
+                                processor_.restoreCachedSlices(selectedPad_);
+                            }
                             processor_.getEngine().trigger(selectedPad_);
                             repaint();
                         }
@@ -3138,10 +4234,23 @@ void PluginEditor::onEncoderSwitch(int n, bool val)
                         }
                         repaint();
                     } else {
-                        browseExecuteFileOp();
+                        if (browseFileOp_ > 0 && !fileOpActive_) {
+                            // First push: activate the operation
+                            fileOpActive_ = true;
+                            if (browseFileOp_ == 2)
+                                processor_.showTickerPublic("COPY: press pad or browse to file");
+                            else if (browseFileOp_ == 3)
+                                processor_.showTickerPublic("DELETE: press pad or select file");
+                            else
+                                browseExecuteFileOp();  // Move/Multi still one-step
+                        } else {
+                            browseExecuteFileOp();
+                        }
                     }
                 }
                 encPushTime_[n] = 0.0;  // prevent timer from firing hold action
+                encHoldProgress_[n] = 0.0f;
+                encoderSlots_[n].valueLabel.setColour(juce::Label::textColourId, juce::Colour(kEncValue));
                 return;
             }
             // Non-browse releases: handle MOD page, then return
@@ -3176,6 +4285,9 @@ void PluginEditor::onEncoderSwitch(int n, bool val)
             // Clear encoder push time for ALL non-browse releases
             // (prevents stale timestamps from triggering mod editor hold on page switch)
             encPushTime_[n] = 0.0;
+            encHoldProgress_[n] = 0.0f;
+            // Reset label color (progress animation may have turned it red)
+            encoderSlots_[n].valueLabel.setColour(juce::Label::textColourId, juce::Colour(kEncValue));
             return;
         }
     } else {
@@ -3225,11 +4337,17 @@ void PluginEditor::onEncoderSwitch(int n, bool val)
             }
         }
         else if (n == 1) {
-            // Push zoom = snap cursor to nearest zero crossing
-            float before = sliceCursorPos_;
-            sliceCursorPos_ = slot.findNearestZeroCrossing(sliceCursorPos_);
-            float movedMs = std::abs(sliceCursorPos_ - before) * (float)slot.getNumSamples() / (float)slot.getSampleRate() * 1000.0f;
-            processor_.showTickerPublic("Zero crossing — moved " + juce::String(movedMs, 1) + "ms");
+            // Push zoom = audition slice at cursor.
+            // Uses triggerSlice — per-voice region, slot trim untouched.
+            if (slot.getSliceCount() == 0) {
+                processor_.showTickerPublic("No slices — push CURSOR to create");
+            } else {
+                int sIdx = slot.findSliceAt(sliceCursorPos_);
+                if (sIdx < 0) sIdx = 0;
+                slot.triggerSlice(sIdx);
+                if (sIdx < kMaxSliceAuditionFlashes)
+                    sliceAuditionTimeMs_[sIdx] = juce::Time::getMillisecondCounterHiRes();
+            }
         }
         else if (n == 2) {
             // Push auto = apply instantly (no popup)
@@ -3237,6 +4355,7 @@ void PluginEditor::onEncoderSwitch(int n, bool val)
             if (val == 0) {
                 slot.clearSlices();
                 clearStitches();
+                processor_.cacheSlicesForPad(selectedPad_);  // flush stale cache
                 processor_.showTickerPublic("All slices cleared");
             } else if (val == -1) {
                 slot.detectTransients(processor_.getTransSensitivity());
@@ -3249,11 +4368,49 @@ void PluginEditor::onEncoderSwitch(int n, bool val)
             }
         }
         else if (n == 3) {
-            // Push pitch = reset pitch for current slice to 0
+            // EDIT push: execute action (Clear All / Delete Region) or
+            // ticker the current value for value-types. Use HOLD to change action.
             int curSlice = slot.findSliceAt(sliceCursorPos_);
-            if (curSlice >= 0) {
-                slot.setSlicePitch(curSlice, 0.0f);
-                processor_.showTickerPublic("Slice " + juce::String(curSlice + 1) + " pitch reset");
+            if (curSlice < 0) curSlice = 0;
+            if (sliceEditAction_ == 0) {
+                float p = slot.getSlicePitch(curSlice);
+                processor_.showTickerPublic("Pitch (slice " + juce::String(curSlice + 1) +
+                    "): " + (p >= 0 ? "+" : "") + juce::String(p, 1) + "st");
+            } else if (sliceEditAction_ == 1) {
+                processor_.showTickerPublic("Time: " + juce::String(slot.getTimeStretch(), 2) + "x");
+            } else if (sliceEditAction_ == 2) {
+                processor_.showTickerPublic("Tape: " + juce::String(slot.getTapeRate(), 2) + "x");
+            } else if (sliceEditAction_ == 3) {
+                if (slot.getSliceCount() == 0) {
+                    processor_.showTickerPublic("No slices to clear");
+                } else {
+                    slot.clearSlices();
+                    clearStitches();
+                    // Also flush the slice cache for this file so the cleared
+                    // state survives any sample swap + return cycle.
+                    processor_.cacheSlicesForPad(selectedPad_);
+                    processor_.showTickerPublic("Cleared all slices");
+                }
+            } else if (sliceEditAction_ == 4) {
+                if (slot.getSliceCount() == 0) {
+                    processor_.showTickerPublic("No slices to delete");
+                } else {
+                    float beforePos = sliceCursorPos_;
+                    if (slot.deleteSliceRegion(curSlice, beforePos)) {
+                        sliceCursorPos_ = beforePos;
+                        processor_.showTickerPublic("Region deleted (slice " + juce::String(curSlice + 1) + ")");
+                    }
+                }
+            } else if (sliceEditAction_ == 5) {
+                if (slot.getSliceCount() == 0) {
+                    processor_.showTickerPublic("No slices to export");
+                } else {
+                    int count = processor_.exportSlicesToFiles(selectedPad_);
+                    if (count > 0)
+                        processor_.showTickerPublic("Exported " + juce::String(count) + " slices to /recordings");
+                    else
+                        processor_.showTickerPublic("Export failed");
+                }
             }
         }
         repaint();
@@ -3305,10 +4462,10 @@ void PluginEditor::onEncoderSwitch(int n, bool val)
             if (n == 2) processor_.getEngine().toggleMute(selectedPad_);
             if (n == 3) slot.setPan(0.0f);
             break;
-        case PAGE_PITCH:
+        case PAGE_WARP:
             if (n == 1) slot.setTimeStretch(1.0f);
             if (n == 2) processor_.setClockDiv(0);
-            if (n == 3) enterSliceEditor();
+            if (n == 3) slot.setTapeRate(1.0f);
             break;
         case PAGE_FADE:
             if (n == 1) slot.setFadeInCurve(slot.getFadeInCurve() == 0 ? 1 : 0);
@@ -3325,11 +4482,116 @@ void PluginEditor::onEncoderSwitch(int n, bool val)
             }
             if (n == 3) slot.setFilterResonance(0.0f);
             break;
-        case PAGE_MIDI:
-            if (n == 1) slot.setMidiChannel(0);  // push = OFF
-            if (n == 2) processor_.closeMidiDevice();  // push = disconnect
-            if (n == 3 && processor_.getMidiDeviceName().isNotEmpty())
-                processor_.setMidiClockEnabled(!processor_.isMidiClockEnabled());
+        case PAGE_SLICE:
+            if (n == 1) {
+                // CURSOR push: audition slice at cursor.
+                // Uses triggerSlice — per-voice region, slot trim untouched,
+                // visual stays correct, no waveform blackout.
+                if (!slot.isLoaded()) {
+                    processor_.showTickerPublic("No sample loaded");
+                } else if (slot.getSliceCount() == 0) {
+                    processor_.showTickerPublic("No slices");
+                } else {
+                    int sIdx = slot.findSliceAt(sliceTabCursorPos_);
+                    if (sIdx < 0) sIdx = 0;
+                    slot.triggerSlice(sIdx);
+                    sliceAuditionTimeMs_[sIdx] = juce::Time::getMillisecondCounterHiRes();
+                }
+            }
+            if (n == 2) {
+                // SLICE push: apply equal-distance slicing with current count.
+                // Method/sensitivity from hold-bubble apply when method != Equal.
+                if (!slot.isLoaded()) {
+                    processor_.showTickerPublic("No sample loaded");
+                } else if (sliceMethod_ == 0) {
+                    slot.autoSlice(sliceTabCount_);
+                    processor_.showTickerPublic("Sliced equal: " + juce::String(sliceTabCount_));
+                } else if (sliceMethod_ == 1) {
+                    slot.detectTransients(sliceSensitivity_);
+                    processor_.showTickerPublic("Transient slices: " + juce::String(slot.getSliceCount()));
+                } else if (sliceMethod_ == 2) {
+                    // Crossfade: equal distance + zero-cross snap for clean boundaries
+                    int nn = sliceTabCount_;
+                    if (nn < 1) nn = 1;
+                    float s = slot.getStartPos(), e = slot.getEndPos();
+                    float w = (e - s) / (float)nn;
+                    slot.clearSlices();
+                    float prevSnapped = slot.findNearestZeroCrossing(s);
+                    for (int i = 0; i < nn; ++i) {
+                        float nextRaw = s + (float)(i + 1) * w;
+                        float nextSnapped = (i == nn - 1) ? e
+                                          : slot.findNearestZeroCrossing(nextRaw);
+                        slot.addSlicePair(prevSnapped, nextSnapped);
+                        prevSnapped = nextSnapped;
+                    }
+                    processor_.showTickerPublic("Crossfade slices: " + juce::String(nn));
+                }
+            }
+            if (n == 3) {
+                // EDIT push: value-types show current value via ticker;
+                // action-types execute. Use HOLD to switch action.
+                if (!slot.isLoaded()) {
+                    processor_.showTickerPublic("No sample loaded");
+                    break;
+                }
+                int sliceIdx = slot.findSliceAt(sliceTabCursorPos_);
+                if (sliceIdx < 0) sliceIdx = 0;
+                if (sliceEditAction_ == 0) {
+                    float p = slot.getSlicePitch(sliceIdx);
+                    processor_.showTickerPublic("Pitch (slice " + juce::String(sliceIdx + 1) +
+                        "): " + (p >= 0 ? "+" : "") + juce::String(p, 1) + "st");
+                } else if (sliceEditAction_ == 1) {
+                    processor_.showTickerPublic("Time: " + juce::String(slot.getTimeStretch(), 2) + "x");
+                } else if (sliceEditAction_ == 2) {
+                    processor_.showTickerPublic("Tape: " + juce::String(slot.getTapeRate(), 2) + "x");
+                } else if (sliceEditAction_ == 3) {
+                    // Clear All
+                    if (slot.getSliceCount() == 0) {
+                        processor_.showTickerPublic("No slices to clear");
+                    } else {
+                        slot.clearSlices();
+                        processor_.cacheSlicesForPad(selectedPad_);  // flush stale cache
+                        processor_.showTickerPublic("Cleared all slices");
+                    }
+                } else if (sliceEditAction_ == 4) {
+                    // Delete Region (musique concrète)
+                    if (slot.getSliceCount() == 0) {
+                        processor_.showTickerPublic("No slices to delete");
+                    } else {
+                        float beforePos = sliceTabCursorPos_;
+                        if (slot.deleteSliceRegion(sliceIdx, beforePos)) {
+                            sliceTabCursorPos_ = beforePos;
+                            processor_.showTickerPublic("Region deleted (slice " + juce::String(sliceIdx + 1) + ")");
+                        }
+                    }
+                } else if (sliceEditAction_ == 5) {
+                    if (slot.getSliceCount() == 0) {
+                        processor_.showTickerPublic("No slices to export");
+                    } else {
+                        int count = processor_.exportSlicesToFiles(selectedPad_);
+                        if (count > 0)
+                            processor_.showTickerPublic("Exported " + juce::String(count) + " slices to /recordings");
+                        else
+                            processor_.showTickerPublic("Export failed");
+                    }
+                } else if (sliceEditAction_ == 6) {
+                    // MIDI CC push = bulk assign sequential CCs.
+                    // Starting point: cursor slice's current CC (or CC 16 if OFF).
+                    // Each subsequent slice gets the next CC up.
+                    if (slot.getSliceCount() == 0) {
+                        processor_.showTickerPublic("No slices to assign");
+                    } else {
+                        int startCC = slot.getSliceCC(sliceIdx);
+                        if (startCC < 0) startCC = 16;  // safe default (off mod wheel)
+                        // Shift if needed so we don't run past CC 127
+                        if (startCC + slot.getSliceCount() - 1 > 127)
+                            startCC = std::max(0, 127 - (slot.getSliceCount() - 1));
+                        slot.assignSequentialSliceCCs(startCC);
+                        processor_.showTickerPublic("Slices CC " + juce::String(startCC) +
+                            ".." + juce::String(startCC + slot.getSliceCount() - 1));
+                    }
+                }
+            }
             break;
         case PAGE_MOD:
             // Handled on release (above) for hold detection
@@ -3348,10 +4610,18 @@ void PluginEditor::enterConfigMode()
 {
     if (browseMode_) return;
     configMode_ = true;
-    configIndex_ = 0;
-    configScrollOffset_ = 0;
     configEditMode_ = false;
+    clearAllHoldState();  // 2.4.9
     buildConfigRows();
+    // Only reset position on first open; preserve on re-enter
+    if (!configEverOpened_) {
+        configEverOpened_ = true;
+        configIndex_ = 0;
+        configScrollOffset_ = 0;
+    } else {
+        // Clamp in case rows changed
+        configIndex_ = juce::jlimit(0, std::max(0, configSelectableCount() - 1), configIndex_);
+    }
     // Update encoder bar
     encoderSlots_[0].nameLabel.setText("CONFIG", juce::dontSendNotification);
     encoderSlots_[0].valueLabel.setText("[CLOSE]", juce::dontSendNotification);
@@ -3368,8 +4638,39 @@ void PluginEditor::exitConfigMode()
 {
     configMode_ = false;
     configEditMode_ = false;
+    configReturnPending_ = false;  // full exit, no return
     leftShiftHeld_ = false;
     rightShiftHeld_ = false;
+    updateEncoderDisplay();
+    repaint();
+}
+
+// Exit config temporarily — will return to same position when overlay closes
+void PluginEditor::exitConfigForOverlay()
+{
+    configReturnPending_ = true;
+    configReturnIndex_ = configIndex_;
+    configReturnScroll_ = configScrollOffset_;
+    configMode_ = false;
+    configEditMode_ = false;
+    leftShiftHeld_ = false;
+    rightShiftHeld_ = false;
+    updateEncoderDisplay();
+    repaint();
+}
+
+void PluginEditor::returnToConfig()
+{
+    if (!configReturnPending_) return;
+    configReturnPending_ = false;
+    configMode_ = true;
+    configIndex_ = configReturnIndex_;
+    configScrollOffset_ = configReturnScroll_;
+    configEditMode_ = false;
+    buildConfigRows();
+    // Re-clamp index in case rows changed
+    int count = configSelectableCount();
+    configIndex_ = juce::jlimit(0, std::max(0, count - 1), configIndex_);
     updateEncoderDisplay();
     repaint();
 }
@@ -3400,6 +4701,9 @@ void PluginEditor::buildConfigRows()
     { ConfigRow r; r.type = ConfigRowType::Enum; r.label = "Stretch Algorithm";
       r.padIndex = selectedPad_; r.paramIndex = 12; configRows_.add(r); }
 
+    { ConfigRow r; r.type = ConfigRowType::Enum; r.label = "Pitch Mode";
+      r.padIndex = selectedPad_; r.paramIndex = 17; configRows_.add(r); }
+
     { ConfigRow r; r.type = ConfigRowType::Enum; r.label = "Sample Reverse";
       r.padIndex = selectedPad_; r.paramIndex = 14; configRows_.add(r); }
 
@@ -3410,6 +4714,13 @@ void PluginEditor::buildConfigRows()
       r.padIndex = selectedPad_; r.paramIndex = 15; configRows_.add(r); }
     { ConfigRow r; r.type = ConfigRowType::PushAction; r.label = "Auto Clip Fix";
       r.padIndex = selectedPad_; r.paramIndex = 32; configRows_.add(r); }
+    { ConfigRow r; r.type = ConfigRowType::PushAction; r.label = "Clear Pad";
+      r.padIndex = selectedPad_; r.paramIndex = 36; configRows_.add(r); }
+    // Copy/Paste pad settings (sample NOT included — just params)
+    { ConfigRow r; r.type = ConfigRowType::PushAction; r.label = "Copy Pad Settings";
+      r.padIndex = selectedPad_; r.paramIndex = 46; configRows_.add(r); }
+    { ConfigRow r; r.type = ConfigRowType::PushAction; r.label = "Paste to All Pads";
+      r.padIndex = selectedPad_; r.paramIndex = 47; configRows_.add(r); }
 
     { ConfigRow s; s.type = ConfigRowType::Spacer; s.padIndex = -1; s.paramIndex = -1;
       configRows_.add(s); }
@@ -3422,15 +4733,31 @@ void PluginEditor::buildConfigRows()
       r.padIndex = selectedPad_; r.paramIndex = 9; configRows_.add(r); }
     { ConfigRow r; r.type = ConfigRowType::Enum; r.label = "Send to Stereo Mix";
       r.padIndex = selectedPad_; r.paramIndex = 10; configRows_.add(r); }
-    { ConfigRow r; r.type = ConfigRowType::Enum; r.label = "Comp Bypass";
+    { ConfigRow r; r.type = ConfigRowType::Enum; r.label = "Compressor";
       r.padIndex = selectedPad_; r.paramIndex = 16; configRows_.add(r); }
 
     { ConfigRow s; s.type = ConfigRowType::Spacer; s.padIndex = -1; s.paramIndex = -1;
       configRows_.add(s); }
 
-    // ── MIDI CC ──
-    { ConfigRow s; s.type = ConfigRowType::SubHeader; s.label = "MIDI CC";
+    // ── MIDI (per-pad: channel + CC mapping) ──
+    // Device pickers + global MIDI config moved to the GLOBAL section below
+    // so they're not confusingly mixed with per-pad MIDI settings.
+    { ConfigRow s; s.type = ConfigRowType::SubHeader; s.label = "MIDI";
       s.padIndex = -1; s.paramIndex = -1; configRows_.add(s); }
+
+    // Pad MIDI Device — the device pads listen to for note-on triggers.
+    // Moved here from GLOBAL in 2.4.10 per Andy — the "Pad" scope makes
+    // it belong with the pad MIDI settings even though the setting itself
+    // is shared across all pads (one device feeds all).
+    { ConfigRow r; r.type = ConfigRowType::Enum; r.label = "Pad MIDI Device";
+      r.padIndex = -1; r.paramIndex = 40; configRows_.add(r); }
+
+    { ConfigRow r; r.type = ConfigRowType::Enum; r.label = "MIDI Channel";
+      r.padIndex = selectedPad_; r.paramIndex = 19; configRows_.add(r); }
+
+    // Spacer between channel and CC table
+    { ConfigRow s; s.type = ConfigRowType::Spacer; s.padIndex = -1; s.paramIndex = -1;
+      configRows_.add(s); }
 
     for (int i = 0; i < PadCCMap::kNumCCs; ++i) {
         ConfigRow row;
@@ -3441,15 +4768,10 @@ void PluginEditor::buildConfigRows()
         configRows_.add(row);
     }
 
-    { ConfigRow s; s.type = ConfigRowType::Spacer; s.padIndex = -1; s.paramIndex = -1;
-      configRows_.add(s); }
-
-    // ── Tools ──
-    { ConfigRow s; s.type = ConfigRowType::SubHeader; s.label = "Tools";
-      s.padIndex = -1; s.paramIndex = -1; configRows_.add(s); }
-
-    { ConfigRow r; r.type = ConfigRowType::PushAction; r.label = "Export Slices to Samples";
-      r.padIndex = selectedPad_; r.paramIndex = 11; configRows_.add(r); }
+    // Reset MIDI Settings — restores this pad's channel + CC map to factory
+    // defaults without touching sample / params / slices / mod.
+    { ConfigRow r; r.type = ConfigRowType::PushAction; r.label = "Reset MIDI Settings";
+      r.padIndex = selectedPad_; r.paramIndex = 45; configRows_.add(r); }
 
     { ConfigRow s; s.type = ConfigRowType::Spacer; s.padIndex = -1; s.paramIndex = -1;
       configRows_.add(s); }
@@ -3479,6 +4801,8 @@ void PluginEditor::buildConfigRows()
       r.padIndex = -1; r.paramIndex = 6; configRows_.add(r); }
     { ConfigRow r; r.type = ConfigRowType::Enum; r.label = "MIDI Transport";
       r.padIndex = -1; r.paramIndex = 33; configRows_.add(r); }
+    { ConfigRow r; r.type = ConfigRowType::Enum; r.label = "Roll Speed";
+      r.padIndex = -1; r.paramIndex = 34; configRows_.add(r); }
     { ConfigRow r; r.type = ConfigRowType::PushAction; r.label = "Show Mixer";
       r.padIndex = -1; r.paramIndex = 28; configRows_.add(r); }
 
@@ -3492,6 +4816,28 @@ void PluginEditor::buildConfigRows()
       r.padIndex = -1; r.paramIndex = 7; configRows_.add(r); }
     { ConfigRow r; r.type = ConfigRowType::Enum; r.label = "Slice CV 2";
       r.padIndex = -1; r.paramIndex = 8; configRows_.add(r); }
+
+    { ConfigRow s; s.type = ConfigRowType::Spacer; s.padIndex = -1; s.paramIndex = -1;
+      configRows_.add(s); }
+
+    // ── MIDI (global-only — device pickers moved to per-pad section) ──
+    // Pad MIDI Device now lives in the per-pad MIDI section for clearer
+    // scope. Global MIDI Device stays here — it's for the future globals
+    // overlay (mixer, master comp, etc). Clock + control assignments
+    // remain global.
+    { ConfigRow s; s.type = ConfigRowType::SubHeader; s.label = "MIDI";
+      s.padIndex = -1; s.paramIndex = -1; configRows_.add(s); }
+    { ConfigRow r; r.type = ConfigRowType::Enum; r.label = "Global MIDI Device";
+      r.padIndex = -1; r.paramIndex = 43; configRows_.add(r); }
+    { ConfigRow r; r.type = ConfigRowType::Enum; r.label = "Clock";
+      r.padIndex = -1; r.paramIndex = 41; configRows_.add(r); }
+    { ConfigRow r; r.type = ConfigRowType::PushAction; r.label = "Setup Mixer Faders";
+      r.padIndex = -1; r.paramIndex = 44; configRows_.add(r); }
+    // Pad mute CCs: a base CC + 7 sequential CCs control mutes for pads 1-8.
+    // Value >= 64 mutes the pad, < 64 unmutes. Listens on Globals Device when
+    // set, otherwise on Pads Device (any channel).
+    { ConfigRow r; r.type = ConfigRowType::Enum; r.label = "Pad Mute CC Base";
+      r.padIndex = -1; r.paramIndex = 48; configRows_.add(r); }
 
     { ConfigRow s; s.type = ConfigRowType::Spacer; s.padIndex = -1; s.paramIndex = -1;
       configRows_.add(s); }
@@ -3547,8 +4893,14 @@ void PluginEditor::buildConfigRows()
       r.padIndex = -1; r.paramIndex = 24; configRows_.add(r); }
     { ConfigRow r; r.type = ConfigRowType::Enum; r.label = "Autosave";
       r.padIndex = -1; r.paramIndex = 30; configRows_.add(r); }
-    { ConfigRow r; r.type = ConfigRowType::Enum; r.label = "Debug Msgs";
+    { ConfigRow r; r.type = ConfigRowType::PushAction; r.label = "Clear All Pads";
+      r.padIndex = -1; r.paramIndex = 37; configRows_.add(r); }
+    { ConfigRow r; r.type = ConfigRowType::Enum; r.label = "Enable Debug Msgs";
       r.padIndex = -1; r.paramIndex = 3; configRows_.add(r); }
+    { ConfigRow r; r.type = ConfigRowType::Enum; r.label = "Enable Logging";
+      r.padIndex = -1; r.paramIndex = 38; configRows_.add(r); }
+    { ConfigRow r; r.type = ConfigRowType::PushAction; r.label = "View Crash Log";
+      r.padIndex = -1; r.paramIndex = 39; configRows_.add(r); }
     { ConfigRow r; r.type = ConfigRowType::PushAction; r.label = "Save Kit";
       r.padIndex = -1; r.paramIndex = 31; configRows_.add(r); }
     { ConfigRow r; r.type = ConfigRowType::PushAction; r.label = "Reboot Plugin";
@@ -3560,17 +4912,48 @@ void PluginEditor::buildConfigRows()
     // ── About ──
     { ConfigRow s; s.type = ConfigRowType::SubHeader; s.label = "About";
       s.padIndex = -1; s.paramIndex = -1; configRows_.add(s); }
+    { ConfigRow r; r.type = ConfigRowType::PushAction; r.label = "Cheat Sheet";
+      r.padIndex = -1; r.paramIndex = 34; configRows_.add(r); }
+    { ConfigRow r; r.type = ConfigRowType::PushAction; r.label = "About GRID";
+      r.padIndex = -1; r.paramIndex = 35; configRows_.add(r); }
     { ConfigRow r; r.type = ConfigRowType::Enum; r.label = "Firmware";
       r.padIndex = -1; r.paramIndex = 29; configRows_.add(r); }
+
+    // ── Tag all rows with their section index for collapsible sections ──
+    int currentSection = -1;
+    for (int i = 0; i < configRows_.size(); ++i) {
+        auto& row = configRows_.getReference(i);
+        if (row.type == ConfigRowType::SubHeader) {
+            currentSection++;
+            row.sectionIndex = currentSection;
+        } else {
+            row.sectionIndex = currentSection;
+        }
+    }
+
+    // Start with all sections collapsed on first open
+    if (!configCollapseInited_) {
+        for (int i = 0; i < kMaxConfigSections; ++i)
+            configCollapsed_[i] = true;
+        configCollapseInited_ = true;
+    }
 }
 
 int PluginEditor::configSelectableCount() const
 {
     int count = 0;
-    for (auto& row : configRows_)
-        if (row.type != ConfigRowType::Header && row.type != ConfigRowType::Divider
-            && row.type != ConfigRowType::Spacer && row.type != ConfigRowType::SubHeader)
-            count++;
+    for (auto& row : configRows_) {
+        if (row.type == ConfigRowType::Header || row.type == ConfigRowType::Divider
+            || row.type == ConfigRowType::Spacer)
+            continue;
+        // SubHeaders are now selectable (for toggling collapse)
+        if (row.type == ConfigRowType::SubHeader) { count++; continue; }
+        // Skip children of collapsed sections
+        if (row.sectionIndex >= 0 && row.sectionIndex < kMaxConfigSections
+            && configCollapsed_[row.sectionIndex])
+            continue;
+        count++;
+    }
     return count;
 }
 
@@ -3579,7 +4962,11 @@ int PluginEditor::configSelectableToVisual(int selIdx) const
     int sel = 0;
     for (int i = 0; i < configRows_.size(); ++i) {
         auto t = configRows_[i].type;
-        if (t == ConfigRowType::Header || t == ConfigRowType::Divider || t == ConfigRowType::Spacer || t == ConfigRowType::SubHeader)
+        if (t == ConfigRowType::Header || t == ConfigRowType::Divider || t == ConfigRowType::Spacer)
+            continue;
+        if (t == ConfigRowType::SubHeader) { if (sel == selIdx) return i; sel++; continue; }
+        if (configRows_[i].sectionIndex >= 0 && configRows_[i].sectionIndex < kMaxConfigSections
+            && configCollapsed_[configRows_[i].sectionIndex])
             continue;
         if (sel == selIdx) return i;
         sel++;
@@ -3592,8 +4979,13 @@ int PluginEditor::configVisualToSelectable(int visualIdx) const
     int sel = 0;
     for (int i = 0; i < visualIdx && i < configRows_.size(); ++i) {
         auto t = configRows_[i].type;
-        if (t != ConfigRowType::Header && t != ConfigRowType::Divider && t != ConfigRowType::Spacer && t != ConfigRowType::SubHeader)
-            sel++;
+        if (t == ConfigRowType::Header || t == ConfigRowType::Divider || t == ConfigRowType::Spacer)
+            continue;
+        if (t == ConfigRowType::SubHeader) { sel++; continue; }
+        if (configRows_[i].sectionIndex >= 0 && configRows_[i].sectionIndex < kMaxConfigSections
+            && configCollapsed_[configRows_[i].sectionIndex])
+            continue;
+        sel++;
     }
     return sel;
 }
@@ -3617,7 +5009,7 @@ juce::String configGetValueText(const PluginProcessor& proc, const ConfigRow& ro
         }
         if (row.paramIndex == 9) {
             int ch = proc.getEngine().getSlot(row.padIndex).getOutputChannel();
-            return (ch < 0) ? "OFF" : "Out " + juce::String(ch + 1);
+            return (ch < 0) ? "OFF" : "Pad " + juce::String(ch + 1);
         }
         if (row.paramIndex == 10) {
             return proc.getEngine().getSlot(row.padIndex).getSendToMix() ? "ON" : "OFF";
@@ -3637,7 +5029,17 @@ juce::String configGetValueText(const PluginProcessor& proc, const ConfigRow& ro
             return "[PUSH]";
         }
         if (row.paramIndex == 16) {
-            return proc.getEngine().getSlot(row.padIndex).getCompBypass() ? "BYPASS" : "OFF";
+            return proc.getEngine().getSlot(row.padIndex).getCompBypass() ? "BYPASS" : "ON";
+        }
+        if (row.paramIndex == 17) {
+            const char* names[] = { "Tape", "Decoupled" };
+            return names[proc.getEngine().getSlot(row.padIndex).getPitchMode()];
+        }
+        if (row.paramIndex == 19) {  // per-pad MIDI Channel
+            int ch = proc.getEngine().getSlot(row.padIndex).getMidiChannel();
+            if (ch == 0)  return "OFF";
+            if (ch == 17) return "OMNI";
+            return "CH " + juce::String(ch);
         }
     }
     if (row.type == ConfigRowType::Enum && row.padIndex < 0) {
@@ -3725,6 +5127,29 @@ juce::String configGetValueText(const PluginProcessor& proc, const ConfigRow& ro
                 return proc.getAutosaveEnabled() ? "ON" : "OFF";
             case 33:  // MIDI Transport
                 return proc.getMidiTransportEnabled() ? "ON" : "OFF";
+            case 34: {  // Roll Speed
+                const char* names[] = { "1/2", "1/4", "1/8", "1/16", "1/32" };
+                return names[juce::jlimit(0, 4, proc.getRollStartDiv())];
+            }
+            case 38:  // Crash Log
+                return proc.getCrashLogEnabled() ? "ON" : "OFF";
+            case 40: {  // MIDI Device
+                auto name = proc.getMidiDeviceName();
+                return name.isEmpty() ? "None" : name;
+            }
+            case 41: {  // MIDI Clock
+                if (proc.getMidiDeviceName().isEmpty()) return "---";
+                return proc.isMidiClockEnabled() ? "ON" : "OFF";
+            }
+            case 43: {  // Globals Device
+                auto name = proc.getGlobalsMidiDeviceName();
+                return name.isEmpty() ? "None" : name;
+            }
+            case 48: {  // Pad Mute CC Base
+                int b = proc.getPadMuteCCBase();
+                if (b < 0) return "OFF";
+                return "CC " + juce::String(b) + ".." + juce::String(b + kNumPads - 1);
+            }
             default: return "?";
         }
     }
@@ -3747,7 +5172,8 @@ void PluginEditor::paintConfigBrowser(juce::Graphics& g, juce::Rectangle<int> ar
     auto& pinSlot = processor_.getEngine().getSlot(selectedPad_);
     juce::String pinName = pinSlot.isLoaded() ? pinSlot.getFileName() : "empty";
     if (pinName.contains(".")) pinName = pinName.upToLastOccurrenceOf(".", false, false);
-    juce::String pinLabel = "PAD " + juce::String(selectedPad_ + 1) + ": " + pinName;
+    juce::String pinPrefix = "PAD " + juce::String(selectedPad_ + 1) + ": ";
+    juce::String pinLabel = pinPrefix + pinName;
 
     const int pinH = 52;
     auto pinRect = juce::Rectangle<int>(area.getX(), area.getY(), area.getWidth(), pinH);
@@ -3755,7 +5181,21 @@ void PluginEditor::paintConfigBrowser(juce::Graphics& g, juce::Rectangle<int> ar
     {
         int divY = pinRect.getCentreY();
         g.setFont(bFont(26.0f));
-        g.getCurrentFont().getStringWidth(pinLabel);
+        // 2.4.10: truncate long filenames so the header doesn't overflow
+        // the panel width. Keep the "PAD N: " prefix intact; trim the
+        // filename portion and append an ellipsis if it can't fit.
+        // Reserve 12px each side for breathing room + some dashes.
+        const int maxLabelW = pinRect.getWidth() - 24;
+        if (g.getCurrentFont().getStringWidth(pinLabel) > maxLabelW) {
+            const int prefixW = g.getCurrentFont().getStringWidth(pinPrefix);
+            const int ellipsisW = g.getCurrentFont().getStringWidth("…");
+            const int nameBudget = std::max(0, maxLabelW - prefixW - ellipsisW);
+            juce::String trimmed = pinName;
+            while (trimmed.isNotEmpty()
+                   && g.getCurrentFont().getStringWidth(trimmed) > nameBudget)
+                trimmed = trimmed.dropLastCharacters(1);
+            pinLabel = pinPrefix + trimmed + "…";
+        }
         int textW = g.getCurrentFont().getStringWidth(pinLabel) + 20;
         int textX = pinRect.getCentreX() - textW / 2;
         // Dashes left
@@ -3780,32 +5220,70 @@ void PluginEditor::paintConfigBrowser(juce::Graphics& g, juce::Rectangle<int> ar
     const int rowH = 36;
     const int visibleRows = std::max(1, content.getHeight() / rowH);
 
-    // Scroll to keep selected row visible, including any headers/subheaders above it
+    // Build list of visible row indices (skipping collapsed children and their spacers)
+    juce::Array<int> visibleIndices;
+    for (int i = 0; i < configRows_.size(); ++i) {
+        auto& row = configRows_.getReference(i);
+        // Always show SubHeaders (they're the toggle)
+        if (row.type == ConfigRowType::SubHeader) { visibleIndices.add(i); continue; }
+        // Always show Dividers, Headers
+        if (row.type == ConfigRowType::Divider
+            || row.type == ConfigRowType::Header) { visibleIndices.add(i); continue; }
+        // Spacers: hide if the section ABOVE is collapsed
+        if (row.type == ConfigRowType::Spacer) {
+            // Look backward for the nearest SubHeader
+            int prevSection = -1;
+            for (int j = i - 1; j >= 0; --j) {
+                if (configRows_[j].type == ConfigRowType::SubHeader) {
+                    prevSection = configRows_[j].sectionIndex;
+                    break;
+                }
+            }
+            if (prevSection >= 0 && prevSection < kMaxConfigSections && configCollapsed_[prevSection])
+                continue;  // hide spacer when section above is collapsed
+            visibleIndices.add(i);
+            continue;
+        }
+        // Skip children of collapsed sections
+        if (row.sectionIndex >= 0 && row.sectionIndex < kMaxConfigSections
+            && configCollapsed_[row.sectionIndex])
+            continue;
+        visibleIndices.add(i);
+    }
+
+    // Scroll to keep selected row visible
     int selVisual = configSelectableToVisual(configIndex_);
-    // When scrolling up, also reveal non-selectable rows (headers) above the target
-    int scrollTarget = selVisual;
+    // Find selVisual's position in visibleIndices
+    int selVisiblePos = 0;
+    for (int i = 0; i < visibleIndices.size(); ++i) {
+        if (visibleIndices[i] == selVisual) { selVisiblePos = i; break; }
+    }
+    // Scroll up to reveal headers above target
+    int scrollTarget = selVisiblePos;
     while (scrollTarget > 0) {
-        auto t = configRows_[scrollTarget - 1].type;
+        int ri = visibleIndices[scrollTarget - 1];
+        auto t = configRows_[ri].type;
         if (t == ConfigRowType::SubHeader || t == ConfigRowType::Divider || t == ConfigRowType::Spacer)
             scrollTarget--;
         else
             break;
     }
     if (scrollTarget < configScrollOffset_) configScrollOffset_ = scrollTarget;
-    if (selVisual >= configScrollOffset_ + visibleRows) configScrollOffset_ = selVisual - visibleRows + 1;
-    configScrollOffset_ = juce::jlimit(0, std::max(0, configRows_.size() - visibleRows), configScrollOffset_);
+    if (selVisiblePos >= configScrollOffset_ + visibleRows) configScrollOffset_ = selVisiblePos - visibleRows + 1;
+    configScrollOffset_ = juce::jlimit(0, std::max(0, visibleIndices.size() - visibleRows), configScrollOffset_);
 
     for (int i = 0; i < visibleRows; ++i)
     {
-        int idx = configScrollOffset_ + i;
-        if (idx >= configRows_.size()) break;
+        int vi = configScrollOffset_ + i;
+        if (vi >= visibleIndices.size()) break;
+        int idx = visibleIndices[vi];
 
         auto& row = configRows_.getReference(idx);
         auto rowRect = juce::Rectangle<int>(content.getX(), content.getY() + i * rowH,
                                              content.getWidth(), rowH);
 
         bool isSelectable = (row.type != ConfigRowType::Header && row.type != ConfigRowType::Divider
-                              && row.type != ConfigRowType::Spacer && row.type != ConfigRowType::SubHeader);
+                              && row.type != ConfigRowType::Spacer);
         bool isSelected = isSelectable && (configVisualToSelectable(idx) == configIndex_);
 
         // ── Header row (legacy, unused now — kept for safety) ──
@@ -3840,13 +5318,39 @@ void PluginEditor::paintConfigBrowser(juce::Graphics& g, juce::Rectangle<int> ar
             continue;
         }
 
-        // ── SubHeader — enlarged, with line extending right ──
+        // ── SubHeader — enlarged, with collapse indicator ──
         if (row.type == ConfigRowType::SubHeader) {
-            g.setFont(juce::Font(bFont(20.0f), juce::Font::bold));
-            g.setColour(juce::Colour(0xDDE53935));
+            bool collapsed = (row.sectionIndex >= 0 && row.sectionIndex < kMaxConfigSections
+                              && configCollapsed_[row.sectionIndex]);
+
+            // Selection highlight
+            if (isSelected) {
+                g.setColour(juce::Colour(kConfigSelBg).withAlpha(0.2f));
+                g.fillRoundedRectangle(rowRect.toFloat(), 3.0f);
+            }
+
+            // Collapse indicator: drawn triangle (▾ expanded / ▸ collapsed)
+            {
+                float tx = (float)rowRect.getX() + 8.0f;
+                float ty = (float)rowRect.getCentreY();
+                juce::Path tri;
+                if (collapsed) {
+                    // Right-pointing triangle ▸
+                    tri.addTriangle(tx, ty - 5.0f, tx, ty + 5.0f, tx + 7.0f, ty);
+                } else {
+                    // Down-pointing triangle ▾
+                    tri.addTriangle(tx - 2.0f, ty - 4.0f, tx + 8.0f, ty - 4.0f, tx + 3.0f, ty + 4.0f);
+                }
+                g.setColour(juce::Colour(isSelected ? 0xFFFF8A85 : 0xDDFF7B73));
+                g.fillPath(tri);
+            }
+
+            // Label
+            g.setFont(juce::Font(bFont(isSelected ? 22.0f : 20.0f), juce::Font::bold));
+            g.setColour(juce::Colour(isSelected ? 0xFFFF8A85 : 0xDDFF7B73));
             juce::String label = row.label.toUpperCase();
             int textW = g.getCurrentFont().getStringWidth(label) + 4;
-            int textX = rowRect.getX() + 6;
+            int textX = rowRect.getX() + 22;
             g.drawText(label, textX, rowRect.getY(), textW, rowRect.getHeight(),
                        juce::Justification::centredLeft);
             int lineY = rowRect.getCentreY() + 2;
@@ -3874,7 +5378,7 @@ void PluginEditor::paintConfigBrowser(juce::Graphics& g, juce::Rectangle<int> ar
         // Label (left)
         float labelAlpha = greyed ? 0.35f : 1.0f;
         g.setColour((isSelected ? juce::Colour(0xFFFFFFFF) : juce::Colour(kConfigLabel)).withAlpha(labelAlpha));
-        g.setFont(bFont(18.0f));
+        g.setFont(bFont(isSelected ? 22.0f : 17.0f));
         g.drawText(row.label, rowRect.withTrimmedLeft(10).withTrimmedRight(110),
                    juce::Justification::centredLeft);
 
@@ -3883,7 +5387,7 @@ void PluginEditor::paintConfigBrowser(juce::Graphics& g, juce::Rectangle<int> ar
         bool editing = isSelected && configEditMode_;
         float valAlpha = greyed ? 0.35f : 1.0f;
         g.setColour((editing ? juce::Colour(kConfigEditVal) : juce::Colour(kConfigValue)).withAlpha(valAlpha));
-        g.setFont(editing ? bFont(19.0f) : bFont(17.0f));
+        g.setFont(isSelected ? bFont(21.0f) : bFont(16.0f));
         g.drawText(valText, rowRect.withTrimmedRight(6), juce::Justification::centredRight);
     }
 
@@ -3894,7 +5398,7 @@ void PluginEditor::paintConfigBrowser(juce::Graphics& g, juce::Rectangle<int> ar
         g.drawText(juce::CharPointer_UTF8("\xe2\x96\xb2"), content.getX(), content.getY() - 16,
                    content.getWidth(), 14, juce::Justification::centredRight);
     }
-    if (configScrollOffset_ + visibleRows < configRows_.size()) {
+    if (configScrollOffset_ + visibleRows < visibleIndices.size()) {
         g.setColour(juce::Colour(0x66FFFFFF));
         g.setFont(bFont(14.0f));
         g.drawText(juce::CharPointer_UTF8("\xe2\x96\xbc"),
@@ -3980,6 +5484,21 @@ void PluginEditor::configAdjustValue(int selIdx, int delta)
         return;
     }
 
+    // Per-pad Pitch Mode (paramIndex 17)
+    if (row.type == ConfigRowType::Enum && row.padIndex >= 0 && row.paramIndex == 17) {
+        auto& slot = processor_.getEngine().getSlot(row.padIndex);
+        slot.setPitchMode(delta > 0 ? 1 : 0);
+        return;
+    }
+
+    // Per-pad MIDI Channel (paramIndex 19): 0=OFF, 1-16=channel, 17=OMNI
+    if (row.type == ConfigRowType::Enum && row.padIndex >= 0 && row.paramIndex == 19) {
+        auto& slot = processor_.getEngine().getSlot(row.padIndex);
+        int ch = slot.getMidiChannel() + delta;
+        slot.setMidiChannel(juce::jlimit(0, 17, ch));
+        return;
+    }
+
     if (row.type == ConfigRowType::Enum && row.padIndex < 0) {
         switch (row.paramIndex) {
             case 0: {  // Mute Mode
@@ -3998,11 +5517,13 @@ void PluginEditor::configAdjustValue(int selIdx, int delta)
             }
             case 3: {  // Debug Msgs
                 processor_.setDebugMsgs(delta > 0);
+                processor_.saveGlobalPrefs();
                 break;
             }
             case 5: {  // Encoder Speed
                 float s = processor_.getEncoderSpeed() + (float)delta * 0.25f;
                 processor_.setEncoderSpeed(s);
+                processor_.saveGlobalPrefs();
                 break;
             }
             case 6: {  // Mute Fade
@@ -4062,6 +5583,7 @@ void PluginEditor::configAdjustValue(int selIdx, int delta)
             case 24: {
                 float adj = processor_.getBrowserFontAdj() + (float)delta * 0.5f;
                 processor_.setBrowserFontAdj(adj);
+                processor_.saveGlobalPrefs();
                 break;
             }
             case 25: {  // Comp Mix
@@ -4079,11 +5601,53 @@ void PluginEditor::configAdjustValue(int selIdx, int delta)
             }
             case 28: break;  // Show Mixer (push action, no turn behavior)
             case 29: break;  // Firmware (read-only)
-            case 30: processor_.setAutosaveEnabled(delta > 0); break;  // Autosave
+            case 30: { processor_.setAutosaveEnabled(delta > 0); processor_.saveGlobalPrefs(); break; }  // Autosave
             case 33: processor_.setMidiTransportEnabled(delta > 0); break;  // MIDI Transport
+            case 34: processor_.setRollStartDiv(processor_.getRollStartDiv() + delta); processor_.saveGlobalPrefs(); break;  // Roll Speed
+            case 38: processor_.setCrashLogEnabled(delta > 0); processor_.saveGlobalPrefs(); break;  // Crash Log
+            case 40: {  // MIDI Device — cycle through available devices
+                // devs[0] is always "None" (= no device). Real devices start
+                // at index 1. Internal index here uses 0 = None, 1..N = real.
+                auto devs = processor_.getMidiDeviceNames();
+                if (devs.size() == 0) break;  // shouldn't happen, "None" always present
+
+                auto curName = processor_.getMidiDeviceName();
+                int cur = curName.isEmpty() ? 0 : devs.indexOf(curName);
+                if (cur < 0) cur = 0;
+                int next = juce::jlimit(0, devs.size() - 1, cur + delta);
+                if (next == 0)
+                    processor_.closeMidiDevice();
+                else
+                    processor_.setMidiDevice(devs[next]);
+                break;
+            }
+            case 41:  // MIDI Clock
+                if (processor_.getMidiDeviceName().isNotEmpty())
+                    processor_.setMidiClockEnabled(delta > 0);
+                break;
+            case 43: {  // Globals Device — cycle through available devices
+                auto devs = processor_.getMidiDeviceNames();
+                if (devs.size() == 0) break;
+
+                auto curName = processor_.getGlobalsMidiDeviceName();
+                int cur = curName.isEmpty() ? 0 : devs.indexOf(curName);
+                if (cur < 0) cur = 0;
+                int next = juce::jlimit(0, devs.size() - 1, cur + delta);
+                if (next == 0)
+                    processor_.closeGlobalsMidiDevice();
+                else
+                    processor_.setGlobalsMidiDevice(devs[next]);
+                break;
+            }
+            case 48: {  // Pad Mute CC Base — -1 = OFF, 0..120
+                int b = processor_.getPadMuteCCBase() + delta;
+                processor_.setPadMuteCCBase(b);
+                break;
+            }
             default: break;
         }
     }
+    processor_.markStateDirty();
 }
 
 void PluginEditor::configPushValue(int selIdx)
@@ -4092,10 +5656,72 @@ void PluginEditor::configPushValue(int selIdx)
     if (visIdx < 0 || visIdx >= configRows_.size()) return;
     auto& row = configRows_.getReference(visIdx);
 
+    // Toggle collapse for SubHeaders
+    if (row.type == ConfigRowType::SubHeader) {
+        int si = row.sectionIndex;
+        if (si >= 0 && si < kMaxConfigSections) {
+            configCollapsed_[si] = !configCollapsed_[si];
+            // Adjust configIndex if we collapsed and cursor would be in a now-hidden section
+            int maxSel = configSelectableCount();
+            if (configIndex_ >= maxSel) configIndex_ = std::max(0, maxSel - 1);
+        }
+        return;
+    }
+
     if (row.type == ConfigRowType::PushAction) {
         if (row.paramIndex == 4) {  // Reboot
             processor_.rebootPlugin();
             exitConfigMode();
+        }
+        if (row.paramIndex == 42 && row.padIndex < 0) {  // Refresh MIDI Devices
+            processor_.refreshMidiDevices();
+            auto devs = processor_.getMidiDeviceNames();
+            processor_.showTickerPublic("Found " + juce::String(devs.size()) + " MIDI device" + (devs.size() == 1 ? "" : "s"));
+        }
+        if (row.paramIndex == 44 && row.padIndex < 0) {  // Setup Mixer Faders
+            // One-touch action: assigns each pad its natural MIDI channel
+            // (Pad 1=Ch 1 ... Pad 8=Ch 8) and sets ccVolume=CC 7 on all pads.
+            // User plugs in an 8-fader controller, maps each fader to CC 7 on
+            // channels 1-8, and has a working mixer in seconds.
+            for (int p = 0; p < kNumPads; ++p) {
+                processor_.getEngine().getSlot(p).setMidiChannel(p + 1);
+                processor_.getPadCCMap(p).ccVolume = 7;
+            }
+            processor_.showTickerPublic("Map your 8 faders to CC 7 on channels 1-8");
+            processor_.markStateDirty();
+        }
+        if (row.paramIndex == 45 && row.padIndex >= 0) {  // Reset MIDI Settings
+            // Per-pad MIDI reset: channel back to natural default, CC map to
+            // factory values, per-slice CCs cleared. Sample/params/slices
+            // untouched — only the MIDI routing is reset.
+            int pad = row.padIndex;
+            auto& slot = processor_.getEngine().getSlot(pad);
+            slot.setMidiChannel(pad + 1);
+            auto& ccMap = processor_.getPadCCMap(pad);
+            ccMap.ccStart   = 16;
+            ccMap.ccEnd     = 17;
+            ccMap.ccVolume  = 7;
+            ccMap.ccPan     = 10;
+            ccMap.ccStretch = 18;
+            ccMap.ccFilter  = 74;
+            for (int s = 0; s < SampleSlot::kMaxSlices; ++s)
+                slot.setSliceCC(s, -1);
+            processor_.showTickerPublic("Pad " + juce::String(pad + 1) + " MIDI settings reset");
+            processor_.markStateDirty();
+        }
+        if (row.paramIndex == 46 && row.padIndex >= 0) {  // Copy Pad Settings
+            processor_.copyPadSettings(row.padIndex);
+            processor_.showTickerPublic("Copied pad " + juce::String(row.padIndex + 1) + " settings");
+        }
+        if (row.paramIndex == 47 && row.padIndex >= 0) {  // Paste to All Pads
+            if (!processor_.hasPadSettingsClipboard()) {
+                processor_.showTickerPublic("Nothing to paste — Copy a pad first");
+            } else {
+                int src = processor_.getPadClipSource();
+                processor_.pasteSettingsToAllPads();
+                processor_.showTickerPublic("Pasted pad " + juce::String(src + 1)
+                                            + " settings to other pads");
+            }
         }
         if (row.paramIndex == 11 && row.padIndex >= 0) {  // Export Slices
             int pad = row.padIndex;
@@ -4162,19 +5788,72 @@ void PluginEditor::configPushValue(int selIdx)
             }
         }
         if (row.paramIndex == 26) {  // Show Compressor
-            exitConfigMode();
+            exitConfigForOverlay();
             enterCompEditor();
         }
         if (row.paramIndex == 28) {  // Show Mixer
-            exitConfigMode();
+            exitConfigForOverlay();
             enterMixer();
         }
         if (row.paramIndex == 31) {  // Save Kit
-            exitConfigMode();
+            exitConfigForOverlay();
             showNameEntryPopup("NAME YOUR KIT", [this](const juce::String& name) {
                 processor_.saveCurrentAsKit(name);
                 processor_.showTickerPublic("Kit saved: " + name);
             });
+        }
+        if (row.paramIndex == 36) {  // Clear Pad
+            showPopup("CLEAR PAD " + juce::String(selectedPad_ + 1) + "?",
+                      { "Yes", "Cancel" },
+                      [this](int r) {
+                          if (r == 0) {
+                              processor_.initPad(selectedPad_);
+                              processor_.showTickerPublic("Pad " + juce::String(selectedPad_ + 1) + " cleared");
+                              buildConfigRows();
+                          }
+                      });
+        }
+        if (row.paramIndex == 37) {  // Clear All Pads
+            showPopup("CLEAR ALL 8 PADS?", { "Yes", "Cancel" },
+                      [this](int r) {
+                          if (r == 0) {
+                              processor_.clearAllPads();
+                              buildConfigRows();
+                          }
+                      });
+        }
+        if (row.paramIndex == 34) {  // Cheat Sheet
+            exitConfigForOverlay();
+            cheatSheetOpen_ = true;
+            aboutScrollOffset_ = 0;
+            repaint();
+        }
+        if (row.paramIndex == 35) {  // About GRID
+            exitConfigForOverlay();
+            aboutOpen_ = true;
+            aboutScrollOffset_ = 0;
+            repaint();
+        }
+        if (row.paramIndex == 39) {  // View Crash Log
+            auto logFile = juce::File(processor_.getSampleRootPath())
+                               .getParentDirectory().getChildFile("Grid Logs").getChildFile("crash.log");
+            juce::String content;
+            if (logFile.existsAsFile())
+                content = logFile.loadFileAsString().trim();
+            if (content.isEmpty()) {
+                showPopup("CRASH LOG", { "No log found", "Enable Logging first", "OK" }, [](int) {});
+            } else {
+                // Show last 8 lines — popup has limited height
+                juce::StringArray lines;
+                lines.addTokens(content, "\n", "");
+                juce::StringArray display;
+                int start = std::max(0, lines.size() - 8);
+                for (int l = start; l < lines.size(); ++l)
+                    display.add(lines[l]);
+                display.add("---");
+                display.add("OK");
+                showPopup("CRASH LOG (" + juce::String(lines.size()) + " lines)", display, [](int) {});
+            }
         }
         return;
     }
@@ -4192,6 +5871,7 @@ void PluginEditor::configPushValue(int selIdx)
 void PluginEditor::showPopup(const juce::String& title, const juce::StringArray& options,
                               std::function<void(int)> callback)
 {
+    clearAllHoldState();  // 2.4.9
     popupTitle_ = title;
     popupOptions_ = options;
     popupCallback_ = std::move(callback);
@@ -4208,6 +5888,7 @@ void PluginEditor::closePopup(int result)
     popupCallback_ = nullptr;
     repaint();
     if (cb) cb(result);
+    returnToConfig();  // re-enter config if we came from there
 }
 
 void PluginEditor::paintPopup(juce::Graphics& g, juce::Rectangle<int> area)
@@ -4309,6 +5990,7 @@ void PluginEditor::showNameEntryPopup(const juce::String& title,
 void PluginEditor::showKeyboard(const juce::String& title,
                                  std::function<void(const juce::String&)> callback)
 {
+    clearAllHoldState();  // 2.4.9
     keyboardMode_ = true;
     keyboardTitle_ = title;
     keyboardText_.clear();
@@ -4323,6 +6005,7 @@ void PluginEditor::closeKeyboard()
     keyboardMode_ = false;
     leftShiftHeld_ = false;
     keyboardCallback_ = nullptr;
+    returnToConfig();
     repaint();
 }
 
@@ -4502,7 +6185,11 @@ void PluginEditor::enterSliceEditor()
         return;
     }
     sliceEditorMode_ = true;
-    sliceCursorPos_ = slot.getStartPos();
+    // Cursor: keep wherever the caller left it (e.g. transferred from
+    // sliceTabCursorPos_ when entering via hold). Default to start of
+    // sample if it hasn't been touched yet.
+    if (sliceCursorPos_ < 0.0f || sliceCursorPos_ > 1.0f)
+        sliceCursorPos_ = slot.getStartPos();
     sliceZoom_ = 1.0f;
     sliceViewCenter_ = 0.5f;
     sliceAutoPreset_ = 0;
@@ -4517,9 +6204,9 @@ void PluginEditor::enterSliceEditor()
     encoderSlots_[0].valueLabel.setText("[CUT]", juce::dontSendNotification);
     encoderSlots_[1].nameLabel.setText("ZOOM", juce::dontSendNotification);
     encoderSlots_[1].valueLabel.setText("1x", juce::dontSendNotification);
-    encoderSlots_[2].nameLabel.setText("AUTO", juce::dontSendNotification);
+    encoderSlots_[2].nameLabel.setText("SLICE", juce::dontSendNotification);
     encoderSlots_[2].valueLabel.setText("OFF", juce::dontSendNotification);
-    encoderSlots_[3].nameLabel.setText("PITCH", juce::dontSendNotification);
+    encoderSlots_[3].nameLabel.setText("EDIT", juce::dontSendNotification);
     encoderSlots_[3].valueLabel.setText("0st", juce::dontSendNotification);
     processor_.showTickerPublic("Slice Editor - Pad " + juce::String(selectedPad_ + 1));
     repaint();
@@ -4629,9 +6316,14 @@ void PluginEditor::paintSliceEditor(juce::Graphics& g, juce::Rectangle<int> area
 
     const int w = area.getWidth(), h = area.getHeight();
 
-    // ── Semi-transparent backdrop (tabs still visible) ──────────────────
+    // ── Semi-transparent backdrop (tabs + encoder bar stay full opacity) ─
+    // Backdrop only covers the middle band — leaves the tab strip above
+    // and the encoder bar below at full brightness so the hold progress
+    // bars are clearly visible and the bubble tail anchors cleanly.
+    auto backdropArea = area.withTrimmedTop(kTabHeight)
+                            .withTrimmedBottom(kEncoderBarH);
     g.setColour(juce::Colour(0xCC000000));
-    g.fillRect(area);
+    g.fillRect(backdropArea);
 
     // ── Popup box: compact, well-proportioned ─────────────────────────
     const int boxL = 60, boxR = 60;
@@ -4756,16 +6448,14 @@ void PluginEditor::paintSliceEditor(juce::Graphics& g, juce::Rectangle<int> area
             float mn = 0, mx = 0;
             for (int s = s0; s < s1; ++s) { if (data[s] < mn) mn = data[s]; if (data[s] > mx) mx = data[s]; }
 
-            bool inside = (norm >= slot.getStartPos() && norm <= slot.getEndPos());
+            // Inside the slice editor, the WHOLE sample is in scope —
+            // slot trim is irrelevant here, slice boundaries are what matter.
+            // (Trim dimming made LS audition look like the rest of the sample
+            // was deleted, since audition temporarily moves trim to the slice.)
             float peak = std::max(std::abs(mx), std::abs(mn));
-            juce::Colour col;
-            if (!inside) {
-                col = juce::Colour(0xFF0A0A0A);
-            } else {
-                col = juce::Colour(kWfGreen);
-                if (peak > 0.20f) col = col.interpolatedWith(juce::Colour(kWfYellow), std::min((peak - 0.20f) / 0.35f, 1.0f));
-                if (peak > 0.55f) col = col.interpolatedWith(juce::Colour(kWfRed), std::min((peak - 0.55f) / 0.30f, 1.0f));
-            }
+            juce::Colour col = juce::Colour(kWfGreen);
+            if (peak > 0.20f) col = col.interpolatedWith(juce::Colour(kWfYellow), std::min((peak - 0.20f) / 0.35f, 1.0f));
+            if (peak > 0.55f) col = col.interpolatedWith(juce::Colour(kWfRed), std::min((peak - 0.55f) / 0.30f, 1.0f));
             g.setColour(col);
             float ty = cy - mx * amp, by = cy - mn * amp;
             if (by - ty < 1) { ty = cy - 0.5f; by = cy + 0.5f; }
@@ -4786,6 +6476,10 @@ void PluginEditor::paintSliceEditor(juce::Graphics& g, juce::Rectangle<int> area
         g.saveState();
         g.reduceClipRegion(wfArea);
 
+        // Audition flashes fade over kAuditionFlashMs ms after a pad press
+        const double nowMs = juce::Time::getMillisecondCounterHiRes();
+        constexpr double kAuditionFlashMs = 350.0;
+
         for (int i = 0; i < slot.getSliceCount(); ++i) {
             float s = slot.getSliceStart(i);
             float e = slot.getSliceEnd(i);
@@ -4796,40 +6490,78 @@ void PluginEditor::paintSliceEditor(juce::Graphics& g, juce::Rectangle<int> area
             float regionW = x2 - x1;
             bool active = (i == cursorSlice);
 
+            // Audition flash — bright red overlay that fades out
+            if (i < kMaxSliceAuditionFlashes && sliceAuditionTimeMs_[i] > 0.0) {
+                double age = nowMs - sliceAuditionTimeMs_[i];
+                if (age < kAuditionFlashMs) {
+                    float alpha = (float)(1.0 - age / kAuditionFlashMs) * 0.55f;
+                    g.setColour(juce::Colour(kTabActive).withAlpha(alpha));
+                    g.fillRect(x1, (float)wfArea.getY(), regionW, (float)wfArea.getHeight());
+                } else {
+                    sliceAuditionTimeMs_[i] = 0.0;  // expire
+                }
+            }
+
             if (active) {
-                g.setColour(juce::Colour(0xFFFFFFFF).withAlpha(0.15f));
+                g.setColour(juce::Colour(0xFFFFFFFF).withAlpha(0.32f));
                 g.fillRect(x1, (float)wfArea.getY(), regionW, (float)wfArea.getHeight());
 
                 if (regionW > 12.0f) {
-                    float fontSize = juce::jlimit(16.0f, 32.0f, regionW * 0.5f);
-                    g.setFont(juce::Font(fontSize, juce::Font::bold));
+                    float fontSize = juce::jlimit(16.0f, 30.0f, regionW * 0.5f);
+                    g.setFont(juce::Font(fontSize, 0));  // plain weight — bold blurs on small sizes
                     juce::String numStr = juce::String(i + 1);
                     float p = slot.getSlicePitch(i);
                     if (p > 0.1f) numStr += juce::String(juce::CharPointer_UTF8("\xe2\x96\xb2"));
                     else if (p < -0.1f) numStr += juce::String(juce::CharPointer_UTF8("\xe2\x96\xbc"));
                     int nx = (int)x1, ny = wfArea.getY() + 3, nw = (int)regionW, nh = (int)fontSize + 6;
-                    // Drop shadow
-                    g.setColour(juce::Colour(0xFF000000).withAlpha(0.5f));
-                    g.drawText(numStr, nx + 2, ny + 2, nw, nh, juce::Justification::centred);
-                    // Main text — dark cutout
-                    g.setColour(juce::Colour(0xFF0D0D0D).withAlpha(0.85f));
+                    // Single tight shadow — no double-stroke blur
+                    g.setColour(juce::Colour(0xFF000000).withAlpha(0.45f));
+                    g.drawText(numStr, nx + 1, ny + 1, nw, nh, juce::Justification::centred);
+                    // Main text — solid dark cutout
+                    g.setColour(juce::Colour(0xFF0D0D0D));
                     g.drawText(numStr, nx, ny, nw, nh, juce::Justification::centred);
+
+                    // CC label below slice number (only when MIDI CC edit mode active)
+                    if (sliceEditAction_ == 6 && regionW > 28.0f) {
+                        int cc = slot.getSliceCC(i);
+                        juce::String ccStr = (cc < 0) ? juce::String("--") : ("CC" + juce::String(cc));
+                        g.setFont(juce::Font(11.0f, juce::Font::bold));
+                        int cy = ny + nh + 2;
+                        g.setColour(juce::Colour(0xFF000000).withAlpha(0.4f));
+                        g.drawText(ccStr, nx + 1, cy + 1, nw, 14, juce::Justification::centred);
+                        g.setColour((cc < 0) ? juce::Colour(0x88E53935)
+                                              : juce::Colour(0xFFE53935));
+                        g.drawText(ccStr, nx, cy, nw, 14, juce::Justification::centred);
+                    }
                 }
             } else {
                 if (regionW > 12.0f) {
-                    float fontSize = juce::jlimit(14.0f, 26.0f, regionW * 0.45f);
-                    g.setFont(juce::Font(fontSize, juce::Font::bold));
+                    float fontSize = juce::jlimit(14.0f, 24.0f, regionW * 0.45f);
+                    g.setFont(juce::Font(fontSize, 0));  // plain weight
                     juce::String numStr = juce::String(i + 1);
                     float p = slot.getSlicePitch(i);
                     if (p > 0.1f) numStr += juce::String(juce::CharPointer_UTF8("\xe2\x96\xb2"));
                     else if (p < -0.1f) numStr += juce::String(juce::CharPointer_UTF8("\xe2\x96\xbc"));
                     int nx = (int)x1, ny = wfArea.getY() + 3, nw = (int)regionW, nh = (int)fontSize + 6;
-                    // Drop shadow
-                    g.setColour(juce::Colour(0xFF000000).withAlpha(0.35f));
+                    // Subtle shadow
+                    g.setColour(juce::Colour(0xFF000000).withAlpha(0.3f));
                     g.drawText(numStr, nx + 1, ny + 1, nw, nh, juce::Justification::centred);
                     // Main text — white translucent
-                    g.setColour(juce::Colour(0xFFFFFFFF).withAlpha(0.35f));
+                    g.setColour(juce::Colour(0xFFFFFFFF).withAlpha(0.45f));
                     g.drawText(numStr, nx, ny, nw, nh, juce::Justification::centred);
+
+                    // CC label below slice number (only when MIDI CC edit mode active)
+                    if (sliceEditAction_ == 6 && regionW > 28.0f) {
+                        int cc = slot.getSliceCC(i);
+                        juce::String ccStr = (cc < 0) ? juce::String("--") : ("CC" + juce::String(cc));
+                        g.setFont(juce::Font(11.0f, juce::Font::bold));
+                        int cy = ny + nh + 2;
+                        g.setColour(juce::Colour(0xFF000000).withAlpha(0.3f));
+                        g.drawText(ccStr, nx + 1, cy + 1, nw, 14, juce::Justification::centred);
+                        g.setColour((cc < 0) ? juce::Colour(0x66E53935)
+                                              : juce::Colour(0xCCE53935));
+                        g.drawText(ccStr, nx, cy, nw, 14, juce::Justification::centred);
+                    }
                 }
             }
         }
@@ -5381,12 +7113,14 @@ void PluginEditor::enterCompEditor()
 void PluginEditor::exitCompEditor()
 {
     compEditorOpen_ = false;
+    leftShiftHeld_ = false;   // prevent LS+RS double-toggle
+    rightShiftHeld_ = false;
     updateEncoderDisplay();
-    // Restore encoder label colors
     for (int i = 0; i < kEncodersPerPage; ++i) {
         encoderSlots_[i].nameLabel.setColour(juce::Label::textColourId, juce::Colour(kEncLabel));
         encoderSlots_[i].valueLabel.setColour(juce::Label::textColourId, juce::Colour(kEncValue));
     }
+    returnToConfig();
     repaint();
 }
 
@@ -5661,7 +7395,7 @@ void PluginEditor::paintCompEditor(juce::Graphics& g, juce::Rectangle<int> area)
     g.drawText("BUS COMPRESSOR", innerX, headerY, innerW / 2, 28, juce::Justification::centredLeft);
     g.setColour(juce::Colour(processor_.getCompEnabled() ? 0xFF44FF44 : 0xFF993333));
     g.setFont(18.0f);
-    g.drawText(processor_.getCompEnabled() ? "ACTIVE" : "BYPASSED", innerX + innerW / 2, headerY, innerW / 2, 28, juce::Justification::centredRight);
+    g.drawText(processor_.getCompEnabled() ? "ON" : "OFF", innerX + innerW / 2, headerY, innerW / 2, 28, juce::Justification::centredRight);
     g.setColour(juce::Colour(0xFF333333)); g.fillRect(innerX, headerY + 32, innerW, 1);
 
     int scopeW = (int)(innerW * 0.36f), paramW = innerW - scopeW - 16;
@@ -5790,11 +7524,14 @@ void PluginEditor::enterMixer()
 void PluginEditor::exitMixer()
 {
     mixerOpen_ = false;
+    leftShiftHeld_ = false;   // prevent LS+RS double-toggle
+    rightShiftHeld_ = false;
     updateEncoderDisplay();
     for (int i = 0; i < kEncodersPerPage; ++i) {
         encoderSlots_[i].nameLabel.setColour(juce::Label::textColourId, juce::Colour(kEncLabel));
         encoderSlots_[i].valueLabel.setColour(juce::Label::textColourId, juce::Colour(kEncValue));
     }
+    returnToConfig();
     repaint();
 }
 
@@ -5848,17 +7585,19 @@ void PluginEditor::paintMixer(juce::Graphics& g, juce::Rectangle<int> area)
 
         // Volume fill (from bottom)
         float vol = slot.getVolume();
-        int fillH = (int)(vol * (float)faderH);
+        float fillNorm = juce::jlimit(0.0f, 1.0f, vol);  // visual clamp at 100%
+        int fillH = (int)(fillNorm * (float)faderH);
         if (fillH > 0) {
             juce::Colour fillCol = muted ? juce::Colour(0xFF553333) : juce::Colour(0xFF1B5E20);
             if (playing && !muted) fillCol = juce::Colour(0xFF4CAF50);
+            if (vol > 1.0f && !muted) fillCol = juce::Colour(0xFFFF7043);  // orange for overdrive
             g.setColour(fillCol);
             g.fillRoundedRectangle((float)trackX, (float)(faderY + faderH - fillH),
                                     (float)trackW, (float)fillH, 3.0f);
         }
 
         // Fader cap (horizontal bar at current level)
-        int capY = faderY + faderH - fillH;
+        int capY = std::max(faderY, faderY + faderH - fillH);
         g.setColour(sel ? juce::Colour(0xFFFFFFFF) : juce::Colour(0xFFAAAAAA));
         g.fillRoundedRectangle((float)(cx - 14), (float)(capY - 4), 28.0f, 8.0f, 3.0f);
 
@@ -5876,16 +7615,16 @@ void PluginEditor::paintMixer(juce::Graphics& g, juce::Rectangle<int> area)
 
         // Volume percentage
         g.setColour(juce::Colour(muted ? 0xFF993333 : 0xFFCCCCCC));
-        g.setFont(14.0f);
+        g.setFont(16.0f);
         juce::String volStr = muted ? "MUTE" : juce::String((int)(vol * 100)) + "%";
-        g.drawText(volStr, cx - 24, faderY - 20, 48, 16, juce::Justification::centred);
+        g.drawText(volStr, cx - 28, faderY - 22, 56, 18, juce::Justification::centred);
     }
 
     // Footer
-    g.setColour(juce::Colour(0x44FFFFFF));
-    g.setFont(13.0f);
+    g.setColour(juce::Colour(0x88FFFFFF));
+    g.setFont(16.0f);
     g.drawText("Enc0: select pad    Enc1: volume    Down/LS: close",
-               box.getX(), box.getBottom() - 22, box.getWidth(), 18,
+               box.getX(), box.getBottom() - 26, box.getWidth(), 22,
                juce::Justification::centred);
 }
 
@@ -5895,8 +7634,8 @@ void PluginEditor::paintMixer(juce::Graphics& g, juce::Rectangle<int> area)
 
 void PluginEditor::paintKitPicker(juce::Graphics& g, juce::Rectangle<int> area)
 {
-    // Semi-transparent backdrop
-    g.setColour(juce::Colour(0xDD000000));
+    // Semi-transparent backdrop (light enough to see pads behind)
+    g.setColour(juce::Colour(0x88000000));
     g.fillRect(area);
 
     // Centered box
@@ -5973,11 +7712,697 @@ void PluginEditor::paintKitPicker(juce::Graphics& g, juce::Rectangle<int> area)
     }
 
     // Hint
-    g.setColour(juce::Colour(0x44FFFFFF));
-    g.setFont(13.0f);
+    g.setColour(juce::Colour(0x88FFFFFF));
+    g.setFont(16.0f);
     g.drawText("UP/DOWN: browse    RIGHT: load    LEFT: cancel",
-               box.getX(), box.getBottom() - 24, box.getWidth(), 18,
+               box.getX(), box.getBottom() - 28, box.getWidth(), 22,
                juce::Justification::centred);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Cheat Sheet & About — placeholder stubs (2.4.7)
+// ═══════════════════════════════════════════════════════════════════════════
+
+void PluginEditor::paintCheatSheet(juce::Graphics& g, juce::Rectangle<int> area)
+{
+    // ── Illustrated SSP control diagram, Undisputed-style ─────────────────
+    // Stylized panel illustration with callout lines from each control to
+    // its function label. Two pages of content (scroll with UP/DOWN or any
+    // encoder turn): NORMAL MODE and BROWSE/SLICE/CONFIG MODE.
+
+    const int w = area.getWidth(), h = area.getHeight();
+    g.setColour(juce::Colour(0xFF050505));
+    g.fillRect(area);
+
+    // ── Title bar (pinned) ────────────────────────────────────────────────
+    g.setColour(juce::Colour(0xFF0A0A0A));
+    g.fillRect(0, 0, w, 44);
+    g.setColour(juce::Colour(kTabActive));
+    g.setFont(juce::Font(26.0f, juce::Font::bold));
+    g.drawText("GRID CONTROLS", 0, 8, w, 32, juce::Justification::centred);
+    g.setColour(juce::Colour(0xFF333333));
+    g.fillRect(20, 43, w - 40, 1);
+
+    // Page indicator
+    int page = juce::jlimit(0, 1, aboutScrollOffset_);
+    const char* pageNames[] = { "NORMAL MODE", "OVERLAYS  (browse / slice / config)" };
+    g.setColour(juce::Colour(0xFFAAAAAA));
+    g.setFont(15.0f);
+    g.drawText(juce::String(page + 1) + " / 2   " + pageNames[page],
+               20, 50, w - 40, 22, juce::Justification::centredLeft);
+    g.drawText(juce::CharPointer_UTF8("scroll \xe2\x96\xb2 \xe2\x96\xbc  or turn any encoder"),
+               20, 50, w - 40, 22, juce::Justification::centredRight);
+
+    // ── Layout constants for the illustration ─────────────────────────────
+    // Module is drawn centered horizontally. Coordinate system measured from
+    // top-left of usable area (below title bar).
+    const int diagramTop    = 90;
+    const int diagramBottom = h - 36;
+    const int diagramCx     = w / 2;
+    const int moduleW       = 340;
+    const int moduleX       = diagramCx - moduleW / 2;
+    const int moduleY       = diagramTop + 40;
+    const int moduleH       = diagramBottom - moduleY - 20;
+
+    // ── Draw the SSP module body (stylized) ───────────────────────────────
+    {
+        auto modRect = juce::Rectangle<int>(moduleX, moduleY, moduleW, moduleH);
+        // Body
+        g.setColour(juce::Colour(0xFF181818));
+        g.fillRoundedRectangle(modRect.toFloat(), 8.0f);
+        g.setColour(juce::Colour(0xFF333333));
+        g.drawRoundedRectangle(modRect.toFloat(), 8.0f, 1.5f);
+
+        // Top bezel label
+        g.setColour(juce::Colour(0xFF555555));
+        g.setFont(juce::Font(11.0f, juce::Font::italic));
+        g.drawText("percussa SSP", moduleX, moduleY + 4, moduleW, 14,
+                   juce::Justification::centred);
+    }
+
+    // Helper: draw a labeled callout line from (x,y) on the module to a
+    // label positioned in (label_x, label_y) area, anchored either to the
+    // left or right of the module.
+    struct Callout {
+        int    cx, cy;            // control center on module
+        bool   rightSide;         // label sits to the right of module
+        const char* name;         // short label name
+        const char* desc;         // function description
+    };
+
+    auto drawCallout = [&](const Callout& c, int idx, int total) {
+        // Vertical spread: position label at fixed row, depending on idx
+        const int labelRowH = 36;
+        const int spacing = (h - diagramTop - 60) / juce::jmax(1, total);
+        int labelY = diagramTop + 20 + idx * spacing + spacing / 2 - labelRowH / 2;
+        labelY = juce::jlimit(diagramTop + 20, h - 60, labelY);
+
+        int labelX, labelW;
+        const int gutter = 16;
+        if (c.rightSide) {
+            labelX = moduleX + moduleW + gutter;
+            labelW = w - labelX - 30;
+        } else {
+            labelX = 30;
+            labelW = moduleX - gutter - labelX;
+        }
+
+        // Draw label
+        g.setColour(juce::Colour(kTabActive));
+        g.setFont(juce::Font(15.0f, juce::Font::bold));
+        g.drawText(c.name, labelX, labelY, labelW, 18,
+                   c.rightSide ? juce::Justification::topLeft : juce::Justification::topRight);
+        g.setColour(juce::Colour(0xFFCCCCCC));
+        g.setFont(14.0f);
+        g.drawText(c.desc, labelX, labelY + 18, labelW, 18,
+                   c.rightSide ? juce::Justification::topLeft : juce::Justification::topRight);
+
+        // Draw callout line: from control point -> small bend -> label edge
+        int labelEdgeX = c.rightSide ? labelX - 4 : labelX + labelW + 4;
+        int labelMidY  = labelY + 14;
+        int bendX      = c.rightSide
+                          ? (moduleX + moduleW + gutter / 2)
+                          : (moduleX - gutter / 2);
+        g.setColour(juce::Colour(kTabActive).withAlpha(0.55f));
+        juce::Path line;
+        line.startNewSubPath((float)c.cx, (float)c.cy);
+        line.lineTo((float)bendX, (float)c.cy);
+        line.lineTo((float)bendX, (float)labelMidY);
+        line.lineTo((float)labelEdgeX, (float)labelMidY);
+        g.strokePath(line, juce::PathStrokeType(1.2f));
+
+        // Small dot at the control anchor
+        g.setColour(juce::Colour(kTabActive));
+        g.fillEllipse((float)c.cx - 2.5f, (float)c.cy - 2.5f, 5.0f, 5.0f);
+    };
+
+    // ── Control geometry on the stylized module ───────────────────────────
+    // Encoders (top row of 4 circles)
+    int encRowY = moduleY + 36;
+    int encSize = 28;
+    int encSpacing = (moduleW - 80) / 3;
+    int encX[4];
+    for (int i = 0; i < 4; ++i) encX[i] = moduleX + 40 + i * encSpacing;
+
+    for (int i = 0; i < 4; ++i) {
+        g.setColour(juce::Colour(0xFF2A2A2A));
+        g.fillEllipse((float)(encX[i] - encSize/2), (float)(encRowY - encSize/2),
+                      (float)encSize, (float)encSize);
+        g.setColour(juce::Colour(0xFF555555));
+        g.drawEllipse((float)(encX[i] - encSize/2), (float)(encRowY - encSize/2),
+                      (float)encSize, (float)encSize, 1.5f);
+        g.setColour(juce::Colour(0xFFAAAAAA));
+        g.setFont(juce::Font(13.0f, juce::Font::bold));
+        g.drawText("E" + juce::String(i), encX[i] - encSize/2, encRowY - 8, encSize, 16,
+                   juce::Justification::centred);
+    }
+
+    // Arrow keys row (centered, 4 small squares: ◄ ▲ ▼ ►)
+    int navRowY = encRowY + 80;
+    int btnSize = 22;
+    int navSpacing = 30;
+    int navStartX = diagramCx - (3 * navSpacing) / 2;
+    int navX[4]; // L, U, D, R
+    for (int i = 0; i < 4; ++i) navX[i] = navStartX + i * navSpacing;
+    const char* navLabels[] = { "\xe2\x97\x80", "\xe2\x96\xb2", "\xe2\x96\xbc", "\xe2\x96\xb6" };
+    for (int i = 0; i < 4; ++i) {
+        g.setColour(juce::Colour(0xFF2A2A2A));
+        g.fillRoundedRectangle((float)(navX[i] - btnSize/2), (float)(navRowY - btnSize/2),
+                                (float)btnSize, (float)btnSize, 3.0f);
+        g.setColour(juce::Colour(0xFF555555));
+        g.drawRoundedRectangle((float)(navX[i] - btnSize/2), (float)(navRowY - btnSize/2),
+                                (float)btnSize, (float)btnSize, 3.0f, 1.0f);
+        g.setColour(juce::Colour(0xFFAAAAAA));
+        g.setFont(juce::Font(14.0f, juce::Font::bold));
+        g.drawText(juce::CharPointer_UTF8(navLabels[i]),
+                   navX[i] - btnSize/2, navRowY - btnSize/2, btnSize, btnSize,
+                   juce::Justification::centred);
+    }
+
+    // Shift buttons (LS / RS) below nav row
+    int shiftY = navRowY + 44;
+    int lsX = diagramCx - 70, rsX = diagramCx + 70;
+    int shiftW = 56, shiftH = 22;
+    auto drawShift = [&](int cx, const char* label) {
+        g.setColour(juce::Colour(0xFF2A2A2A));
+        g.fillRoundedRectangle((float)(cx - shiftW/2), (float)(shiftY - shiftH/2),
+                                (float)shiftW, (float)shiftH, 4.0f);
+        g.setColour(juce::Colour(0xFF555555));
+        g.drawRoundedRectangle((float)(cx - shiftW/2), (float)(shiftY - shiftH/2),
+                                (float)shiftW, (float)shiftH, 4.0f, 1.0f);
+        g.setColour(juce::Colour(0xFFAAAAAA));
+        g.setFont(juce::Font(12.0f, juce::Font::bold));
+        g.drawText(label, cx - shiftW/2, shiftY - shiftH/2, shiftW, shiftH,
+                   juce::Justification::centred);
+    };
+    drawShift(lsX, "L SHIFT");
+    drawShift(rsX, "R SHIFT");
+
+    // Pad grid (2x4)
+    int padRowY = shiftY + 50;
+    int padW = 54, padH = 28, padGap = 6;
+    int padTotalW = 4 * padW + 3 * padGap;
+    int padStartX = diagramCx - padTotalW / 2;
+    int padCx[8], padCy[8];
+    for (int r = 0; r < 2; ++r) {
+        for (int c = 0; c < 4; ++c) {
+            int idx = r * 4 + c;
+            int px = padStartX + c * (padW + padGap);
+            int py = padRowY + r * (padH + padGap);
+            padCx[idx] = px + padW / 2;
+            padCy[idx] = py + padH / 2;
+            g.setColour(juce::Colour(0xFF1F1F1F));
+            g.fillRoundedRectangle((float)px, (float)py, (float)padW, (float)padH, 3.0f);
+            g.setColour(juce::Colour(0xFF333333));
+            g.drawRoundedRectangle((float)px, (float)py, (float)padW, (float)padH, 3.0f, 1.0f);
+            g.setColour(juce::Colour(0xFF888888));
+            g.setFont(juce::Font(12.0f, juce::Font::bold));
+            g.drawText(juce::String(idx + 1), px, py, padW, padH, juce::Justification::centred);
+        }
+    }
+
+    // ── Page 1: NORMAL MODE callouts ──────────────────────────────────────
+    if (page == 0) {
+        Callout left[] = {
+            { encX[0], encRowY,       false, "ENC 0 turn",  "Select pad (all pages)" },
+            { encX[0], encRowY,       false, "ENC 0 push",  "Open file browser" },
+            { encX[1], encRowY,       false, "ENC 1 turn",  "Adjust value (page param 1)" },
+            { encX[1], encRowY,       false, "HOLD ENC",    "Open detail bubble" },
+            { navX[0], navRowY,       false, "LEFT / RIGHT","Switch tabs" },
+            { navX[1], navRowY,       false, "UP / DOWN",   "Pad select up/down" },
+            { lsX,     shiftY,        false, "L SHIFT + pad","Clear pad" },
+        };
+        Callout right[] = {
+            { encX[2], encRowY,       true, "ENC 2 turn",   "Adjust value (page param 2)" },
+            { encX[3], encRowY,       true, "ENC 3 turn",   "Adjust value (page param 3)" },
+            { encX[3], encRowY,       true, "Push encoder", "Reset / toggle (varies by page)" },
+            { rsX,     shiftY,        true, "R SHIFT HOLD", "Mute mode (pads = mute toggles)" },
+            { rsX + shiftW/2, shiftY, true, "L+R SHIFT",    "Open config browser" },
+            { padCx[0], padCy[0],     true, "PAD 1..8",     "Trigger / select pad" },
+            { padCx[4], padCy[4],     true, "DOWN arrow",   "Close any open bubble" },
+        };
+        int leftN = (int)(sizeof(left) / sizeof(left[0]));
+        int rightN = (int)(sizeof(right) / sizeof(right[0]));
+        for (int i = 0; i < leftN; ++i)  drawCallout(left[i],  i, leftN);
+        for (int i = 0; i < rightN; ++i) drawCallout(right[i], i, rightN);
+    } else {
+        // ── Page 2: OVERLAYS (browse / slice / config) callouts ───────────
+        Callout left[] = {
+            { encX[0], encRowY,       false, "ENC 0",         "Cursor / pad select" },
+            { encX[1], encRowY,       false, "ENC 1",         "Browse: enter / load" },
+            { encX[1], encRowY,       false, "Slice editor",  "Move slice point" },
+            { navX[0], navRowY,       false, "LEFT arrow",    "Browser: go up dir" },
+            { navX[1], navRowY,       false, "UP / DOWN",     "Scroll / select row" },
+            { lsX,     shiftY,        false, "L SHIFT",       "Browser: multi-select" },
+        };
+        Callout right[] = {
+            { encX[2], encRowY,       true, "ENC 2",          "Config: edit value" },
+            { encX[3], encRowY,       true, "ENC 3",          "Browse: audition" },
+            { encX[3], encRowY,       true, "Bubble open",    "Push any enc = close" },
+            { rsX,     shiftY,        true, "R SHIFT",        "Mute mode toggle" },
+            { padCx[0], padCy[0],     true, "PADS in browse", "Load + trigger pad" },
+            { padCx[4], padCy[4],     true, "DOWN arrow",     "Close bubble / cancel" },
+        };
+        int leftN = (int)(sizeof(left) / sizeof(left[0]));
+        int rightN = (int)(sizeof(right) / sizeof(right[0]));
+        for (int i = 0; i < leftN; ++i)  drawCallout(left[i],  i, leftN);
+        for (int i = 0; i < rightN; ++i) drawCallout(right[i], i, rightN);
+    }
+
+    // ── Footer (pinned) ───────────────────────────────────────────────────
+    g.setColour(juce::Colour(0xCC050505));
+    g.fillRect(0, h - 30, w, 30);
+    g.setColour(juce::Colour(0x88FFFFFF));
+    g.setFont(14.0f);
+    g.drawText("UP / DOWN: change page    any button: close",
+               0, h - 26, w, 20, juce::Justification::centred);
+}
+
+void PluginEditor::paintAbout(juce::Graphics& g, juce::Rectangle<int> area)
+{
+    const int w = area.getWidth(), h = area.getHeight();
+    g.setColour(juce::Colour(0xFF000000));
+    g.fillRect(area);
+
+    double now = juce::Time::getMillisecondCounterHiRes() * 0.001;
+
+    // ── Auto-scroll ─────────────────────────────────────────────────────
+    float autoScroll = (float)std::fmod(now * 10.0, 2000.0);
+    float scrollY = autoScroll + (float)aboutScrollOffset_ * 24.0f;
+    float y = (float)h - scrollY + 40.0f;
+    int margin = 40;  // was 80 — let content breathe out
+
+    // Bigger default body font (was 14pt — way too small for a 1600px display)
+    auto mono = [&](const juce::String& text, float size, juce::Colour col,
+                    juce::Justification just = juce::Justification::centred) {
+        g.setColour(col);
+        g.setFont(juce::Font(juce::Font::getDefaultMonospacedFontName(), size, 0));
+        g.drawText(text, margin, (int)y, w - margin * 2, (int)(size + 6), just);
+        y += size + 6.0f;
+    };
+
+    auto sep = [&]() {
+        g.setColour(juce::Colour(0xFF444444));
+        g.setFont(juce::Font(juce::Font::getDefaultMonospacedFontName(), 14.0f, 0));
+        juce::String line;
+        for (int i = 0; i < 72; ++i) line += "-";
+        g.drawText(line, margin, (int)y, w - margin * 2, 16, juce::Justification::centred);
+        y += 18.0f;
+    };
+
+    auto doubleSep = [&]() {
+        g.setColour(juce::Colour(0xFF555555));
+        g.setFont(juce::Font(juce::Font::getDefaultMonospacedFontName(), 14.0f, 0));
+        juce::String line;
+        for (int i = 0; i < 72; ++i) line += "=";
+        g.drawText(line, margin, (int)y, w - margin * 2, 16, juce::Justification::centred);
+        y += 18.0f;
+    };
+
+    // ── GRID logo — ANSI Shadow style, red on black ─────────────────────
+    {
+        const char* art[] = {
+            " ██████╗ ██████╗ ██╗██████╗ ",
+            "██╔════╝ ██╔══██╗██║██╔══██╗",
+            "██║  ███╗██████╔╝██║██║  ██║",
+            "██║   ██║██╔══██╗██║██║  ██║",
+            "╚██████╔╝██║  ██║██║██████╔╝",
+            " ╚═════╝ ╚═╝  ╚═╝╚═╝╚═════╝ "
+        };
+
+        // Was 38pt — bumping to 64pt for the big-screen look
+        const float fontSize = 64.0f;
+        const float rowAdvance = fontSize * 0.95f;
+
+        g.setFont(juce::Font(juce::Font::getDefaultMonospacedFontName(), fontSize, juce::Font::bold));
+
+        float pulse = 0.85f + 0.15f * std::sin((float)now * 1.2f);
+
+        for (int row = 0; row < 6; ++row) {
+            // Drop-shadow ghost behind
+            g.setColour(juce::Colour(0x33E53935));
+            g.drawText(juce::String(juce::CharPointer_UTF8(art[row])),
+                       4, (int)y + 4, w, (int)(rowAdvance + 4),
+                       juce::Justification::centred);
+
+            // Main red fill
+            g.setColour(juce::Colour(kTabActive).withAlpha(pulse));
+            g.drawText(juce::String(juce::CharPointer_UTF8(art[row])),
+                       0, (int)y, w, (int)(rowAdvance + 4),
+                       juce::Justification::centred);
+
+            y += rowAdvance;
+        }
+        y += 32.0f;
+    }
+
+    // ── Presents ────────────────────────────────────────────────────────
+    mono("k u t t o r   p r e s e n t s", 16.0f, juce::Colour(0xFF777777));
+    y += 16.0f;
+
+    doubleSep();
+
+    // ── Info block — dotted alignment ───────────────────────────────────
+    auto infoPair = [&](const juce::String& key, const juce::String& val) {
+        juce::String dots;
+        int totalW = 72;  // was 44 — wider so info reads at-a-glance
+        int keyLen = key.length();
+        int dotsNeeded = totalW - keyLen - val.length();
+        if (dotsNeeded < 2) dotsNeeded = 2;
+        for (int i = 0; i < dotsNeeded; ++i) dots += ".";
+        mono(key + dots + val, 22.0f, juce::Colour(0xFFBBBBBB));  // was 14pt
+    };
+
+    infoPair("  TYPE", "8-Pad Performance Sampler  ");
+    infoPair("  PLATFORM", "Percussa SSP  ");
+    infoPair("  VERSION", juce::String(" ") + kFirmwareVersion + "  ");
+    infoPair("  FRAMEWORK", "JUCE 8.0.6  ");
+    infoPair("  FIRMWARE", "SSP Enhanced (TheTechnobear)  ");
+    infoPair("  DEVELOPER", "kuttor  ");
+    y += 8.0f;
+
+    doubleSep();
+
+    // ── Features as track listing ───────────────────────────────────────
+    {
+        mono("  [ F E A T U R E S ]", 22.0f, juce::Colour(kTabActive));
+        y += 6.0f;
+        sep();
+
+        const char* features[] = {
+            "01  8 independent sample pads",
+            "02  Per-pad output routing",
+            "03  One-shot / Loop / Gate / Clocked modes",
+            "04  WSOLA time stretch engine",
+            "05  11 filter types (LPF HPF BPF Notch MS20..)",
+            "06  3 step mod slots x 10 presets per pad",
+            "07  Bus compressor with sidechain HPF",
+            "08  Slice editor with auto-slice",
+            "09  MIDI note / velocity / CC per pad",
+            "10  MIDI clock sync with divisions",
+            "11  CV gate + pitch for all 8 pads",
+            "12  8-channel mixer with overdrive",
+            "13  Kit save/load with autosave",
+            "14  Built-in file browser"
+        };
+
+        for (int i = 0; i < 14; ++i) {
+            float alpha = 0.65f + 0.15f * std::sin((float)now * 0.8f + (float)i * 0.3f);
+            mono(features[i], 20.0f, juce::Colour(0xFFAAAAAA).withAlpha(alpha));
+        }
+    }
+    y += 10.0f;
+
+    doubleSep();
+
+    // ── Credits ─────────────────────────────────────────────────────────
+    mono("  [ C R E D I T S ]", 22.0f, juce::Colour(kTabActive));
+    y += 6.0f;
+    sep();
+    infoPair("  DEVELOPED BY", "kuttor  ");
+    infoPair("  SSP API + FIRMWARE", "TheTechnobear  ");
+    y += 16.0f;
+
+    mono("  [ B E T A   T E S T E R S ]", 22.0f, juce::Colour(kTabActive));
+    y += 6.0f;
+    sep();
+    mono("wavejockey  //  Handsonicsuki  //  Ras", 22.0f, juce::Colour(0xFF88CCFF));
+    y += 16.0f;
+
+    doubleSep();
+
+    // ── Greets ──────────────────────────────────────────────────────────
+    mono("  [ G R E E T S ]", 22.0f, juce::Colour(kTabActive));
+    y += 6.0f;
+    sep();
+    mono("Percussa // SSP forum crew", 20.0f, juce::Colour(0xFF999999));
+    mono("the eurorack underground", 20.0f, juce::Colour(0xFF999999));
+    mono("everyone building instruments", 20.0f, juce::Colour(0xFF888888));
+    mono("instead of buying them", 20.0f, juce::Colour(0xFF888888));
+    y += 80.0f;
+
+    // ── Footer (pinned) ─────────────────────────────────────────────────
+    {
+        float pulse = 0.4f + 0.2f * std::sin((float)now * 1.5f);
+        g.setColour(juce::Colour(kTabActive).withAlpha(pulse));
+        g.setFont(juce::Font(juce::Font::getDefaultMonospacedFontName(), 16.0f, 0));
+        g.drawText("press any button to return", 0, h - 28, w, 22, juce::Justification::centred);
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Bubble Popup — hold actions per page/encoder
+// ═══════════════════════════════════════════════════════════════════════════
+
+bool PluginEditor::hasHoldAction(int page, int enc) const
+{
+    // WARP tab: hold TIME (e1) for algorithm settings, hold TAPE (e3) for character
+    if (page == PAGE_WARP && enc == 1) return true;
+    if (page == PAGE_WARP && enc == 3) return true;
+    // SLICE tab: e1 enters editor, e2 = style picker, e3 = action picker
+    if (page == PAGE_SLICE && enc == 1) return true;
+    if (page == PAGE_SLICE && enc == 2) return true;
+    if (page == PAGE_SLICE && enc == 3) return true;
+    return false;
+}
+
+void PluginEditor::openHoldBubble(int enc)
+{
+    auto& slot = processor_.getEngine().getSlot(selectedPad_);
+
+    // ── WARP / TIME hold: stretch algorithm + quality ─────────────────────
+    if (currentPage_ == PAGE_WARP && enc == 1) {
+        bubble_.show(enc, "Stretch");
+
+        // Descriptive algorithm names:
+        //   OLA   = "Smooth"  — better for sustained material (pads, drones, vocals)
+        //   WSOLA = "Rhythmic" — preserves transients (drums, percussive loops)
+        auto modeStr = [&]() {
+            return (slot.getStretchMode() == StretchMode::WSOLA)
+                ? juce::String("Rhythmic") : juce::String("Smooth");
+        };
+        auto qualityStr = [&]() {
+            const char* names[] = { "Low", "Medium", "High" };
+            return juce::String(names[juce::jlimit(0, 2, slot.getStretchStrength())]);
+        };
+
+        bubble_.addParam("Algorithm", modeStr(),
+            [this, &slot](float d) {
+                int m = static_cast<int>(slot.getStretchMode()) + (d > 0 ? 1 : -1);
+                slot.setStretchMode(static_cast<StretchMode>(juce::jlimit(0, 1, m)));
+                bubble_.updateParam(0,
+                    slot.getStretchMode() == StretchMode::WSOLA ? "Rhythmic" : "Smooth");
+                updateEncoderDisplay();
+            });
+
+        bubble_.addParam("Quality", qualityStr(),
+            [this, &slot](float d) {
+                int s = slot.getStretchStrength() + (d > 0 ? 1 : -1);
+                slot.setStretchStrength(s);
+                const char* names[] = { "Low", "Medium", "High" };
+                bubble_.updateParam(1, names[slot.getStretchStrength()]);
+                updateEncoderDisplay();
+            });
+
+        bubble_.setOnClose([this]() { updateEncoderDisplay(); repaint(); });
+        updateEncoderDisplay();
+        repaint();
+        return;
+    }
+
+    // ── WARP / TAPE hold: wow, flutter, HF rolloff, head bump, saturation ─
+    if (currentPage_ == PAGE_WARP && enc == 3) {
+        bubble_.show(enc, "Tape Character");
+
+        auto pct = [](float v) {
+            if (v < 0.005f) return juce::String("OFF");
+            return juce::String((int)(v * 100.0f)) + "%";
+        };
+
+        bubble_.addParam("Wow",        pct(slot.getTapeWow()),
+            [this, &slot](float d) {
+                slot.setTapeWow(slot.getTapeWow() + d * 0.02f);
+                bubble_.updateParam(0, slot.getTapeWow() < 0.005f
+                    ? juce::String("OFF") : juce::String((int)(slot.getTapeWow() * 100.0f)) + "%");
+                updateEncoderDisplay();
+            });
+        bubble_.addParam("Flutter",    pct(slot.getTapeFlutter()),
+            [this, &slot](float d) {
+                slot.setTapeFlutter(slot.getTapeFlutter() + d * 0.02f);
+                bubble_.updateParam(1, slot.getTapeFlutter() < 0.005f
+                    ? juce::String("OFF") : juce::String((int)(slot.getTapeFlutter() * 100.0f)) + "%");
+                updateEncoderDisplay();
+            });
+        bubble_.addParam("HF Rolloff", pct(slot.getTapeHFRolloff()),
+            [this, &slot](float d) {
+                slot.setTapeHFRolloff(slot.getTapeHFRolloff() + d * 0.02f);
+                bubble_.updateParam(2, slot.getTapeHFRolloff() < 0.005f
+                    ? juce::String("OFF") : juce::String((int)(slot.getTapeHFRolloff() * 100.0f)) + "%");
+                updateEncoderDisplay();
+            });
+        bubble_.addParam("Head Bump",  pct(slot.getTapeHeadBump()),
+            [this, &slot](float d) {
+                slot.setTapeHeadBump(slot.getTapeHeadBump() + d * 0.02f);
+                bubble_.updateParam(3, slot.getTapeHeadBump() < 0.005f
+                    ? juce::String("OFF") : juce::String((int)(slot.getTapeHeadBump() * 100.0f)) + "%");
+                updateEncoderDisplay();
+            });
+        bubble_.addParam("Saturation", pct(slot.getTapeSaturation()),
+            [this, &slot](float d) {
+                slot.setTapeSaturation(slot.getTapeSaturation() + d * 0.02f);
+                bubble_.updateParam(4, slot.getTapeSaturation() < 0.005f
+                    ? juce::String("OFF") : juce::String((int)(slot.getTapeSaturation() * 100.0f)) + "%");
+                updateEncoderDisplay();
+            });
+
+        bubble_.setOnClose([this]() { updateEncoderDisplay(); repaint(); });
+        updateEncoderDisplay();
+        repaint();
+        return;
+    }
+    // ── SLICE / CURSOR hold (e1): enter the slice editor for deep work ────
+    if (currentPage_ == PAGE_SLICE && enc == 1) {
+        if (slot.isLoaded()) {
+            sliceCursorPos_ = sliceTabCursorPos_;
+            enterSliceEditor();
+        } else {
+            processor_.showTickerPublic("No sample loaded");
+        }
+        return;
+    }
+
+    // ── SLICE / SLICE hold (e2): style picker with inline strength ────────
+    // Rows are centered selector strings. Cursor up/down to a style. Anchor
+    // encoder TURN cycles inline choices (strength). Anchor encoder PUSH
+    // selects the highlighted row as the active slice style and closes.
+    if (currentPage_ == PAGE_SLICE && enc == 2) {
+        bubble_.show(enc, "Slice Style");
+
+        // Strength index helper for Transient row
+        auto strengthIdx = [this]() {
+            return (sliceSensitivity_ < 0.34f) ? 0
+                 : (sliceSensitivity_ < 0.67f) ? 1 : 2;
+        };
+        const float kSensVals[3] = { 0.20f, 0.50f, 0.85f };
+
+        // Row 0: Equal Divisions (no choices)
+        bubble_.addSelector("Equal Divisions", {}, 0,
+            [](float /*d*/) { /* no value to cycle */ });
+
+        // Row 1: Crossfade with Low/Medium/High strength (mapped to ms)
+        // Use ms ranges: Low=2ms, Med=10ms, High=25ms
+        int cfIdx = (sliceCrossfadeMs_ <= 5) ? 0
+                  : (sliceCrossfadeMs_ <= 15) ? 1 : 2;
+        bubble_.addSelector("Crossfade", { "Low", "Medium", "High" }, cfIdx,
+            [this](float d) {
+                int step = (sliceCrossfadeMs_ <= 5) ? 0
+                         : (sliceCrossfadeMs_ <= 15) ? 1 : 2;
+                step = juce::jlimit(0, 2, step + (d > 0 ? 1 : -1));
+                const int msVals[] = { 2, 10, 25 };
+                sliceCrossfadeMs_ = msVals[step];
+                bubble_.updateChoiceIdx(1, step);
+            });
+
+        // Row 2: Transients with Low/Medium/High strength
+        bubble_.addSelector("Transients", { "Low", "Medium", "High" }, strengthIdx(),
+            [this, kSensVals](float d) {
+                int step = (sliceSensitivity_ < 0.34f) ? 0
+                         : (sliceSensitivity_ < 0.67f) ? 1 : 2;
+                step = juce::jlimit(0, 2, step + (d > 0 ? 1 : -1));
+                sliceSensitivity_ = kSensVals[step];
+                bubble_.updateChoiceIdx(2, step);
+            });
+
+        // On PUSH: rowIdx becomes the active method (0=Equal, 1=Crossfade, 2=Transient)
+        bubble_.setOnSelect([this](int rowIdx) {
+            // Row order matches our sliceMethod_ mapping in onSelect:
+            // 0 = Equal Divisions -> sliceMethod_ = 0
+            // 1 = Crossfade       -> sliceMethod_ = 2
+            // 2 = Transients      -> sliceMethod_ = 1
+            int methodMap[] = { 0, 2, 1 };
+            sliceMethod_ = methodMap[juce::jlimit(0, 2, rowIdx)];
+            updateEncoderDisplay();
+            repaint();
+        });
+
+        // Mark the currently-active style and put the cursor there so the
+        // user opens the bubble and immediately sees what's selected.
+        // Inverse of methodMap: sliceMethod_ 0 -> row 0, 1 -> row 2, 2 -> row 1
+        int inverseMap[] = { 0, 2, 1 };
+        int activeRow = inverseMap[juce::jlimit(0, 2, sliceMethod_)];
+        bubble_.setCurrentRow(activeRow);
+        bubble_.setCursor(activeRow);
+
+        bubble_.setOnClose([this]() { updateEncoderDisplay(); repaint(); });
+        updateEncoderDisplay();
+        repaint();
+        return;
+    }
+
+    // ── SLICE / EDIT hold (e3): action picker (selector bubble) ───────────
+    // Pick one of: Pitch / Time Stretch / Tape Speed / Clear All / Delete Region.
+    // PUSH on a row sets sliceEditAction_ and closes — the encoder label
+    // updates to reflect the new action.
+    if (currentPage_ == PAGE_SLICE && enc == 3) {
+        bubble_.show(enc, "Edit Action");
+
+        bubble_.addSelector("Pitch",                    {}, 0, [](float){});
+        bubble_.addSelector("Time Stretch",             {}, 0, [](float){});
+        bubble_.addSelector("Tape Speed",               {}, 0, [](float){});
+        bubble_.addSelector("Clear All",                {}, 0, [](float){});
+        bubble_.addSelector("Delete Region",            {}, 0, [](float){});
+        bubble_.addSelector("Export Slices to Samples", {}, 0, [](float){});
+        bubble_.addSelector("MIDI CC",                  {}, 0, [](float){});
+
+        bubble_.setOnSelect([this](int rowIdx) {
+            sliceEditAction_ = juce::jlimit(0, 6, rowIdx);
+            updateEncoderDisplay();
+            repaint();
+        });
+
+        // Highlight the currently-active edit action
+        bubble_.setCurrentRow(sliceEditAction_);
+        bubble_.setCursor(sliceEditAction_);
+
+        bubble_.setOnClose([this]() { updateEncoderDisplay(); repaint(); });
+        updateEncoderDisplay();
+        repaint();
+        return;
+    }
+
+    // ── SLICE / EDIT hold (e3): action picker (selector bubble) ───────────
+    // Pick one of: Pitch / Time Stretch / Tape Speed / Clear All / Delete Region.
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Slice Editor hold bubble — mirrors grid view's E3 action picker
+// ═══════════════════════════════════════════════════════════════════════════
+
+void PluginEditor::openSliceEditorHoldBubble(int enc)
+{
+    if (enc != 3) return;  // only E3 has a hold action in the editor
+
+    bubble_.show(enc, "Edit Action");
+
+    bubble_.addSelector("Pitch",                    {}, 0, [](float){});
+    bubble_.addSelector("Time Stretch",             {}, 0, [](float){});
+    bubble_.addSelector("Tape Speed",               {}, 0, [](float){});
+    bubble_.addSelector("Clear All",                {}, 0, [](float){});
+    bubble_.addSelector("Delete Region",            {}, 0, [](float){});
+    bubble_.addSelector("Export Slices to Samples", {}, 0, [](float){});
+    bubble_.addSelector("MIDI CC",                  {}, 0, [](float){});
+
+    bubble_.setOnSelect([this](int rowIdx) {
+        sliceEditAction_ = juce::jlimit(0, 6, rowIdx);
+        repaint();
+    });
+
+    // Highlight the currently-active edit action (matches grid view bubble)
+    bubble_.setCurrentRow(sliceEditAction_);
+    bubble_.setCursor(sliceEditAction_);
+
+    bubble_.setOnClose([this]() { repaint(); });
+    repaint();
 }
 
 } // namespace grid

@@ -85,10 +85,11 @@ inline const char* outputBusName(int i) {
 static constexpr float kTrigThreshold = 0.2f;
 
 // -- Pages --
-enum Page { PAGE_OVERVIEW = 0, PAGE_SAMPLE, PAGE_PLAY, PAGE_PITCH, PAGE_FADE, PAGE_FILTER, PAGE_MIDI, PAGE_MOD };
+// Note: enum values used as array indices throughout. Keep order stable.
+enum Page { PAGE_OVERVIEW = 0, PAGE_SAMPLE, PAGE_PLAY, PAGE_WARP, PAGE_FADE, PAGE_FILTER, PAGE_SLICE, PAGE_MOD };
 
 // -- Per-pad modes --
-enum class PadMode { OneShot = 0, Loop, ClockedLoop, ClockedOneShot, Gate };
+enum class PadMode { OneShot = 0, Loop, ClockedLoop, ClockedOneShot, Gate, MidiCV };
 
 // -- Time stretch algorithm --
 enum class StretchMode { OLA = 0, WSOLA };  // OLA = current, WSOLA = cross-correlation aligned
@@ -97,7 +98,7 @@ enum class StretchMode { OLA = 0, WSOLA };  // OLA = current, WSOLA = cross-corr
 enum class VoiceMode { Mono = 0, Gate, Legato, Poly };
 
 // -- Filter types (TPT SVF) --
-enum class FilterType { Off = 0, LPF, HPF, BPF, Notch, Formant, MS20, LPG };
+enum class FilterType { Off = 0, LPF, HPF, BPF, Notch, Formant, MS20, LPG, RingMod, WaveFolder, CombFilter };
 
 // -- Lo-fi sampler emulation modes --
 enum class LofiMode { Off = 0, Bit8, Bit12, SP1200, MPC60 };
@@ -215,12 +216,16 @@ struct PadMod {
 
 // -- Per-pad CC map (default CC assignments) --
 struct PadCCMap {
-    int ccStart   = 1;
-    int ccEnd     = 2;
-    int ccVolume  = 7;
-    int ccPan     = 10;
-    int ccStretch = 11;
-    int ccFilter  = 74;
+    // CC defaults chosen to avoid clashes with common controller defaults:
+    //   CC 1 = mod wheel, CC 2 = breath, CC 64 = sustain pedal, CC 71-74 reserved
+    // ccStart used to default to CC 1 which collided with literally every
+    // keyboard's mod wheel. Bumped into the 16-21 "general purpose" range.
+    int ccStart   = 16;   // was 1 — moved off mod wheel
+    int ccEnd     = 17;   // was 2 — moved off breath controller
+    int ccVolume  = 7;    // standard MIDI volume
+    int ccPan     = 10;   // standard MIDI pan
+    int ccStretch = 18;   // was 11, moved off effect controller 1
+    int ccFilter  = 74;   // standard MIDI brightness/filter cutoff
 
     static constexpr int kNumCCs = 6;
 
@@ -258,6 +263,7 @@ struct ConfigRow {
     juce::String label;
     int padIndex;     // -1 = global
     int paramIndex;   // index into CC map or global setting enum
+    int sectionIndex = -1;  // which SubHeader section this row belongs to (-1 = none)
 };
 
 // -- Stack layer mode --
@@ -314,8 +320,16 @@ struct KitPadSlot {
     int   lofiMode = 0;         // LofiMode enum
     float compSend = 0.0f;
     bool  compBypass = false;
+    int   pitchMode = 0;       // 0 = Tape, 1 = Decoupled
     int   outputChannel = -1;  // -1 = default
     bool  sendToMix = true;
+    // Tape settings (2.4.9 — were being lost on kit save/load)
+    float tapeRate       = 1.0f;
+    float tapeWow        = 0.0f;
+    float tapeFlutter    = 0.0f;
+    float tapeHFRolloff  = 0.0f;
+    float tapeHeadBump   = 0.0f;
+    float tapeSaturation = 0.0f;
     // Slice system — paired regions
     bool  sliceMode = false;
     int   sliceCount = 0;
@@ -358,8 +372,16 @@ struct KitData {
             pad->setAttribute("lofiMode", pads[i].lofiMode);
             pad->setAttribute("compSend", pads[i].compSend);
             pad->setAttribute("compBypass", pads[i].compBypass ? 1 : 0);
+            pad->setAttribute("pitchMode", pads[i].pitchMode);
             pad->setAttribute("outputChannel", pads[i].outputChannel);
             pad->setAttribute("sendToMix", pads[i].sendToMix ? 1 : 0);
+            // Tape (2.4.9)
+            pad->setAttribute("tapeRate",       (double)pads[i].tapeRate);
+            pad->setAttribute("tapeWow",        (double)pads[i].tapeWow);
+            pad->setAttribute("tapeFlutter",    (double)pads[i].tapeFlutter);
+            pad->setAttribute("tapeHFRolloff",  (double)pads[i].tapeHFRolloff);
+            pad->setAttribute("tapeHeadBump",   (double)pads[i].tapeHeadBump);
+            pad->setAttribute("tapeSaturation", (double)pads[i].tapeSaturation);
             pad->setAttribute("sliceMode", pads[i].sliceMode ? 1 : 0);
             if (pads[i].sliceCount > 0) {
                 juce::String starts, ends, pitches;
@@ -410,8 +432,17 @@ struct KitData {
             k.pads[i].lofiMode = pad->getIntAttribute("lofiMode", 0);
             k.pads[i].compSend = (float)pad->getDoubleAttribute("compSend", 0.0);
             k.pads[i].compBypass = pad->getIntAttribute("compBypass", 0) != 0;
+            k.pads[i].pitchMode = pad->getIntAttribute("pitchMode", 0);
             k.pads[i].outputChannel = pad->getIntAttribute("outputChannel", -1);
             k.pads[i].sendToMix = pad->getIntAttribute("sendToMix", 1) != 0;
+            // Tape (2.4.9) — default to 1.0 for rate, 0.0 for the rest so
+            // older kits without these attributes are neutral.
+            k.pads[i].tapeRate       = (float)pad->getDoubleAttribute("tapeRate",       1.0);
+            k.pads[i].tapeWow        = (float)pad->getDoubleAttribute("tapeWow",        0.0);
+            k.pads[i].tapeFlutter    = (float)pad->getDoubleAttribute("tapeFlutter",    0.0);
+            k.pads[i].tapeHFRolloff  = (float)pad->getDoubleAttribute("tapeHFRolloff",  0.0);
+            k.pads[i].tapeHeadBump   = (float)pad->getDoubleAttribute("tapeHeadBump",   0.0);
+            k.pads[i].tapeSaturation = (float)pad->getDoubleAttribute("tapeSaturation", 0.0);
             k.pads[i].sliceMode = pad->getIntAttribute("sliceMode", 0) != 0;
             k.pads[i].sliceCount = 0;
             auto startsStr = pad->getStringAttribute("sliceStarts", "");

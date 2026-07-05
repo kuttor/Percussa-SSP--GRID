@@ -8,14 +8,20 @@ PluginProcessor::PluginProcessor()
     : AudioProcessor(getBusesProperties())
 {
     sampleRootPath_ = findSSPSamplePath();
+    instanceId_ = juce::Uuid().toString().substring(0, 8);  // short unique ID
+    loadGlobalPrefs();  // shared settings across all instances
 }
 
 PluginProcessor::~PluginProcessor()
 {
-    // Stop MIDI device first — prevents callbacks during teardown
+    // Stop MIDI devices first — prevents callbacks during teardown
     if (midiInDevice_) {
         midiInDevice_->stop();
         midiInDevice_ = nullptr;
+    }
+    if (globalsMidiInDevice_) {
+        globalsMidiInDevice_->stop();
+        globalsMidiInDevice_ = nullptr;
     }
     // Stop all voices to prevent audio callback accessing destroyed state
     for (int i = 0; i < kNumPads; ++i)
@@ -32,12 +38,13 @@ void PluginProcessor::prepareToPlay(double sampleRate, int samplesPerBlock)
     // Reopen MIDI device if name is set but device was killed
     if (midiDeviceName_.isNotEmpty() && midiInDevice_ == nullptr) {
         auto saved = midiDeviceName_;
-        midiDeviceName_.clear();  // force setMidiDevice to actually open
+        midiDeviceName_.clear();
         setMidiDevice(saved);
     }
 
-    // Load autosave state if available (restores last session)
-    loadAutosave();
+    // Only load autosave if: no state was provided by host AND autosave is enabled
+    if (!stateLoadedFromHost_ && autosaveEnabled_)
+        loadAutosave();
 }
 
 void PluginProcessor::releaseResources()
@@ -163,30 +170,41 @@ void PluginProcessor::processBlock(juce::AudioBuffer<float>& buffer,
                     if (padCh == ch || padCh == 17) {
                         if (!engine_.isMuted(pad)) {
                             auto& slot = engine_.getSlot(pad);
+                            // ── MIDI-CV mode (2.4.9): note drives gate on the
+                            // pad's own output channel (O_PAD1 + pad). No
+                            // audio playback. Note is remembered so note-off
+                            // can drop the gate.
+                            if (slot.getMode() == PadMode::MidiCV) {
+                                midiCVGate_[pad] = true;
+                                midiCVLastNote_[pad] = note;
+                                midiCVSharedPitch_ = ((float)note - 60.0f) / 12.0f * 0.1f;
+                                midiCVSharedVel_ = msg.getFloatVelocity() * 0.5f;
+                                break;  // don't fall through to audio trigger
+                            }
                             if (slot.isSliceMode() && slot.getSliceCount() > 0) {
-                                // Slice mode: use currently selected slice
-                                // (set by CC Slice, CV, or note-based mapping)
+                                // Slice mode: pick which slice to play, then
+                                // route through triggerSlice — per-voice
+                                // region, slot trim stays put. Avoids the
+                                // visual blackout + "slicing inside the
+                                // slice" bug the old setStartPos/setEndPos
+                                // pattern caused.
                                 int sliceIdx = slot.getSelectedSlice();
-                                // Note-based slice mapping: if note is in
-                                // chromatic range (C2+), override selection
-                                // ONLY if no CC slice is assigned for this pad
                                 if (padCCMaps_[pad].ccStart == 0) {
                                     sliceIdx = juce::jlimit(0, std::max(0, slot.getSliceCount() - 1),
                                                              note - 36);
                                 }
-                                float slStart, slEnd;
-                                slot.getSliceRegion(sliceIdx, slStart, slEnd);
-                                slot.setStartPos(slStart);
-                                slot.setEndPos(slEnd);
-                                slot.setSelectedSlice(sliceIdx);
-                                slot.setSlicePitchOffset(slot.getSlicePitch(sliceIdx));
+                                slot.triggerSlice(sliceIdx, msg.getFloatVelocity());
+                                // triggerSlice does its own voice setup,
+                                // so skip the generic triggerWithChoke call
+                                // below for sliced pads.
+                                // Step modulation still applies after.
                             } else {
                                 // Normal mode: note controls pitch
                                 float pitchSt = (float)(note - 60);
                                 slot.setPitchSemitones(pitchSt);
+                                engine_.triggerWithChokeAndVelocityAndOffset(
+                                    pad, msg.getFloatVelocity(), samplePos);
                             }
-                            engine_.triggerWithChokeAndVelocityAndOffset(
-                                pad, msg.getFloatVelocity(), samplePos);
 
                             // Apply step modulation (all 3 mod slots)
                             for (int ms = 0; ms < 3; ++ms) {
@@ -226,6 +244,26 @@ void PluginProcessor::processBlock(juce::AudioBuffer<float>& buffer,
                     }
                 }
             }
+            else if (msg.isNoteOff()) {
+                // Gate mode: stop pad on note off
+                int ch = msg.getChannel();
+                for (int pad = 0; pad < kNumPads; ++pad) {
+                    int padCh = engine_.getSlot(pad).getMidiChannel();
+                    if (padCh == 0) continue;
+                    if (padCh == ch || padCh == 17) {
+                        auto& slot = engine_.getSlot(pad);
+                        // MIDI-CV (2.4.9): drop gate on matching note-off
+                        if (slot.getMode() == PadMode::MidiCV) {
+                            if (midiCVLastNote_[pad] == msg.getNoteNumber())
+                                midiCVGate_[pad] = false;
+                            continue;
+                        }
+                        if (slot.getMode() == PadMode::Gate && slot.isPlaying()) {
+                            engine_.stop(pad);
+                        }
+                    }
+                }
+            }
             else if (msg.isController()) {
                 int ch = msg.getChannel();
                 int cc = msg.getControllerNumber();
@@ -233,6 +271,23 @@ void PluginProcessor::processBlock(juce::AudioBuffer<float>& buffer,
 
                 if (debugMsgs_)
                     showTicker("CC" + juce::String(cc) + " v" + juce::String(msg.getControllerValue()) + " ch" + juce::String(ch));
+
+                // ── Global Pad Mute CCs ──
+                // CCs (base..base+7) → mute for pad 1..8. Value >= 64 mutes,
+                // < 64 unmutes. Accepts on any connected input — distinguishing
+                // by source (Pads vs Global device) would require two MIDI
+                // collectors and message tagging; deferred to 2.4.9 when the
+                // Global routing gets a proper surface.
+                if (padMuteCCBase_ >= 0
+                    && cc >= padMuteCCBase_ && cc < padMuteCCBase_ + kNumPads)
+                {
+                    int targetPad = cc - padMuteCCBase_;
+                    bool muteNow = (msg.getControllerValue() >= 64);
+                    engine_.setMuted(targetPad, muteNow);
+                    markStateDirty();
+                    // Don't return — let the per-pad loop still process this
+                    // CC in case a pad has it mapped to something else too.
+                }
 
                 for (int pad = 0; pad < kNumPads; ++pad) {
                     int padCh = engine_.getSlot(pad).getMidiChannel();
@@ -242,17 +297,36 @@ void PluginProcessor::processBlock(juce::AudioBuffer<float>& buffer,
                     auto& slot = engine_.getSlot(pad);
                     auto& ccMap = padCCMaps_[pad];
                     float val100 = juce::jlimit(0.0f, 1.0f, (float)msg.getControllerValue() / 100.0f);
-                    if (cc == ccMap.ccStart) {
+
+                    // Per-slice direct CC trigger: if a slice has this CC
+                    // assigned and the value is non-zero, fire that slice at
+                    // velocity = value/127. This is additive with ccStart —
+                    // both routing paths can be used at once. If the same CC
+                    // happens to match ccStart AND a per-slice CC, per-slice
+                    // wins (more specific) and we skip the ccStart branch.
+                    bool perSliceFired = false;
+                    if (slot.isSliceMode() && slot.getSliceCount() > 0
+                        && msg.getControllerValue() > 0)
+                    {
+                        for (int sIdx = 0; sIdx < slot.getSliceCount(); ++sIdx) {
+                            if (slot.getSliceCC(sIdx) == cc) {
+                                slot.triggerSlice(sIdx, val);
+                                perSliceFired = true;
+                            }
+                        }
+                    }
+
+                    if (!perSliceFired && cc == ccMap.ccStart) {
                         if (slot.isSliceMode() && slot.getSliceCount() > 0) {
                             int numRegions = slot.getSliceCount();
                             int sliceIdx = juce::jlimit(0, numRegions - 1,
                                                          (int)(val100 * numRegions));
+                            // Set selection only — actual playback fires when
+                            // a note-on or per-slice CC arrives. Don't mutate
+                            // slot trim (was causing the visual blackout +
+                            // "slicing inside the slice" bug).
                             slot.setSelectedSlice(sliceIdx);
                             slot.setSlicePitchOffset(slot.getSlicePitch(sliceIdx));
-                            float slStart, slEnd;
-                            slot.getSliceRegion(sliceIdx, slStart, slEnd);
-                            slot.setStartPos(slStart);
-                            slot.setEndPos(slEnd);
                         } else {
                             slot.setStartPos(val100);
                         }
@@ -719,6 +793,32 @@ void PluginProcessor::processBlock(juce::AudioBuffer<float>& buffer,
             }
         }
     }
+
+    // ── MIDI-CV gate writer (2.4.9) ──────────────────────────────────
+    // For each pad in PadMode::MidiCV, the pad's own output channel
+    // (O_PAD1 + padIdx) becomes a gate line. 5V while note held (0.5f
+    // in buffer). Silent otherwise. Overwrites (not adds to) any audio
+    // that may have leaked from the mix routing above — MidiCV pads
+    // must never produce audio.
+    {
+        for (int p = 0; p < kNumPads; ++p) {
+            auto& slot = engine_.getSlot(p);
+            if (slot.getMode() != PadMode::MidiCV) continue;
+
+            const int busIdx = O_PAD1 + p;
+            if (busIdx >= numChannels) continue;
+
+            // Zero the channel first (kill any stale audio content)
+            buffer.clear(busIdx, 0, numSamples);
+
+            const bool muted = engine_.isMuted(p);
+            const bool gateActive = midiCVGate_[p] && !muted;
+            if (!gateActive) continue;
+
+            float* out = buffer.getWritePointer(busIdx);
+            for (int s = 0; s < numSamples; ++s) out[s] = 0.5f;  // 5V
+        }
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -855,15 +955,48 @@ void PluginProcessor::finalizeRecording()
 // MIDI (direct device access — Bear's pattern, improved)
 // ═══════════════════════════════════════════════════════════════════════════
 
+// Bear's SSP host uses ALSA. Real hardware MIDI devices show up with
+// their vendor-product name (e.g., "Arturia MiniLab MkII MIDI 1").
+// Virtual/loopback devices we don't want in the picker: JUCE's own
+// virtual MIDI, the ALSA "Midi Through" port, and any raw ALSA
+// clientless entries with an empty name.
+//
+// The old filter also matched "internal" (too generic — some real USB
+// device names contain that substring, e.g. "Internal Audio MIDI").
+// Removed 2.4.10 — was causing devices to disappear from the picker.
+// Same for "rtmidi" which was speculative.
 static bool isInternalMidi(const juce::String& name) {
     auto lower = name.toLowerCase();
-    return lower.contains("juce") || lower.contains("midi through") || 
-           lower.contains("rtmidi") || lower.contains("internal") ||
+    return lower.contains("juce") ||
+           lower.contains("midi through") ||
            name.isEmpty();
 }
 
 juce::StringArray PluginProcessor::getMidiDeviceNames() const
 {
+    // Live rescan on every query — without this, a device plugged in after
+    // prepareToPlay() won't show up in the picker. The query is cheap
+    // (filesystem/ALSA poll, no I/O), so do it every time. Also refreshes
+    // the cache as a side effect so other callers see fresh data.
+    auto devs = juce::MidiInput::getAvailableDevices();
+    cachedMidiDeviceNames_.clear();
+    cachedMidiDeviceNames_.add("None");
+    int filtered = 0;
+    for (auto& d : devs) {
+        if (!isInternalMidi(d.name) && d.name.isNotEmpty())
+            cachedMidiDeviceNames_.add(d.name);
+        else
+            filtered++;
+    }
+    // 2.4.10: diagnostic when Debug Msgs is on. Shows raw device count +
+    // how many got filtered. Tester screenshots this if a device won't
+    // appear so we can see exactly what JUCE returned vs what we accepted.
+    if (debugMsgs_) {
+        const_cast<PluginProcessor*>(this)->showTicker(
+            "MIDI scan: " + juce::String(devs.size()) + " raw, "
+            + juce::String(cachedMidiDeviceNames_.size() - 1) + " visible, "
+            + juce::String(filtered) + " filtered");
+    }
     return cachedMidiDeviceNames_;
 }
 
@@ -878,44 +1011,67 @@ void PluginProcessor::refreshMidiDevices()
     }
 }
 
-void PluginProcessor::setMidiDevice(const juce::String& name)
+void PluginProcessor::setMidiDevice(const juce::String& nameOrId)
 {
-    // Skip only if name matches AND device is actually open
-    if (name == midiDeviceName_ && midiInDevice_ != nullptr) return;
+    // Per TheTechnobear v260425: prefer identifier over name when matching.
+    // Names aren't unique across ports — some devices report the same name
+    // on every port. Identifiers are. The argument here can be either:
+    // - An identifier (from XML load or programmatic call)
+    // - A name (from the UI picker, which displays names)
+    // We try identifier match first, then name. Whatever we open, we record
+    // BOTH the identifier and the name for later.
 
-    if (name.isEmpty() || name == "None") {
-        // Only close if something is actually open
+    // Early-out: same device already open
+    if ((nameOrId == midiDeviceName_ || nameOrId == midiDeviceId_)
+        && midiInDevice_ != nullptr) return;
+
+    if (nameOrId.isEmpty() || nameOrId == "None") {
         if (midiInDevice_) {
             midiInDevice_->stop();
-            midiInDevice_ = nullptr;  // Bear's pattern
+            midiInDevice_ = nullptr;
         }
         if (midiDeviceName_.isNotEmpty())
             showTicker("MIDI device disconnected");
         midiDeviceName_.clear();
+        midiDeviceId_.clear();
         midiClockEnabled_ = false;
         midiTransportRunning_ = false;
         return;
     }
 
-    if (isInternalMidi(name)) return;
+    if (isInternalMidi(nameOrId)) return;
 
-    // Close existing device before opening new one
     if (midiInDevice_) {
         midiInDevice_->stop();
         midiInDevice_ = nullptr;
     }
 
     auto devs = juce::MidiInput::getAvailableDevices();
+    juce::MidiDeviceInfo matched;
+    // Pass 1: identifier match (preferred — robust against duplicate names)
     for (auto& d : devs) {
-        if (d.name == name && !isInternalMidi(d.name)) {
-            midiInDevice_ = juce::MidiInput::openDevice(d.identifier, this);
-            if (midiInDevice_) {
-                midiInDevice_->start();
-                midiDeviceName_ = name;
-                showTicker("MIDI: " + name);
-            }
-            return;
+        if (d.identifier == nameOrId && !isInternalMidi(d.name)) {
+            matched = d;
+            break;
         }
+    }
+    // Pass 2: name match (fallback for UI picker + legacy patches)
+    if (matched.identifier.isEmpty()) {
+        for (auto& d : devs) {
+            if (d.name == nameOrId && !isInternalMidi(d.name)) {
+                matched = d;
+                break;
+            }
+        }
+    }
+    if (matched.identifier.isEmpty()) return;  // not found, no-op
+
+    midiInDevice_ = juce::MidiInput::openDevice(matched.identifier, this);
+    if (midiInDevice_) {
+        midiInDevice_->start();
+        midiDeviceName_ = matched.name;
+        midiDeviceId_   = matched.identifier;
+        showTicker("MIDI: " + matched.name);
     }
 }
 
@@ -926,10 +1082,145 @@ void PluginProcessor::closeMidiDevice()
         midiInDevice_ = nullptr;  // Bear's pattern
     }
     midiDeviceName_.clear();
+    midiDeviceId_.clear();
     midiClockEnabled_ = false;
     midiTransportRunning_ = false;
     midiClockCount_ = 0;
     midiClockLastBeatMs_ = 0.0;
+}
+
+void PluginProcessor::setGlobalsMidiDevice(const juce::String& nameOrId)
+{
+    // Mirrors setMidiDevice — identifier-first matching, name fallback.
+    // Andy: the Pad and Global device slots are intentionally independent.
+    // If a user wants to point both at the same physical device they can
+    // (JUCE handles the duplicate open fine on the SSP host).
+    if ((nameOrId == globalsMidiDeviceName_ || nameOrId == globalsMidiDeviceId_)
+        && globalsMidiInDevice_ != nullptr) return;
+
+    if (nameOrId.isEmpty() || nameOrId == "None") {
+        if (globalsMidiInDevice_) {
+            globalsMidiInDevice_->stop();
+            globalsMidiInDevice_ = nullptr;
+        }
+        if (globalsMidiDeviceName_.isNotEmpty())
+            showTicker("Global MIDI disconnected");
+        globalsMidiDeviceName_.clear();
+        globalsMidiDeviceId_.clear();
+        return;
+    }
+
+    if (isInternalMidi(nameOrId)) return;
+
+    if (globalsMidiInDevice_) {
+        globalsMidiInDevice_->stop();
+        globalsMidiInDevice_ = nullptr;
+    }
+
+    auto devs = juce::MidiInput::getAvailableDevices();
+    juce::MidiDeviceInfo matched;
+    for (auto& d : devs) {
+        if (d.identifier == nameOrId && !isInternalMidi(d.name)) {
+            matched = d;
+            break;
+        }
+    }
+    if (matched.identifier.isEmpty()) {
+        for (auto& d : devs) {
+            if (d.name == nameOrId && !isInternalMidi(d.name)) {
+                matched = d;
+                break;
+            }
+        }
+    }
+    if (matched.identifier.isEmpty()) return;
+
+    globalsMidiInDevice_ = juce::MidiInput::openDevice(matched.identifier, this);
+    if (globalsMidiInDevice_) {
+        globalsMidiInDevice_->start();
+        globalsMidiDeviceName_ = matched.name;
+        globalsMidiDeviceId_   = matched.identifier;
+        showTicker("Global MIDI: " + matched.name);
+    }
+}
+
+void PluginProcessor::closeGlobalsMidiDevice()
+{
+    if (globalsMidiInDevice_) {
+        globalsMidiInDevice_->stop();
+        globalsMidiInDevice_ = nullptr;
+    }
+    globalsMidiDeviceName_.clear();
+    globalsMidiDeviceId_.clear();
+}
+
+void PluginProcessor::copyPadSettings(int srcPad)
+{
+    if (srcPad < 0 || srcPad >= kNumPads) return;
+    auto& slot = engine_.getSlot(srcPad);
+    padClip_.mode          = slot.getMode();
+    padClip_.volume        = slot.getVolume();
+    padClip_.pan           = slot.getPan();
+    padClip_.pitch         = slot.getPitchSemitones();
+    padClip_.stretch       = slot.getTimeStretch();
+    padClip_.fadeInMs      = slot.getFadeInMs();
+    padClip_.fadeOutMs     = slot.getFadeOutMs();
+    padClip_.fadeInCurve   = slot.getFadeInCurve();
+    padClip_.fadeOutCurve  = slot.getFadeOutCurve();
+    padClip_.choke         = slot.getChokeGroup();
+    padClip_.midiChannel   = slot.getMidiChannel();
+    padClip_.clockBeats    = slot.getClockBeats();
+    padClip_.voiceMode     = slot.getVoiceMode();
+    padClip_.filterType    = slot.getFilterType();
+    padClip_.filterCutoff  = slot.getFilterCutoff();
+    padClip_.filterReso    = slot.getFilterResonance();
+    padClip_.lofiMode      = slot.getLofiMode();
+    padClip_.compSend      = slot.getCompSend();
+    padClip_.compBypass    = slot.getCompBypass();
+    padClip_.pitchMode     = slot.getPitchMode();
+    padClip_.outputChannel = slot.getOutputChannel();
+    padClip_.sendToMix     = slot.getSendToMix();
+    padClip_.reversed      = slot.isReversed();
+    padClip_.ccMap         = padCCMaps_[srcPad];
+    padClipValid_          = true;
+    padClipSourcePad_      = srcPad;
+}
+
+void PluginProcessor::pasteSettingsToAllPads()
+{
+    if (!padClipValid_) return;
+    for (int p = 0; p < kNumPads; ++p) {
+        if (p == padClipSourcePad_) continue;  // skip the source itself
+        auto& slot = engine_.getSlot(p);
+        slot.setMode(padClip_.mode);
+        slot.setVolume(padClip_.volume);
+        slot.setPan(padClip_.pan);
+        slot.setPitchSemitones(padClip_.pitch);
+        slot.setTimeStretch(padClip_.stretch);
+        slot.setFadeInMs(padClip_.fadeInMs);
+        slot.setFadeOutMs(padClip_.fadeOutMs);
+        slot.setFadeInCurve(padClip_.fadeInCurve);
+        slot.setFadeOutCurve(padClip_.fadeOutCurve);
+        slot.setChokeGroup(padClip_.choke);
+        // MIDI channel is INTENTIONALLY NOT pasted — pasting same channel to
+        // all 8 pads would create a chaotic OMNI-like situation. Each pad
+        // keeps its natural channel.
+        slot.setClockBeats(padClip_.clockBeats);
+        slot.setVoiceMode(padClip_.voiceMode);
+        slot.setFilterType(padClip_.filterType);
+        slot.setFilterCutoff(padClip_.filterCutoff);
+        slot.setFilterResonance(padClip_.filterReso);
+        slot.setLofiMode(padClip_.lofiMode);
+        slot.setCompSend(padClip_.compSend);
+        slot.setCompBypass(padClip_.compBypass);
+        slot.setPitchMode(padClip_.pitchMode);
+        slot.setOutputChannel(padClip_.outputChannel);
+        slot.setSendToMix(padClip_.sendToMix);
+        slot.setReversed(padClip_.reversed);
+        // CC map: copy CC numbers but keep per-pad MIDI channel separation
+        padCCMaps_[p] = padClip_.ccMap;
+    }
+    markStateDirty();
 }
 
 void PluginProcessor::rebootPlugin()
@@ -955,6 +1246,55 @@ void PluginProcessor::rebootPlugin()
     }
 
     showTicker("Plugin rebooted");
+}
+
+void PluginProcessor::initPad(int pad)
+{
+    if (pad < 0 || pad >= kNumPads) return;
+    auto& slot = engine_.getSlot(pad);
+    slot.clear();  // removes sample
+    // Reset all parameters to defaults
+    slot.setMode(PadMode::OneShot);
+    slot.setVolume(1.0f);
+    slot.setPan(0.0f);
+    slot.setPitchSemitones(0.0f);
+    slot.setTimeStretch(1.0f);
+    slot.setStartPos(0.0f);
+    slot.setEndPos(1.0f);
+    slot.setFadeInMs(0.0f);
+    slot.setFadeOutMs(0.0f);
+    slot.setFadeInCurve(0);
+    slot.setFadeOutCurve(0);
+    slot.setChokeGroup(ChokeGroup::None);
+    // Default MIDI channel: pad N maps to channel N (1-based). MPC style.
+    // Multi-channel sequencer just works; single-channel source only fires
+    // pad 1. Users can override to OFF, OMNI, or any channel via ContextBrowser.
+    slot.setMidiChannel(pad + 1);
+    slot.setClockBeats(4);
+    slot.setVoiceMode(VoiceMode::Mono);
+    slot.setFilterType(FilterType::Off);
+    slot.setFilterCutoff(20000.0f);
+    slot.setFilterResonance(0.0f);
+    slot.setLofiMode(LofiMode::Off);
+    slot.setCompSend(0.0f);
+    slot.setCompBypass(false);
+    slot.setPitchMode(0);
+    slot.setOutputChannel(-1);
+    slot.setSendToMix(true);
+    slot.setReversed(false);
+    engine_.setMuted(pad, false);
+    markStateDirty();
+}
+
+void PluginProcessor::clearAllPads()
+{
+    for (int i = 0; i < kNumPads; ++i)
+        initPad(i);
+    // Reset global settings too
+    clockDiv_ = 0;
+    compEnabled_ = false;
+    midiClockEnabled_ = false;
+    showTicker("All pads cleared");
 }
 
 void PluginProcessor::commitBarMutes(int barsAhead)
@@ -1048,8 +1388,16 @@ KitData PluginProcessor::captureCurrentState() const
         p.lofiMode = static_cast<int>(slot.getLofiMode());
         p.compSend = slot.getCompSend();
         p.compBypass = slot.getCompBypass();
+        p.pitchMode = slot.getPitchMode();
         p.outputChannel = slot.getOutputChannel();
         p.sendToMix = slot.getSendToMix();
+        // Tape (2.4.9)
+        p.tapeRate       = slot.getTapeRate();
+        p.tapeWow        = slot.getTapeWow();
+        p.tapeFlutter    = slot.getTapeFlutter();
+        p.tapeHFRolloff  = slot.getTapeHFRolloff();
+        p.tapeHeadBump   = slot.getTapeHeadBump();
+        p.tapeSaturation = slot.getTapeSaturation();
         p.sliceMode = slot.isSliceMode();
         p.sliceCount = slot.getSliceCount();
         for (int s = 0; s < p.sliceCount; ++s) {
@@ -1099,8 +1447,16 @@ void PluginProcessor::applyKitData(const KitData& kit)
         slot.setLofiMode(static_cast<LofiMode>(p.lofiMode));
         slot.setCompSend(p.compSend);
         slot.setCompBypass(p.compBypass);
+        slot.setPitchMode(p.pitchMode);
         slot.setOutputChannel(p.outputChannel);
         slot.setSendToMix(p.sendToMix);
+        // Tape (2.4.9)
+        slot.setTapeRate(p.tapeRate);
+        slot.setTapeWow(p.tapeWow);
+        slot.setTapeFlutter(p.tapeFlutter);
+        slot.setTapeHFRolloff(p.tapeHFRolloff);
+        slot.setTapeHeadBump(p.tapeHeadBump);
+        slot.setTapeSaturation(p.tapeSaturation);
         slot.setSliceMode(p.sliceMode);
         slot.clearSlices();
         for (int s = 0; s < p.sliceCount; ++s) slot.addSlicePair(p.sliceStarts[s], p.sliceEnds[s], p.slicePitches[s]);
@@ -1153,8 +1509,11 @@ void PluginProcessor::saveCurrentAsKit(const juce::String& name)
         }
     }
 
-    kit.saveToFile(kitFile);
-    showTicker("Saved: " + name);
+    bool ok = kit.saveToFile(kitFile);
+    if (ok)
+        showTicker("Saved: " + name + ".kit");
+    else
+        showTicker("SAVE FAILED: " + kitFile.getFullPathName());
 }
 
 void PluginProcessor::loadKit(const juce::File& kitFile)
@@ -1231,8 +1590,16 @@ void PluginProcessor::loadKit(const juce::File& kitFile)
         slot.setLofiMode(static_cast<LofiMode>(p.lofiMode));
         slot.setCompSend(p.compSend);
         slot.setCompBypass(p.compBypass);
+        slot.setPitchMode(p.pitchMode);
         slot.setOutputChannel(p.outputChannel);
         slot.setSendToMix(p.sendToMix);
+        // Tape (2.4.9)
+        slot.setTapeRate(p.tapeRate);
+        slot.setTapeWow(p.tapeWow);
+        slot.setTapeFlutter(p.tapeFlutter);
+        slot.setTapeHFRolloff(p.tapeHFRolloff);
+        slot.setTapeHeadBump(p.tapeHeadBump);
+        slot.setTapeSaturation(p.tapeSaturation);
         slot.setSliceMode(p.sliceMode);
         slot.clearSlices();
         for (int s = 0; s < p.sliceCount; ++s) slot.addSlicePair(p.sliceStarts[s], p.sliceEnds[s], p.slicePitches[s]);
@@ -1258,7 +1625,31 @@ void PluginProcessor::createStackFile(const juce::String& name, const juce::Stri
 
 juce::File PluginProcessor::getAutosaveFile() const
 {
-    return juce::File(sampleRootPath_).getChildFile("autosave.gridstate");
+    auto gridDir = juce::File(sampleRootPath_).getChildFile(".grid");
+    if (!gridDir.isDirectory()) gridDir.createDirectory();
+    return gridDir.getChildFile("autosave_" + instanceId_ + ".gridstate");
+}
+
+void PluginProcessor::cleanupOldAutosaves()
+{
+    auto gridDir = juce::File(sampleRootPath_).getChildFile(".grid");
+    if (!gridDir.isDirectory()) return;
+    auto files = gridDir.findChildFiles(juce::File::findFiles, false, "autosave_*.gridstate");
+    auto now = juce::Time::getCurrentTime();
+    for (auto& f : files) {
+        // Delete autosave files older than 24 hours (except current instance)
+        if (!f.getFileName().contains(instanceId_)) {
+            auto age = now - f.getLastModificationTime();
+            if (age.inHours() > 24)
+                f.deleteFile();
+        }
+    }
+    // Also delete legacy autosave.gridstate if it exists
+    auto legacy = gridDir.getChildFile("autosave.gridstate");
+    if (legacy.existsAsFile()) legacy.deleteFile();
+    // And old root-level autosave
+    auto rootLegacy = juce::File(sampleRootPath_).getChildFile("autosave.gridstate");
+    if (rootLegacy.existsAsFile()) rootLegacy.deleteFile();
 }
 
 void PluginProcessor::performAutosave()
@@ -1268,6 +1659,7 @@ void PluginProcessor::performAutosave()
     auto file = getAutosaveFile();
     if (auto stream = file.createOutputStream()) {
         stream->write(state.getData(), state.getSize());
+        lastAutosaveTimeMs_ = juce::Time::getMillisecondCounterHiRes();
         stream->flush();
     }
 }
@@ -1275,11 +1667,88 @@ void PluginProcessor::performAutosave()
 void PluginProcessor::loadAutosave()
 {
     auto file = getAutosaveFile();
-    if (!file.existsAsFile()) return;
-    juce::MemoryBlock state;
-    if (file.loadFileAsData(state) && state.getSize() > 0) {
-        setStateInformation(state.getData(), (int)state.getSize());
+    if (file.existsAsFile()) {
+        juce::MemoryBlock state;
+        if (file.loadFileAsData(state) && state.getSize() > 0) {
+            setStateInformation(state.getData(), (int)state.getSize());
+            return;
+        }
     }
+
+    // No file for our UUID — scan for unclaimed autosave files
+    auto gridDir = juce::File(sampleRootPath_).getChildFile(".grid");
+
+    // Try legacy root-level autosave first
+    auto rootLegacy = juce::File(sampleRootPath_).getChildFile("autosave.gridstate");
+    if (rootLegacy.existsAsFile()) {
+        juce::MemoryBlock state;
+        if (rootLegacy.loadFileAsData(state) && state.getSize() > 0) {
+            setStateInformation(state.getData(), (int)state.getSize());
+            performAutosave();  // re-save under new instance ID
+            rootLegacy.deleteFile();
+            return;
+        }
+    }
+
+    if (!gridDir.isDirectory()) return;
+
+    // Find newest autosave file
+    auto files = gridDir.findChildFiles(juce::File::findFiles, false, "autosave_*.gridstate");
+    if (files.isEmpty()) return;
+
+    juce::File newest;
+    juce::Time newestTime;
+    for (auto& f : files) {
+        auto mod = f.getLastModificationTime();
+        if (mod > newestTime) { newestTime = mod; newest = f; }
+    }
+    if (newest.existsAsFile()) {
+        juce::MemoryBlock state;
+        if (newest.loadFileAsData(state) && state.getSize() > 0) {
+            setStateInformation(state.getData(), (int)state.getSize());
+            // instanceId_ restored from XML by setStateInformation
+            // Delete old file and re-save under (possibly new) instance ID
+            if (newest != getAutosaveFile())
+                newest.deleteFile();
+            performAutosave();
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Global Preferences — shared across all GRID instances
+// ═══════════════════════════════════════════════════════════════════════════
+
+void PluginProcessor::saveGlobalPrefs()
+{
+    auto gridDir = juce::File(sampleRootPath_).getChildFile(".grid");
+    if (!gridDir.isDirectory()) gridDir.createDirectory();
+    auto file = gridDir.getChildFile("prefs.xml");
+
+    auto xml = std::make_unique<juce::XmlElement>("GridPrefs");
+    xml->setAttribute("encoderSpeed", (double)encoderSpeed_);
+    xml->setAttribute("browserFont", (double)browserFontSize_);
+    xml->setAttribute("debugMsgs", debugMsgs_ ? 1 : 0);
+    xml->setAttribute("autosave", autosaveEnabled_ ? 1 : 0);
+    xml->setAttribute("rollDiv", rollStartDiv_);
+    xml->setAttribute("crashLog", crashLogEnabled_ ? 1 : 0);
+    xml->writeTo(file);
+}
+
+void PluginProcessor::loadGlobalPrefs()
+{
+    auto file = juce::File(sampleRootPath_).getChildFile(".grid").getChildFile("prefs.xml");
+    if (!file.existsAsFile()) return;
+
+    auto xml = juce::XmlDocument::parse(file);
+    if (!xml || !xml->hasTagName("GridPrefs")) return;
+
+    encoderSpeed_ = juce::jlimit(1.0f, 3.0f, (float)xml->getDoubleAttribute("encoderSpeed", 1.0));
+    browserFontSize_ = juce::jlimit(-3.0f, 5.0f, (float)xml->getDoubleAttribute("browserFont", 0.0));
+    debugMsgs_ = xml->getIntAttribute("debugMsgs", 0) != 0;
+    autosaveEnabled_ = xml->getIntAttribute("autosave", 1) != 0;
+    rollStartDiv_ = juce::jlimit(0, 4, xml->getIntAttribute("rollDiv", 3));
+    crashLogEnabled_ = xml->getIntAttribute("crashLog", 0) != 0;
 }
 
 void PluginProcessor::setRecallPoint()
@@ -1377,16 +1846,36 @@ void PluginProcessor::handleIncomingMidiMessage(juce::MidiInput* source, const j
 
 void PluginProcessor::getStateInformation(juce::MemoryBlock& destData)
 {
+    const juce::ScopedLock sl(stateLock_);  // prevent host + autosave racing
+
+    auto logDir = juce::File(sampleRootPath_).getParentDirectory().getChildFile("Grid Logs");
+    if (!logDir.isDirectory()) logDir.createDirectory();
+    auto logFile = logDir.getChildFile("crash.log");
+    bool doLog = crashLogEnabled_;
+    if (doLog) logFile.appendText("gsi: enter\n");
+
     auto xml = std::make_unique<juce::XmlElement>("GRID_STATE");
     xml->setAttribute("version", 1);
+    xml->setAttribute("instanceId", instanceId_);
 
     for (int i = 0; i < kNumPads; ++i)
     {
+        if (doLog) logFile.appendText("gsi: pad " + juce::String(i) + " start\n");
         auto& slot = engine_.getSlot(i);
         auto* pad = xml->createNewChildElement("PAD");
         pad->setAttribute("index", i);
 
-        // Store relative path from sample root
+        // CRITICAL: if the slot is mid-load, its non-atomic members (filePath_,
+        // fileName_, etc.) are being written on another thread. Reading them here
+        // is undefined behavior (use-after-free on juce::String internals).
+        // Write an empty pad entry and move on — next save will capture it.
+        if (slot.isLoading()) {
+            pad->setAttribute("file", "");
+            if (doLog) logFile.appendText("gsi: pad " + juce::String(i) + " loading, skip\n");
+            continue;
+        }
+
+        // Store relative path from sample root — safe copy by value
         juce::String path = slot.getFilePath();
         if (path.isNotEmpty() && path.startsWith(sampleRootPath_))
             path = path.substring(sampleRootPath_.length() + 1);  // strip root + separator
@@ -1416,6 +1905,11 @@ void PluginProcessor::getStateInformation(juce::MemoryBlock& destData)
         pad->setAttribute("ccPan",     ccMap.ccPan);
         pad->setAttribute("ccStretch", ccMap.ccStretch);
         pad->setAttribute("ccFilter", ccMap.ccFilter);
+        // Per-slice CC (only write non-OFF entries to keep XML compact)
+        for (int s = 0; s < SampleSlot::kMaxSlices; ++s) {
+            int cc = slot.getSliceCC(s);
+            if (cc >= 0) pad->setAttribute("sliceCC" + juce::String(s), cc);
+        }
         pad->setAttribute("clockBeats", slot.getClockBeats());
         pad->setAttribute("voiceMode", static_cast<int>(slot.getVoiceMode()));
         pad->setAttribute("filterType", static_cast<int>(slot.getFilterType()));
@@ -1424,10 +1918,18 @@ void PluginProcessor::getStateInformation(juce::MemoryBlock& destData)
         pad->setAttribute("lofiMode", static_cast<int>(slot.getLofiMode()));
         pad->setAttribute("compSend", slot.getCompSend());
         pad->setAttribute("compBypass", slot.getCompBypass() ? 1 : 0);
+        pad->setAttribute("pitchMode", slot.getPitchMode());
         pad->setAttribute("outputChannel", slot.getOutputChannel());
         pad->setAttribute("sendToMix", slot.getSendToMix() ? 1 : 0);
+        // Tape settings (2.4.9 — were being lost on preset reload)
+        pad->setAttribute("tapeRate",       (double)slot.getTapeRate());
+        pad->setAttribute("tapeWow",        (double)slot.getTapeWow());
+        pad->setAttribute("tapeFlutter",    (double)slot.getTapeFlutter());
+        pad->setAttribute("tapeHFRolloff",  (double)slot.getTapeHFRolloff());
+        pad->setAttribute("tapeHeadBump",   (double)slot.getTapeHeadBump());
+        pad->setAttribute("tapeSaturation", (double)slot.getTapeSaturation());
         pad->setAttribute("sliceMode", slot.isSliceMode() ? 1 : 0);
-        const int sc = slot.getSliceCount();  // snapshot once — avoid race with audio thread
+        const int sc = juce::jlimit(0, 128, slot.getSliceCount());  // snapshot + bounds-check
         if (sc > 0) {
             juce::String starts, ends, pitches;
             for (int s = 0; s < sc; ++s) {
@@ -1468,10 +1970,19 @@ void PluginProcessor::getStateInformation(juce::MemoryBlock& destData)
                 pad->setAttribute(pkey, pval);
             }
         }
+        if (doLog) logFile.appendText("gsi: pad " + juce::String(i) + " done\n");
     }
 
     // Global MIDI settings
-    xml->setAttribute("midiDevice", midiDeviceName_);
+    if (doLog) logFile.appendText("gsi: globals\n");
+    // Identifier is canonical (matches by ID on reload — robust against
+    // name duplication). Name kept around as a fallback for legacy patches
+    // and for display when the device is disconnected.
+    xml->setAttribute("midiDeviceId",   midiDeviceId_);
+    xml->setAttribute("midiDevice",     midiDeviceName_);
+    xml->setAttribute("globalsMidiDeviceId", globalsMidiDeviceId_);
+    xml->setAttribute("globalsMidiDevice",   globalsMidiDeviceName_);
+    xml->setAttribute("padMuteCCBase", padMuteCCBase_);
     xml->setAttribute("midiClock", midiClockEnabled_ ? 1 : 0);
     xml->setAttribute("clockDiv", clockDiv_);
 
@@ -1509,29 +2020,75 @@ void PluginProcessor::getStateInformation(juce::MemoryBlock& destData)
     {
         const juce::ScopedLock sl(sliceCacheLock_);
         for (auto& pair : sliceCache_) {
-        auto* cacheEl = xml->createNewChildElement("SLICE_CACHE");
-        cacheEl->setAttribute("file", pair.first);
-        cacheEl->setAttribute("count", pair.second.count);
-        juce::String starts, ends, pitches;
-        for (int i = 0; i < pair.second.count; ++i) {
-            if (i > 0) { starts += ","; ends += ","; pitches += ","; }
-            starts += juce::String(pair.second.starts[i], 6);
-            ends += juce::String(pair.second.ends[i], 6);
-            pitches += juce::String(pair.second.pitches[i], 2);
-        }
-        cacheEl->setAttribute("starts", starts);
-        cacheEl->setAttribute("ends", ends);
-        cacheEl->setAttribute("pitches", pitches);
+            auto* cacheEl = xml->createNewChildElement("SLICE_CACHE");
+            cacheEl->setAttribute("file", pair.first);
+            int count = juce::jlimit(0, 128, pair.second.count);  // bounds-check
+            cacheEl->setAttribute("count", count);
+            juce::String starts, ends, pitches;
+            for (int i = 0; i < count; ++i) {
+                if (i > 0) { starts += ","; ends += ","; pitches += ","; }
+                starts += juce::String(pair.second.starts[i], 6);
+                ends += juce::String(pair.second.ends[i], 6);
+                pitches += juce::String(pair.second.pitches[i], 2);
+            }
+            cacheEl->setAttribute("starts", starts);
+            cacheEl->setAttribute("ends", ends);
+            cacheEl->setAttribute("pitches", pitches);
         }
     }  // end sliceCacheLock_
 
+    if (doLog) logFile.appendText("gsi: slice cache done, calling copyXmlToBinary\n");
     copyXmlToBinary(*xml, destData);
+    if (doLog) logFile.appendText("gsi: done, " + juce::String((int)destData.getSize()) + " bytes\n");
 }
 
 void PluginProcessor::setStateInformation(const void* data, int sizeInBytes)
 {
+    const juce::ScopedLock sl(stateLock_);  // prevent host + autosave racing
+
     auto xml = getXmlFromBinary(data, sizeInBytes);
     if (!xml || xml->getTagName() != "GRID_STATE") return;
+
+    stateLoadedFromHost_ = true;
+
+    // ── CRITICAL: Reset ALL pads to defaults BEFORE loading ────────────
+    // Without this, old autosave data persists in pads not covered by the preset
+    for (int i = 0; i < kNumPads; ++i) {
+        auto& slot = engine_.getSlot(i);
+        slot.clear();
+        slot.setMode(PadMode::OneShot);
+        slot.setVolume(1.0f);
+        slot.setPan(0.0f);
+        slot.setPitchSemitones(0.0f);
+        slot.setTimeStretch(1.0f);
+        slot.setStartPos(0.0f);
+        slot.setEndPos(1.0f);
+        slot.setFadeInMs(0.0f);
+        slot.setFadeOutMs(0.0f);
+        slot.setFadeInCurve(0);
+        slot.setFadeOutCurve(0);
+        slot.setChokeGroup(ChokeGroup::None);
+        slot.setMidiChannel(i + 1);  // 1:1 pad-to-channel default (MPC style)
+        slot.setClockBeats(4);
+        slot.setVoiceMode(VoiceMode::Mono);
+        slot.setFilterType(FilterType::Off);
+        slot.setFilterCutoff(20000.0f);
+        slot.setFilterResonance(0.0f);
+        slot.setLofiMode(LofiMode::Off);
+        slot.setCompSend(0.0f);
+        slot.setCompBypass(false);
+        slot.setPitchMode(0);
+        slot.setOutputChannel(-1);
+        slot.setSendToMix(true);
+        slot.setReversed(false);
+        engine_.setMuted(i, false);
+    }
+
+    // Adopt saved instance ID (for per-instance autosave)
+    auto savedId = xml->getStringAttribute("instanceId");
+    if (savedId.isNotEmpty())
+        instanceId_ = savedId;
+    cleanupOldAutosaves();
 
     for (int p = 0; p < xml->getNumChildElements(); ++p)
     {
@@ -1567,17 +2124,28 @@ void PluginProcessor::setStateInformation(const void* data, int sizeInBytes)
         slot.setFadeOutCurve(pad->getIntAttribute("fadeOutCurve", 0));
         engine_.setMuted(i, pad->getIntAttribute("muted", 0) != 0);
         slot.setChokeGroup(static_cast<ChokeGroup>(pad->getIntAttribute("choke", 0)));
-        if (pad->getIntAttribute("reversed", 0)) slot.setReversed(true);
-        slot.setMidiChannel(pad->getIntAttribute("midiChannel", 0));
+        slot.setReversed(pad->getIntAttribute("reversed", 0) != 0);
+        // Default missing midiChannel attribute to pad's natural channel
+        // (Pad N → Ch N) so patches saved before per-pad channel defaults
+        // existed come back online instead of being stuck at OFF.
+        slot.setMidiChannel(pad->getIntAttribute("midiChannel", i + 1));
 
-        // Per-pad CC map (defaults if not present = backwards compatible)
+        // Per-pad CC map. Missing-attribute defaults updated to the new
+        // safe values (off CC1/mod wheel). Old patches with explicit ccStart=1
+        // keep their value — only patches missing the attribute get the new
+        // default.
         auto& ccMap = padCCMaps_[i];
-        ccMap.ccStart   = pad->getIntAttribute("ccStart",   1);
-        ccMap.ccEnd     = pad->getIntAttribute("ccEnd",     2);
+        ccMap.ccStart   = pad->getIntAttribute("ccStart",   16);
+        ccMap.ccEnd     = pad->getIntAttribute("ccEnd",     17);
         ccMap.ccVolume  = pad->getIntAttribute("ccVolume",  7);
         ccMap.ccPan     = pad->getIntAttribute("ccPan",     10);
-        ccMap.ccStretch = pad->getIntAttribute("ccStretch", 11);
+        ccMap.ccStretch = pad->getIntAttribute("ccStretch", 18);
         ccMap.ccFilter  = pad->getIntAttribute("ccFilter", 74);
+        // Per-slice CC array (sliceCC0..sliceCCN). Missing = OFF (-1).
+        for (int s = 0; s < SampleSlot::kMaxSlices; ++s) {
+            int cc = pad->getIntAttribute("sliceCC" + juce::String(s), -1);
+            slot.setSliceCC(s, cc);
+        }
         slot.setClockBeats(pad->getIntAttribute("clockBeats", 4));
         slot.setVoiceMode(static_cast<VoiceMode>(pad->getIntAttribute("voiceMode", 0)));
         slot.setFilterType(static_cast<FilterType>(pad->getIntAttribute("filterType", 0)));
@@ -1586,8 +2154,17 @@ void PluginProcessor::setStateInformation(const void* data, int sizeInBytes)
         slot.setLofiMode(static_cast<LofiMode>(pad->getIntAttribute("lofiMode", 0)));
         slot.setCompSend((float)pad->getDoubleAttribute("compSend", 0.0));
         slot.setCompBypass(pad->getIntAttribute("compBypass", 0) != 0);
+        slot.setPitchMode(pad->getIntAttribute("pitchMode", 0));
         slot.setOutputChannel(pad->getIntAttribute("outputChannel", -1));
         slot.setSendToMix(pad->getIntAttribute("sendToMix", 1) != 0);
+        // Tape settings (2.4.9) — default rate = 1.0, rest = 0.0 so old
+        // patches without these attributes come back neutral.
+        slot.setTapeRate      ((float)pad->getDoubleAttribute("tapeRate",       1.0));
+        slot.setTapeWow       ((float)pad->getDoubleAttribute("tapeWow",        0.0));
+        slot.setTapeFlutter   ((float)pad->getDoubleAttribute("tapeFlutter",    0.0));
+        slot.setTapeHFRolloff ((float)pad->getDoubleAttribute("tapeHFRolloff",  0.0));
+        slot.setTapeHeadBump  ((float)pad->getDoubleAttribute("tapeHeadBump",   0.0));
+        slot.setTapeSaturation((float)pad->getDoubleAttribute("tapeSaturation", 0.0));
         slot.setSliceMode(pad->getIntAttribute("sliceMode", 0) != 0);
         slot.clearSlices();
         auto startsStr = pad->getStringAttribute("sliceStarts", "");
@@ -1645,8 +2222,19 @@ void PluginProcessor::setStateInformation(const void* data, int sizeInBytes)
     }
 
     // Global MIDI settings
-    juce::String midiDev = xml->getStringAttribute("midiDevice");
-    if (midiDev.isNotEmpty()) setMidiDevice(midiDev);
+    // Load MIDI devices: try identifier first (canonical), fall back to
+    // legacy name-only save format for patches saved before v2.4.8.
+    juce::String midiDevId   = xml->getStringAttribute("midiDeviceId");
+    juce::String midiDevName = xml->getStringAttribute("midiDevice");
+    if (midiDevId.isNotEmpty())        setMidiDevice(midiDevId);
+    else if (midiDevName.isNotEmpty()) setMidiDevice(midiDevName);
+
+    juce::String globalsDevId   = xml->getStringAttribute("globalsMidiDeviceId");
+    juce::String globalsDevName = xml->getStringAttribute("globalsMidiDevice");
+    if (globalsDevId.isNotEmpty())        setGlobalsMidiDevice(globalsDevId);
+    else if (globalsDevName.isNotEmpty()) setGlobalsMidiDevice(globalsDevName);
+
+    padMuteCCBase_ = juce::jlimit(-1, 120, xml->getIntAttribute("padMuteCCBase", 24));
     midiClockEnabled_ = xml->getIntAttribute("midiClock", 0) != 0;
 
     // Migrate old clockDiv values (1,2,4,8) → new format (-3 to 3)
@@ -1676,7 +2264,8 @@ void PluginProcessor::setStateInformation(const void* data, int sizeInBytes)
     progChangeEnabled_ = xml->getIntAttribute("progChangeEnabled", 0) != 0;
     progChangeCC_ = juce::jlimit(0, 127, xml->getIntAttribute("progChangeCC", 0));
     midiTransportEnabled_ = xml->getIntAttribute("midiTransportEnabled", 1) != 0;
-    browserFontSize_ = juce::jlimit(-3.0f, 3.0f, (float)xml->getDoubleAttribute("browserFontAdj", 0.0));
+    // browserFontSize_ intentionally NOT loaded from per-preset state — global pref only
+    // (kept in save for backward compatibility)
     sliceCVPad_[0] = juce::jlimit(-1, 7, xml->getIntAttribute("sliceCVPad1", 0));
     sliceCVPad_[1] = juce::jlimit(-1, 7, xml->getIntAttribute("sliceCVPad2", 1));
     compEnabled_ = xml->getIntAttribute("compEnabled", 0) != 0;
@@ -1694,7 +2283,7 @@ void PluginProcessor::setStateInformation(const void* data, int sizeInBytes)
     compShowGR_ = xml->getIntAttribute("compShowGR", 0) != 0;
     compMix_ = (float)xml->getDoubleAttribute("compMix", 1.0);
     outputHpfHz_ = xml->getIntAttribute("outputHpfHz", 0);
-    autosaveEnabled_ = xml->getIntAttribute("autosaveEnabled", 1) != 0;
+    // autosaveEnabled_ intentionally NOT loaded from per-preset state — global pref only
 
     // Load slice cache
     {
@@ -1777,6 +2366,73 @@ int PluginProcessor::exportSlicesToFiles(int pad)
     return exported;
 }
 
+int PluginProcessor::importPadsAsSliceChain(int targetPad)
+{
+    // Concatenate audio from all currently-loaded pads into one buffer,
+    // load it into targetPad, and create slice points at each pad boundary.
+    // Inverse of exportSlicesToFiles — Octatrack-style sample chain.
+    targetPad = juce::jlimit(0, kNumPads - 1, targetPad);
+
+    // Gather source pads (in pad-order), excluding the target.
+    struct Src { int pad; int frames; int nch; double sr; };
+    std::vector<Src> srcs;
+    int totalFrames = 0;
+    int maxChannels = 1;
+    double useSampleRate = 0.0;
+
+    for (int p = 0; p < kNumPads; ++p) {
+        if (p == targetPad) continue;
+        auto& s = engine_.getSlot(p);
+        if (!s.isLoaded() || s.getNumSamples() <= 0) continue;
+        int frames = s.getNumSamples();
+        int nch = s.getBuffer().getNumChannels();
+        double sr = s.getSampleRate();
+        if (useSampleRate == 0.0) useSampleRate = sr;
+        srcs.push_back({ p, frames, nch, sr });
+        totalFrames += frames;
+        if (nch > maxChannels) maxChannels = nch;
+    }
+
+    if (srcs.empty() || totalFrames <= 0) return 0;
+
+    // Allocate the combined buffer (always stereo for output simplicity).
+    juce::AudioBuffer<float> combined(maxChannels, totalFrames);
+    combined.clear();
+
+    // Copy each pad's audio in sequence. If a source pad's sample rate
+    // differs from useSampleRate, we copy 1:1 (no resampling) — the rate
+    // mismatch is documented; consistent SR among pads is the common case.
+    int writeOffset = 0;
+    juce::Array<float> sliceBoundaries;   // normalized 0..1 boundaries
+    sliceBoundaries.add(0.0f);
+
+    for (auto& src : srcs) {
+        auto& s = engine_.getSlot(src.pad);
+        const auto& srcBuf = s.getBuffer();
+        for (int ch = 0; ch < maxChannels; ++ch) {
+            int srcCh = std::min(ch, src.nch - 1);
+            combined.copyFrom(ch, writeOffset, srcBuf, srcCh, 0, src.frames);
+        }
+        writeOffset += src.frames;
+        sliceBoundaries.add((float)writeOffset / (float)totalFrames);
+    }
+
+    // Load combined buffer into target pad
+    auto& dst = engine_.getSlot(targetPad);
+    juce::String chainName = "chain_" + juce::String((int)juce::Time::currentTimeMillis() % 100000);
+    dst.loadFromBuffer(combined, totalFrames, useSampleRate, chainName, juce::String());
+
+    // Create slice pairs: one slice per source pad
+    dst.clearSlices();
+    for (int i = 0; i < (int)srcs.size(); ++i) {
+        float s = sliceBoundaries[i];
+        float e = sliceBoundaries[i + 1];
+        dst.addSlicePair(s, e);
+    }
+
+    return (int)srcs.size();
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Per-sample slice persistence — cache slices keyed by filename
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1784,8 +2440,12 @@ int PluginProcessor::exportSlicesToFiles(int pad)
 void PluginProcessor::cacheSlicesForPad(int pad)
 {
     auto& slot = engine_.getSlot(juce::jlimit(0, kNumPads - 1, pad));
-    if (!slot.isLoaded() || slot.getSliceCount() == 0) return;
+    if (!slot.isLoaded()) return;
 
+    // Always update the cache for this file's path, even when slot has 0
+    // slices. Previously this early-returned on 0 slices, leaving stale
+    // entries from prior sessions or earlier in this session — so audition
+    // or restoreCachedSlices could resurrect cleared slices later.
     SliceCache cache;
     cache.count = slot.getSliceCount();
     for (int i = 0; i < cache.count; ++i) {
@@ -1794,7 +2454,14 @@ void PluginProcessor::cacheSlicesForPad(int pad)
         cache.pitches[i] = slot.getSlicePitch(i);
     }
     const juce::ScopedLock sl(sliceCacheLock_);
-    sliceCache_[slot.getFilePath()] = cache;
+    if (cache.count == 0) {
+        // Explicitly remove the entry so restoreCachedSlices won't resurrect
+        // anything. (Storing an empty entry would also work, but removing is
+        // cleaner — the map stays tidy.)
+        sliceCache_.erase(slot.getFilePath());
+    } else {
+        sliceCache_[slot.getFilePath()] = cache;
+    }
 }
 
 bool PluginProcessor::restoreCachedSlices(int pad)

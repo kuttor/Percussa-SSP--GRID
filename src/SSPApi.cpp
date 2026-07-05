@@ -1,6 +1,9 @@
 // SSPApi.cpp — Bridge between SSP host (SYNTHOR) and GRID plugin.
 
 #include <Percussa.h>
+#include <cstdlib>
+#include <atomic>
+#include <cstring>
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
 
@@ -29,7 +32,7 @@ public:
 
     void frameStart() override {
         PluginEditorInterface::frameStart();
-        editor_->timerCallback();
+        if (editor_) editor_->timerCallback();
     }
 
     void visibilityChanged(bool b) override {
@@ -37,6 +40,7 @@ public:
     }
 
     void renderToImage(unsigned char *buffer, int width, int height) override {
+        if (!editor_) return;
         juce::Image img = juce::ImageCache::getFromHashCode(SSP_IMAGECACHE_HASHCODE);
         if (!img.isValid()) {
             juce::Image newimg(juce::Image::ARGB, width, height, true);
@@ -92,6 +96,8 @@ public:
         : processor_(p) {}
 
     ~SSP_PluginInterface() override {
+        // Signal audio thread to stop before tearing down
+        destroying_.store(true, std::memory_order_release);
         if (editor_) delete editor_;
         if (processor_) delete processor_;
     }
@@ -121,23 +127,52 @@ public:
     }
 
     void getState(void **buffer, size_t *size) override {
-        juce::MemoryBlock state;
-        processor_->getStateInformation(state);
-        *size = state.getSize();
-        *buffer = new char[*size];
-        state.copyTo(*buffer, 0, *size);
+        if (!buffer || !size || !processor_) {
+            if (size) *size = 0;
+            if (buffer) *buffer = nullptr;
+            return;
+        }
+        try {
+            juce::MemoryBlock state;
+            processor_->getStateInformation(state);
+            *size = state.getSize();
+            if (*size > 0) {
+                // Use malloc — safer than new char[] for C-style host API
+                *buffer = std::malloc(*size);
+                if (*buffer) {
+                    state.copyTo(*buffer, 0, *size);
+                } else {
+                    *size = 0;
+                }
+            } else {
+                *buffer = nullptr;
+            }
+        } catch (...) {
+            *size = 0;
+            *buffer = nullptr;
+        }
     }
+
     void setState(void *buffer, size_t size) override {
-        processor_->setStateInformation(buffer, static_cast<int>(size));
+        if (!buffer || size == 0 || !processor_) return;
+        try {
+            processor_->setStateInformation(buffer, static_cast<int>(size));
+        } catch (...) {}
     }
 
     void prepare(double sampleRate, int samplesPerBlock) override {
-        // Bear's pattern: setRateAndBufferSizeDetails, NOT setPlayConfigDetails
         processor_->setRateAndBufferSizeDetails(sampleRate, samplesPerBlock);
         processor_->prepareToPlay(sampleRate, samplesPerBlock);
     }
 
     void process(float **channelData, int numChannels, int numSamples) override {
+        // Guard against calls during destruction
+        if (destroying_.load(std::memory_order_acquire)) {
+            for (int ch = 0; ch < numChannels; ++ch)
+                if (channelData[ch])
+                    std::memset(channelData[ch], 0, sizeof(float) * numSamples);
+            return;
+        }
         juce::MidiBuffer midiBuffer;
         juce::AudioSampleBuffer buffer(channelData, numChannels, numSamples);
         processor_->processBlock(buffer, midiBuffer);
@@ -146,6 +181,7 @@ public:
 private:
     SSP_PluginEditorInterface *editor_ = nullptr;
     PluginProcessor *processor_ = nullptr;
+    std::atomic<bool> destroying_ { false };
 };
 
 // ─── Exported C Functions ────────────────────────────────────────────────
@@ -159,14 +195,13 @@ Percussa::SSP::PluginDescriptor *createDescriptor() {
     desc->version = JucePlugin_VersionString;
     desc->uid = static_cast<int>(JucePlugin_VSTUniqueID);
 
-    // Bear's pattern: read bus names from BusesProperties
     auto busProps = PluginProcessor::getDefaultBusesProperties();
     for (auto& layout : busProps.inputLayouts)
         desc->inputChannelNames.push_back(layout.busName.toStdString());
     for (auto& layout : busProps.outputLayouts)
         desc->outputChannelNames.push_back(layout.busName.toStdString());
 
-    desc->colour = 0xFFE53935;  // ELAS red
+    desc->colour = 0xFFE53935;
 
     return desc;
 }
@@ -182,8 +217,6 @@ void getApiVersion(unsigned &major, unsigned &minor) {
     minor = Percussa::SSP::API_MINOR_VERSION;
 }
 
-// JUCE VST3 wrapper needs this — placed here because this file's symbols
-// are guaranteed to link into the VST3 target
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()
 {
     return new grid::PluginProcessor();

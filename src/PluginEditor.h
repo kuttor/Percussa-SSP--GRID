@@ -2,22 +2,23 @@
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <juce_audio_processors/juce_audio_processors.h>
 #include "PluginProcessor.h"
+#include "BubblePopup.h"
 #include <functional>
 #include <vector>
 
 namespace grid {
 
-class PluginEditor : public juce::AudioProcessorEditor,
-                     public juce::Timer {
+class PluginEditor : public juce::AudioProcessorEditor {
+
 public:
     explicit PluginEditor(PluginProcessor& p);
     ~PluginEditor() override;
 
-    static constexpr const char* kFirmwareVersion = "2.4.3-beta";
+    static constexpr const char* kFirmwareVersion = "2.4.10-beta";
 
     void paint(juce::Graphics&) override;
     void resized() override;
-    void timerCallback() override;
+    void timerCallback();
 
     // SSP hardware callbacks
     void onButton(int n, bool val);
@@ -58,7 +59,7 @@ private:
     void paintPlayPage(juce::Graphics& g, juce::Rectangle<int> area);
     void paintPitchPage(juce::Graphics& g, juce::Rectangle<int> area);
     void paintPadBox(juce::Graphics& g, juce::Rectangle<int> box, int padIndex);
-    void paintMiniWaveform(juce::Graphics& g, juce::Rectangle<int> area, const SampleSlot& slot);
+    void paintMiniWaveform(juce::Graphics& g, juce::Rectangle<int> area, const SampleSlot& slot, int padIndex = -1);
     void paintWaveformDetail(juce::Graphics& g, juce::Rectangle<int> area, const SampleSlot& slot);
 
     // ── File Browser ─────────────────────────────────────────────────────
@@ -87,11 +88,49 @@ private:
     void browseGoHome();
     void paintFileBrowser(juce::Graphics& g, juce::Rectangle<int> area);
 
+    // ── Encoder bounce filter ────────────────────────────────────────────
+    // SSP rotary encoders sometimes emit a spurious reversal pulse during
+    // fast spins (quadrature decode jitter). This filter drops a reversal
+    // that arrives within `kEncBounceWindowMs` while a fast same-direction
+    // spin is in progress. Conservative: only filters when we're confident
+    // (3+ same-direction deltas in a row) so genuine intentional reversals
+    // pass through.
+    struct EncoderFilter {
+        int    recentDir    = 0;    // -1, 0, +1
+        int    dirRunLength = 0;    // consecutive same-direction count
+        double lastMs       = 0.0;
+    };
+    EncoderFilter encFilter_[4];
+    static constexpr int    kEncMinRunForFilter = 3;
+    static constexpr double kEncBounceWindowMs  = 50.0;
+    bool acceptEncoderDelta(int n, float delta);
+
+    // Smart Home collapse state — set of section labels (e.g. "KITS")
+    // that are currently collapsed. Persists for the session, not across
+    // plugin restarts (intentional — fresh start, all sections visible).
+    juce::StringArray smartHomeCollapsed_;
+
+    // In Smart Home, headers ARE selectable (push toggles collapse). In
+    // regular folder browse there are no headers anyway. So this is really
+    // "outside Smart Home, don't land on a stray header marker."
+    bool shouldSkipHeadersInNav() const {
+        return browseCurrentDir_.isDirectory();
+    }
+
+    juce::String browseSectionForIndex(int idx) const;
+    bool         browseIsItemNavigable(int idx) const;
+    void         browseAdvanceCursor(int step);
+
     // Browser UX v2: hold detection + file ops + auto-preview
     double encPushTime_[4] = {};       // timestamp of encoder push-down
     bool   encPushHandled_[4] = {};    // true if long-press already consumed
     bool   browseAutoPreview_ = false; // play sample on scroll
     int    browseFileOp_ = 0;          // 0=none, 1=Move, 2=Copy, 3=Delete, 4=Multi
+    bool   fileOpActive_ = false;      // true after enc3 push activates the operation
+
+    // Pad copy flash animation
+    double padCopyFlashTime_[8] = {};  // wall-clock ms when pad was copied to
+    static constexpr double kPadCopyFlashMs = 600.0;
     static constexpr double kHoldMs = 800.0;
     static const char* browseFileOpName(int op) {
         static const char* names[] = { "---", "MOVE", "COPY", "DELETE", "MULTI" };
@@ -111,6 +150,21 @@ private:
     int configIndex_ = 0;       // index into configRows_ (selectable only)
     int configScrollOffset_ = 0;
     bool configEditMode_ = false;  // true = turning encoder changes value
+    bool configEverOpened_ = false;
+    static constexpr int kMaxConfigSections = 12;
+    bool configCollapsed_[kMaxConfigSections] = {};  // collapsed state per SubHeader index
+    bool configCollapseInited_ = false;
+    float encHoldProgress_[4] = {};  // 0-1 progress for encoder hold animations
+    double encLastTurnMs_[4] = {};  // timestamp of last encoder turn per slot
+    static constexpr double kEncActiveMs = 800.0;  // how long value stays enlarged after turning
+
+    // Arrow hold-repeat
+    bool leftArrowHeld_ = false;
+    bool rightArrowHeld_ = false;
+    double arrowHoldStartMs_ = 0.0;
+    double arrowLastRepeatMs_ = 0.0;
+    static constexpr double kArrowRepeatDelayMs = 400.0;
+    static constexpr double kArrowRepeatRateMs = 120.0;
     bool leftShiftHeld_ = false;
     bool rightShiftHeld_ = false;
     double leftShiftPressTime_ = 0.0;
@@ -118,6 +172,8 @@ private:
 
     void enterConfigMode();
     void exitConfigMode();
+    void exitConfigForOverlay();  // saves position, exits config, sets return flag
+    void returnToConfig();        // re-enters config at saved position if pending
     void buildConfigRows();
     void paintConfigBrowser(juce::Graphics& g, juce::Rectangle<int> area);
     int configSelectableCount() const;
@@ -138,6 +194,8 @@ private:
     void closePopup(int result = -1);
     void paintPopup(juce::Graphics& g, juce::Rectangle<int> area);
     void paintKitPicker(juce::Graphics& g, juce::Rectangle<int> area);
+    void paintCheatSheet(juce::Graphics& g, juce::Rectangle<int> area);
+    void paintAbout(juce::Graphics& g, juce::Rectangle<int> area);
 
     // ── Multi-select in file browser ──────────────────────────────────
     bool multiSelectMode_ = false;
@@ -156,6 +214,16 @@ private:
     int kitPickerIndex_ = 0;
     int kitPickerScrollOffset_ = 0;
     double kitPickerLastArrowMs_ = 0.0;
+
+    // Cheat sheet & About overlays
+    bool cheatSheetOpen_ = false;
+    bool aboutOpen_ = false;
+    int aboutScrollOffset_ = 0;
+
+    // Config return state — re-enter config at same position after overlay
+    bool configReturnPending_ = false;
+    int configReturnIndex_ = 0;
+    int configReturnScroll_ = 0;
     juce::Array<juce::File> availableKits_;
     static constexpr double kKitBrowseTimeoutMs = 3000.0;
 
@@ -197,6 +265,12 @@ private:
     float preSliceStartPos_ = 0.0f;
     float preSliceEndPos_ = 1.0f;
     static constexpr int kSliceAutoCount = 9;
+
+    // Slice audition visual flash: per-slice timestamp of last audition (ms).
+    // Used in paintSliceEditor to draw a fading flash on auditioned slices.
+    // Reused across pads — flashes only render while in slice editor.
+    static constexpr int kMaxSliceAuditionFlashes = 128;  // matches kMaxSlices
+    double sliceAuditionTimeMs_[kMaxSliceAuditionFlashes] = {};
 
     // 0=OFF, 1=8, 2=16, 3=24, 4=32, 5=48, 6=64, 7=128, 8=Transient
     static int sliceAutoValue(int idx) {
@@ -308,6 +382,45 @@ private:
     double lastButtonTriggerMs_[kNumPads] = {};
     static constexpr double kButtonDebounceMs = 35.0;
 
+    // Pad roll (hold to retrigger)
+    int    rollPad_ = -1;                // which pad is rolling (-1 = none)
+    double rollPressTime_ = 0.0;         // when the roll pad button was pressed
+    double rollNextTriggerMs_ = 0.0;     // next retrigger time
+    float  rollIntervalMs_ = 125.0f;     // current roll speed (ms between triggers)
+    static constexpr double kRollActivateMs = 300.0;   // hold threshold before roll starts
+    static constexpr float kRollMinMs = 30.0f;          // fastest roll (~33Hz)
+    static constexpr float kRollMaxMs = 500.0f;          // slowest roll (2Hz)
+    static constexpr float kRollDefaultMs = 125.0f;      // default (~1/16 at 120bpm)
+
+    // ── Roll watchdogs (2.4.9 — the "stuck roll" bug fix) ──────────
+    // The bug: roll was cleared only when the same pad button that
+    // started it was physically released. If the SSP dropped that
+    // release event (known to happen after long idle), rollPad_ stayed
+    // stuck at 0-7 forever and every subsequent tap retriggered the
+    // stuck pad at 30-160ms intervals — sample restarts too fast to
+    // hear audio, red cursor sprints, "ROLL 1/8" persists. Preset
+    // reload clears it because it's a transient state.
+    //
+    // Three defenses catch every route into that state:
+    //   1. padButtonHeld_[]: track physical hold state per pad. In
+    //      the retrigger loop, if rollPad_'s button isn't actually
+    //      held, clear roll. Direct fix for the SSP-dropped-release
+    //      case.
+    //   2. Idle drift clear: if timerCallback hasn't run for > 5s
+    //      (host suspend/wake, display sleep), clear all hold state.
+    //   3. Modal-entry clear: any overlay entry calls
+    //      clearAllHoldState() as belt-and-suspenders.
+    bool   padButtonHeld_[kNumPads] = {};
+    double lastTimerFrameMs_ = 0.0;
+    static constexpr double kTimerIdleThresholdMs = 5000.0;
+
+    // Unconditionally clear all in-memory hold/roll state. Safe to call
+    // from any thread that also serialises to the message thread.
+    void clearAllHoldState();
+
+    // MIDI-CV pad paint (2.4.9 — replaces sample paint for MidiCV pads)
+    void paintMidiCVPad(juce::Graphics& g, juce::Rectangle<int> box, int padIndex);
+
     // Arrow combo detection for recall point (L+R = save, U+D = restore)
     double lastLeftArrowMs_ = 0.0;
     double lastRightArrowMs_ = 0.0;
@@ -319,8 +432,11 @@ private:
     bool upArrowHeld_ = false;
     bool downArrowHeld_ = false;
     double arrowRepeatNextMs_ = 0.0;
-    static constexpr double kArrowRepeatDelayMs = 400.0;
-    static constexpr double kArrowRepeatRateMs = 80.0;
+    int arrowRepeatCount_ = 0;  // counts consecutive repeats for acceleration
+    static constexpr int kAccelThreshold1 = 5;   // speed up after 5 lines
+    static constexpr int kAccelThreshold2 = 15;  // speed up again after 15
+    static constexpr double kArrowFastRateMs = 60.0;
+    static constexpr double kArrowFasterRateMs = 30.0;
 
     // ── Colors ───────────────────────────────────────────────────────────
     static constexpr uint32_t kBg             = 0xFF0D0D0D;
@@ -353,6 +469,26 @@ private:
     static constexpr uint32_t kConfigLabel    = 0xFFAAAAAA;
     static constexpr uint32_t kConfigValue    = 0xFFFFFFFF;
     static constexpr uint32_t kConfigEditVal  = 0xFF42A5F5;  // blue when editing
+
+    // ── Bubble popup (anchored speech-bubble for "deep" encoder params) ──
+    BubblePopup bubble_;
+    bool hasHoldAction(int page, int enc) const;
+    void openHoldBubble(int enc);
+    void openSliceEditorHoldBubble(int enc);
+
+    // ── SLICE tab state ──────────────────────────────────────────────────
+    // E1 CURSOR: position inside selected pad's visible waveform (0..1).
+    //   Turn = scrub, Push = audition slice under cursor, Hold = enter editor.
+    // E2 SLICE: count for equal-distance auto-slicing (1..128).
+    //   Push = apply, Hold = method bubble (Transient / Crossfade).
+    // E3 EDIT: cycles through edit actions for the slice at cursor.
+    //   Turn = cycle, Push = execute/activate, Hold = open value bubble.
+    float sliceTabCursorPos_ = 0.0f;     // normalized 0..1 — same coord as editor
+    int sliceTabCount_ = 8;              // E2 SLICE count (1..128)
+    int sliceMethod_ = 0;                // 0=Equal, 1=Transient, 2=Crossfade
+    float sliceSensitivity_ = 0.5f;      // 0..1 — used by Transient
+    int sliceCrossfadeMs_ = 5;           // 0..50ms — used by Crossfade
+    int sliceEditAction_ = 0;            // 0=Pitch, 1=Time, 2=Tape, 3=ClearAll, 4=DelRegion, 5=Export, 6=MIDI CC
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(PluginEditor)
 };

@@ -89,6 +89,28 @@ public:
     bool isMidiClockEnabled() const { return midiClockEnabled_; }
     void setMidiClockEnabled(bool b);
 
+    // Globals MIDI device — second MIDI input dedicated to global-scope
+    // controls (mixer faders, master comp, etc.). Sits unused until the
+    // Globals overlay UI ships in 2.4.9, but routing infra is wired now
+    // so users can start binding controllers ahead of that release.
+    juce::String getGlobalsMidiDeviceName() const { return globalsMidiDeviceName_; }
+    void setGlobalsMidiDevice(const juce::String& name);
+    void closeGlobalsMidiDevice();
+
+    // Pad mute CC base. CC (base+0)..(base+7) → mute for pad 1..8.
+    // Value >= 64 mutes the pad, < 64 unmutes. -1 = disabled (no mute CCs).
+    // Listens on the Globals Device if connected, else on the Pads Device.
+    int  getPadMuteCCBase() const   { return padMuteCCBase_; }
+    void setPadMuteCCBase(int cc)   { padMuteCCBase_ = juce::jlimit(-1, 120, cc); }
+
+    // Pad settings clipboard. Sample, slices, and per-pad slice CC are
+    // NOT copied (those belong with the sample). Only the "shape" of the
+    // pad's playback + routing + CC mapping is transferred.
+    void copyPadSettings(int srcPad);
+    void pasteSettingsToAllPads();   // copies from clipboard to all 8 pads
+    bool hasPadSettingsClipboard() const { return padClipValid_; }
+    int  getPadClipSource() const        { return padClipSourcePad_; }
+
     // Mono bus layout (Bear's pattern) — must be inside AudioProcessor subclass
     static BusesProperties getBusesProperties() {
         BusesProperties props;
@@ -112,6 +134,17 @@ private:
     bool inputEnabled_[I_MAX] = {};
     bool outputEnabled_[O_MAX] = {};
     bool gateHigh_[kNumPads] = {};
+
+    // ── MIDI-CV output state (2.4.9) ──────────────────────────────────
+    // When a pad is in PadMode::MidiCV, incoming MIDI notes for its
+    // channel drive a gate on plugin output ch (padIdx + 2) instead of
+    // triggering audio playback. Shared pitch CV on ch 10 (V/oct),
+    // shared velocity CV on ch 11. Both share buses reflect the last
+    // MIDI-CV pad triggered.
+    bool  midiCVGate_[kNumPads] = {};
+    int   midiCVLastNote_[kNumPads] = {};
+    float midiCVSharedPitch_ = 0.0f;   // 1V/oct, note 60 = 0V baseline (5V mid)
+    float midiCVSharedVel_   = 0.0f;   // 0.0-0.5 buffer range = 0-5V
 
     // Clock / BPM tracking
     bool clockHigh_ = false;
@@ -166,12 +199,14 @@ private:
     PerfMode presetSwitchMode_ = PerfMode::Immediate;
     int queueBars_ = 1;  // 1-4 bars ahead for OnBar mode
     bool debugMsgs_ = false;
+    bool crashLogEnabled_ = false;
     float encoderSpeed_ = 1.0f;
     float muteFadeMs_ = 0.0f;   // 0 = instant mute/unmute
     bool  progChangeEnabled_ = false;  // respond to MIDI program change for kit switching
     int   progChangeCC_ = 0;           // 0 = use program change msg, 1-127 = use this CC instead
     bool  midiTransportEnabled_ = true; // respond to MIDI start/stop/continue
     float browserFontSize_ = 0.0f;     // 0 = default, -3..+3 adjustment in 0.5 steps
+    int   rollStartDiv_ = 3;            // 0=1/2, 1=1/4, 2=1/8, 3=1/16, 4=1/32
     int sliceCVPad_[2] = { 0, 1 };  // which pad each Slice CV controls (-1=OFF, 0-7=pad)
 
     // Bus compressor (feedback topology, dual-time-constant release, soft knee)
@@ -225,6 +260,11 @@ private:
 public:
     PadCCMap& getPadCCMap(int pad) { return padCCMaps_[juce::jlimit(0, kNumPads - 1, pad)]; }
     const PadCCMap& getPadCCMap(int pad) const { return padCCMaps_[juce::jlimit(0, kNumPads - 1, pad)]; }
+
+    // MIDI-CV gate state (for editor pad paint)
+    bool getMidiCVGate(int pad) const {
+        return (pad >= 0 && pad < kNumPads) ? midiCVGate_[pad] : false;
+    }
     PerfMode getPerfMode() const { return perfMode_; }
     void setPerfMode(PerfMode m) {
         perfMode_ = m;
@@ -238,6 +278,8 @@ public:
     void setQueueBars(int b) { queueBars_ = juce::jlimit(1, 4, b); }
     bool getDebugMsgs() const { return debugMsgs_; }
     void setDebugMsgs(bool b) { debugMsgs_ = b; }
+    bool getCrashLogEnabled() const { return crashLogEnabled_; }
+    void setCrashLogEnabled(bool b) { crashLogEnabled_ = b; }
     float getEncoderSpeed() const { return encoderSpeed_; }
     void setEncoderSpeed(float s) { encoderSpeed_ = juce::jlimit(1.0f, 3.0f, s); }
     float getMuteFadeMs() const { return muteFadeMs_; }
@@ -250,6 +292,8 @@ public:
     void setMidiTransportEnabled(bool b) { midiTransportEnabled_ = b; }
     float getBrowserFontAdj() const { return browserFontSize_; }
     void  setBrowserFontAdj(float adj) { browserFontSize_ = juce::jlimit(-3.0f, 5.0f, adj); }
+    int   getRollStartDiv() const { return rollStartDiv_; }
+    void  setRollStartDiv(int d) { rollStartDiv_ = juce::jlimit(0, 4, d); }
     int getSliceCVPad(int cv) const { return sliceCVPad_[juce::jlimit(0, 1, cv)]; }
     void setSliceCVPad(int cv, int pad) { sliceCVPad_[juce::jlimit(0, 1, cv)] = juce::jlimit(-1, 7, pad); }
 
@@ -284,9 +328,12 @@ public:
     float getTransSensitivity() const { return transSensitivity_; }
     void  setTransSensitivity(float s) { transSensitivity_ = juce::jlimit(0.05f, 1.0f, s); }
     void rebootPlugin();
+    void clearAllPads();   // removes all samples, resets all settings
+    void initPad(int pad); // resets one pad to factory defaults
 
     // Slice export: write each slice region as individual WAV
     int exportSlicesToFiles(int pad);
+    int importPadsAsSliceChain(int targetPad);
 
     // Per-sample slice persistence: remember slices keyed by filename
     struct SliceCache {
@@ -297,6 +344,7 @@ public:
     };
     std::map<juce::String, SliceCache> sliceCache_;
     juce::CriticalSection sliceCacheLock_;  // protects sliceCache_ from host/GUI thread races
+    juce::CriticalSection stateLock_;      // protects getState/setState from host + autosave racing
     void cacheSlicesForPad(int pad);
     bool restoreCachedSlices(int pad);
 private:
@@ -318,6 +366,8 @@ public:
     // Autosave: periodically writes state XML to disk (no WAV, lightweight)
     void performAutosave();
     void loadAutosave();
+    void saveGlobalPrefs();
+    void loadGlobalPrefs();
     juce::File getAutosaveFile() const;
     void tickAutosave() {
         if (!autosaveEnabled_) return;
@@ -331,6 +381,8 @@ public:
     bool getAutosaveEnabled() const { return autosaveEnabled_; }
     void setAutosaveEnabled(bool b) { autosaveEnabled_ = b; }
     void markStateDirty() { stateDirty_ = true; }
+    bool isStateDirty() const { return stateDirty_; }
+    double getLastAutosaveTimeMs() const { return lastAutosaveTimeMs_; }
 
     // Recall point: single in-memory snapshot for instant restore
     void setRecallPoint();
@@ -339,19 +391,38 @@ public:
 
 private:
     juce::String currentKitName_ = "Autosave";
+    juce::String instanceId_;  // unique ID per plugin instance for autosave
     int autosaveFrameCount_ = 0;
     static constexpr int kAutosaveIntervalFrames = 150;  // ~5 sec at 30fps
     bool autosaveEnabled_ = true;
     bool stateDirty_ = true;  // starts true to save initial state
+    bool stateLoadedFromHost_ = false;  // true after setState called
+    double lastAutosaveTimeMs_ = 0.0;  // when last autosave completed
+    void cleanupOldAutosaves();
 
     // Recall point (RAM snapshot)
     bool recallPointSet_ = false;
     juce::MemoryBlock recallPointData_;
 
     // MIDI state (direct device access, Bear's pattern)
+    // Per TheTechnobear v260425: lookup by identifier, not name. Names are
+    // not unique across ports (some devices report the same name on every
+    // port). Identifier is stable and unique. Name kept around for display.
     std::unique_ptr<juce::MidiInput> midiInDevice_;
     juce::String midiDeviceName_;
-    juce::StringArray cachedMidiDeviceNames_ { "None" };
+    juce::String midiDeviceId_;
+    // Second MIDI input for global-scope controls (mixer/comp/master).
+    // Same callback (handleIncomingMidiMessage) handles both; routing logic
+    // distinguishes by source pointer when we need scope-specific handling.
+    std::unique_ptr<juce::MidiInput> globalsMidiInDevice_;
+    juce::String globalsMidiDeviceName_;
+    juce::String globalsMidiDeviceId_;
+    // Pad mute CC base. -1 = disabled. Default 24 (CCs 24-31 = mute pad 1-8).
+    int padMuteCCBase_ = 24;
+    // Cached MIDI device names. Mutable because getMidiDeviceNames()
+    // refreshes it on each call (live rescan, since SSP devices can be
+    // hot-plugged after prepareToPlay).
+    mutable juce::StringArray cachedMidiDeviceNames_ { "None" };
     bool midiClockEnabled_ = false;
     bool midiTransportRunning_ = false;
     int midiClockCount_ = 0;
@@ -359,6 +430,37 @@ private:
     // Thread-safe MIDI collector: messages are timestamped on MIDI thread,
     // delivered sample-accurately in processBlock. Replaces atomic flag pattern.
     juce::MidiMessageCollector midiCollector_;
+
+    // Pad settings clipboard (sample/slices excluded — only params)
+    struct PadClip {
+        PadMode    mode = PadMode::OneShot;
+        float      volume = 1.0f;
+        float      pan = 0.0f;
+        float      pitch = 0.0f;
+        float      stretch = 1.0f;
+        float      fadeInMs = 0.0f;
+        float      fadeOutMs = 0.0f;
+        int        fadeInCurve = 0;
+        int        fadeOutCurve = 0;
+        ChokeGroup choke = ChokeGroup::None;
+        int        midiChannel = 0;
+        int        clockBeats = 4;
+        VoiceMode  voiceMode = VoiceMode::Mono;
+        FilterType filterType = FilterType::Off;
+        float      filterCutoff = 20000.0f;
+        float      filterReso = 0.0f;
+        LofiMode   lofiMode = LofiMode::Off;
+        float      compSend = 0.0f;
+        bool       compBypass = false;
+        int        pitchMode = 0;
+        int        outputChannel = -1;
+        bool       sendToMix = true;
+        bool       reversed = false;
+        PadCCMap   ccMap;
+    };
+    PadClip padClip_;
+    bool padClipValid_ = false;
+    int  padClipSourcePad_ = -1;
 
     // Ticker message system
     juce::String tickerMessage_;

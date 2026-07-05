@@ -19,12 +19,30 @@ struct Voice {
     float  velocity      = 1.0f;
     int    startOffset   = 0;
 
+    // Per-voice playback region (captured at trigger time). This lets
+    // audition triggers play a single slice without permanently mutating
+    // the slot's startPos_/endPos_ — the visual trim stays where the user
+    // set it while the voice plays its slice region.
+    // < 0 means "use slot's live startPos_/endPos_".
+    int    regionStart = -1;
+    int    regionEnd   = -1;
+
+    // Tape character DSP state — per-voice so multiple voices can each
+    // run through their own "tape machine" without state cross-talk.
+    float  tapeLpL       = 0.0f;   // HF rolloff one-pole LP state, L
+    float  tapeLpR       = 0.0f;   // HF rolloff one-pole LP state, R
+    float  tapeBumpLpL   = 0.0f;   // head bump LP state (for BP buildup), L
+    float  tapeBumpLpR   = 0.0f;   // head bump LP state, R
+
     void reset() {
         readPosition = 0.0; sourcePos = 0.0;
         grainPos[0] = grainPos[1] = 0.0; grainCounter = 0;
         fadeIn = 0; fadeOut = 0;
         playing = false; stopping = false; velocity = 1.0f;
         startOffset = 0;
+        regionStart = -1; regionEnd = -1;
+        tapeLpL = tapeLpR = 0.0f;
+        tapeBumpLpL = tapeBumpLpR = 0.0f;
     }
 };
 
@@ -47,6 +65,12 @@ public:
     void triggerWithVelocity(float vel);
     void triggerWithOffset(int sampleOffset);
     void triggerWithVelocityAndOffset(float vel, int sampleOffset);
+    // Audition a slice without mutating slot trim. The voice plays
+    // sliceStarts_[idx]..sliceEnds_[idx] while the slot's start/end stay
+    // wherever the user had them. Pitch offset from slicePitch_[idx] is
+    // applied. Voice stealing follows the normal trigger path.
+    void triggerSlice(int sliceIdx);
+    void triggerSlice(int sliceIdx, float velocity);
     void stop();
     void stopAll();
 
@@ -71,22 +95,49 @@ public:
     void setEndPos(float n)     { endPos_ = juce::jlimit(0.0f, 1.0f, n); }
 
     // Pitch: +-48 semitones (+-4 octaves). Resampling-based.
-    void setPitchSemitones(float st) { pitchSemitones_ = juce::jlimit(-48.0f, 48.0f, st); updatePitchRate(); }
-
+    void setPitchSemitones(float st) { pitchSemitones_ = juce::jlimit(-48.0f, 48.0f, st);
+                                        updatePitchRate(); }
     float getPitchSemitones() const  { return pitchSemitones_; }
     float getPitchRate() const       { return pitchRate_; }
 
-    // CV pitch offset — adds on top of encoder pitch
+    // CV pitch offset (added to encoder pitch, separate so they don't overwrite each other)
     void setPitchCVOffset(float st)  { pitchCVOffset_ = st; updatePitchRate(); }
     float getPitchCVOffset() const   { return pitchCVOffset_; }
+
+    // Pitch mode: 0 = Tape (varispeed), 1 = Decoupled (granular, pitch independent of time)
+    int getPitchMode() const         { return pitchMode_; }
+    void setPitchMode(int m)         { pitchMode_ = juce::jlimit(0, 1, m); }
 
     // Time stretch: 0.25x to 4.0x (user control)
     void setTimeStretch(float t)     { timeStretch_ = juce::jlimit(0.25f, 4.0f, t); }
     float getTimeStretch() const     { return timeStretch_; }
 
+    // Tape rate: 0.25x to 4.0x. Pure varispeed — couples pitch + time.
+    // Folds into the read step multiplicatively on top of pitchRate.
+    void setTapeRate(float r)        { tapeRate_ = juce::jlimit(0.25f, 4.0f, r); }
+    float getTapeRate() const        { return tapeRate_; }
+
+    // Tape character: 0..1 amount knobs for each effect
+    void setTapeWow(float v)         { tapeWow_        = juce::jlimit(0.0f, 1.0f, v); }
+    float getTapeWow() const         { return tapeWow_; }
+    void setTapeFlutter(float v)     { tapeFlutter_    = juce::jlimit(0.0f, 1.0f, v); }
+    float getTapeFlutter() const     { return tapeFlutter_; }
+    void setTapeHFRolloff(float v)   { tapeHFRolloff_  = juce::jlimit(0.0f, 1.0f, v); }
+    float getTapeHFRolloff() const   { return tapeHFRolloff_; }
+    void setTapeHeadBump(float v)    { tapeHeadBump_   = juce::jlimit(0.0f, 1.0f, v); }
+    float getTapeHeadBump() const    { return tapeHeadBump_; }
+    void setTapeSaturation(float v)  { tapeSaturation_ = juce::jlimit(0.0f, 1.0f, v); }
+    float getTapeSaturation() const  { return tapeSaturation_; }
+
     // Stretch algorithm
     void setStretchMode(StretchMode m) { stretchMode_ = m; }
     StretchMode getStretchMode() const { return stretchMode_; }
+
+    // Stretch strength: 0=Low, 1=Medium, 2=High.
+    // Currently UI-only — DSP grain size is kGrainSize=4096 (compile-time).
+    // Wiring to runtime grain windows comes in a follow-up.
+    void setStretchStrength(int s) { stretchStrength_ = juce::jlimit(0, 2, s); }
+    int  getStretchStrength() const { return stretchStrength_; }
 
     // Clock beats: how many beats the sample stretches to fit (1,2,4,8,16)
     void setClockBeats(int b)        { clockBeats_ = juce::jlimit(1, 16, b); }
@@ -190,6 +241,40 @@ public:
     float getSlicePitchOffset() const    { return slicePitchOffset_; }
     void setSlicePitchOffset(float st)   { slicePitchOffset_ = st; }
 
+    // Per-slice MIDI CC mapping. -1 = OFF (no CC trigger), 0-127 = CC number.
+    // When a CC with non-zero value arrives matching this slice's CC, fire
+    // the slice with velocity = value/127. Channel filtering still applies
+    // through the per-pad MIDI channel.
+    int  getSliceCC(int i) const         { return (i >= 0 && i < kMaxSlices) ? sliceCC_[i] : -1; }
+    void setSliceCC(int i, int cc)       { if (i >= 0 && i < kMaxSlices) sliceCC_[i] = juce::jlimit(-1, 127, cc); }
+    // Bulk: assign sequential CCs starting from `startCC` (slice 0 -> startCC,
+    // slice 1 -> startCC+1, ...). Stops at slice count or CC 127.
+    void assignSequentialSliceCCs(int startCC) {
+        int cc = juce::jlimit(0, 127, startCC);
+        for (int i = 0; i < sliceCount_ && cc <= 127; ++i, ++cc)
+            sliceCC_[i] = cc;
+    }
+    void clearAllSliceCCs() {
+        for (int i = 0; i < kMaxSlices; ++i) sliceCC_[i] = -1;
+    }
+
+    // Region currently being played by voice 0. If the voice has a slice
+    // region set (audition), returns those bounds normalized to [0,1].
+    // Otherwise returns the slot's static trim. UI uses this to draw the
+    // red playhead fill within the auditioned slice instead of the full
+    // sample, even though slot trim itself stays untouched.
+    void getPlayingRegion(float& outStart, float& outEnd) const {
+        int ns = numSamples_.load();
+        if (ns > 0 && voices_[0].playing && voices_[0].regionStart >= 0
+            && voices_[0].regionEnd > voices_[0].regionStart) {
+            outStart = (float)voices_[0].regionStart / (float)ns;
+            outEnd   = (float)voices_[0].regionEnd   / (float)ns;
+        } else {
+            outStart = startPos_;
+            outEnd   = endPos_;
+        }
+    }
+
     // First tap: begin a slice at cursor
     bool beginSlice(float pos) {
         if (slicePending_) return false;
@@ -210,10 +295,12 @@ public:
             sliceStarts_[i] = sliceStarts_[i - 1];
             sliceEnds_[i] = sliceEnds_[i - 1];
             slicePitch_[i] = slicePitch_[i - 1];
+            sliceCC_[i]    = sliceCC_[i - 1];
         }
         sliceStarts_[idx] = s;
         sliceEnds_[idx] = e;
         slicePitch_[idx] = 0.0f;
+        sliceCC_[idx]    = -1;
         sliceCount_++;
         slicePending_ = false;
         sliceMode_ = true;  // auto-enable when slices exist
@@ -228,6 +315,7 @@ public:
             sliceStarts_[i] = sliceStarts_[i + 1];
             sliceEnds_[i] = sliceEnds_[i + 1];
             slicePitch_[i] = slicePitch_[i + 1];
+            sliceCC_[i]    = sliceCC_[i + 1];
         }
         sliceCount_--;
         if (sliceCount_ == 0) sliceMode_ = false;
@@ -242,7 +330,15 @@ public:
     void clearSlices() {
         sliceCount_ = 0; selectedSlice_ = 0; slicePending_ = false;
         sliceMode_ = false;  // no slices = no slice mode
-        for (int i = 0; i < kMaxSlices; ++i) slicePitch_[i] = 0.0f;
+        for (int i = 0; i < kMaxSlices; ++i) {
+            slicePitch_[i] = 0.0f;
+            sliceCC_[i]    = -1;   // OFF (no CC trigger)
+        }
+        // Bug fix: slicePitchOffset_ persists across slice triggers (it's
+        // applied to combinedPitchRate in DSP). If we don't reset it here,
+        // loading a new sample inherits the previous slice's pitch offset —
+        // reported as "pitch goes down to -12st when loading a sample".
+        slicePitchOffset_ = 0.0f;
     }
     void getSliceRegion(int idx, float& outStart, float& outEnd) const {
         if (idx >= 0 && idx < sliceCount_) { outStart = sliceStarts_[idx]; outEnd = sliceEnds_[idx]; }
@@ -347,11 +443,17 @@ public:
             if (odfBuf[f] > thresh && odfBuf[f] > odfNext
                 && energy[f] > silenceGate && energy[f] > absThreshold
                 && (f - lastOnsetFrame) >= (minInterOnsetSamples / kHop)) {
-                // Backtrack to energy minimum in previous 10 frames
+                // Backtrack to the START of the rising edge (last frame where
+                // energy was below 50% of the detected peak). Walk back at
+                // most 3 frames (~16ms at 48k/256-hop) — beyond that you start
+                // grabbing the tail of the previous transient. Reported as
+                // "transients sliced a good chunk of audio before the actual
+                // sample hits — for percs this does not seem ideal."
                 int bestFrame = f;
-                float bestEnergy = energy[f];
-                for (int b = f - 1; b >= std::max(0, f - 10); --b) {
-                    if (energy[b] < bestEnergy) { bestEnergy = energy[b]; bestFrame = b; }
+                float halfPeak = energy[f] * 0.5f;
+                for (int b = f - 1; b >= std::max(0, f - 3); --b) {
+                    if (energy[b] < halfPeak) { bestFrame = b + 1; break; }
+                    bestFrame = b;  // still climbing, walk further back
                 }
                 int onsetSamp = startSamp + bestFrame * kHop;
 
@@ -529,10 +631,28 @@ private:
     float endPos_         = 1.0f;
     float pitchSemitones_ = 0.0f;
     float pitchRate_      = 1.0f;
-    float timeStretch_    = 1.0f;
     float pitchCVOffset_  = 0.0f;
+    int   pitchMode_      = 0;  // 0 = Tape, 1 = Decoupled
+
+    void updatePitchRate() { pitchRate_ = std::pow(2.0f, (pitchSemitones_ + pitchCVOffset_) / 12.0f); }
+    float timeStretch_    = 1.0f;
+    float tapeRate_       = 1.0f;  // pure varispeed multiplier (couples pitch + time)
+
+    // Tape character amounts (0..1)
+    float tapeWow_        = 0.0f;
+    float tapeFlutter_    = 0.0f;
+    float tapeHFRolloff_  = 0.0f;
+    float tapeHeadBump_   = 0.0f;
+    float tapeSaturation_ = 0.0f;
+
+    // Tape DSP state (slot-level — wow/flutter LFOs apply globally)
+    float wowPhase_       = 0.0f;
+    float flutterPhase_   = 0.0f;
+    float tapeRateMod_    = 1.0f;   // updated per process() block, includes wow+flutter
+
     float clockStretch_   = 1.0f;
     StretchMode stretchMode_ = StretchMode::WSOLA;  // default to WSOLA
+    int   stretchStrength_ = 1;  // 0=Low, 1=Medium, 2=High
     int   clockBeats_     = 4;
     float fadeInMs_       = 0.0f;
     float fadeOutMs_      = 0.0f;
@@ -581,9 +701,6 @@ public:
 
     // Called on trigger — advances all enabled mods, returns per-slot amounts
     float advanceMod(int slot) { return mods_[juce::jlimit(0, kModSlots - 1, slot)].advance(modRng_); }
-
-    // Helper: recalculate pitch rate from semitones + CV offset
-    void updatePitchRate() { pitchRate_ = std::pow(2.0f, (pitchSemitones_ + pitchCVOffset_) / 12.0f); }
 private:
 
     // LPG (Buchla-style Low Pass Gate) — vactrol envelope + one-pole filter + VCA
@@ -595,6 +712,15 @@ private:
     float lpgFilterZ_R_  = 0.0f;  // one-pole filter state R
     int   lpgBlockCount_ = 0;
     static constexpr int kLPGBlockSize = 16;
+
+    // Ring modulator state
+    float ringModPhase_ = 0.0f;
+
+    // Comb filter state
+    static constexpr int kCombMaxDelay = 2048;
+    float combBufL_[kCombMaxDelay] = {};
+    float combBufR_[kCombMaxDelay] = {};
+    int   combWriteIdx_ = 0;
 
     // LPG helpers
     float lpgStepEnvelope();
@@ -616,6 +742,7 @@ private:
     float sliceStarts_[kMaxSlices] = {};
     float sliceEnds_[kMaxSlices] = {};
     float slicePitch_[kMaxSlices] = {};
+    int   sliceCC_[kMaxSlices];   // default -1 (OFF); initialized in clear()/ctor
     int sliceCount_ = 0;
     bool sliceMode_ = false;
     int selectedSlice_ = 0;

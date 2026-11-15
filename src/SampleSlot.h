@@ -3,6 +3,7 @@
 #include <juce_audio_formats/juce_audio_formats.h>
 #include "PluginParameters.h"
 #include <atomic>
+#include <cstring>
 
 namespace grid {
 
@@ -34,6 +35,41 @@ struct Voice {
     float  tapeBumpLpL   = 0.0f;   // head bump LP state (for BP buildup), L
     float  tapeBumpLpR   = 0.0f;   // head bump LP state, R
 
+    // ── Envelope bookkeeping (anti-click) ────────────────────────────────
+    // fadeOutLen is the total length of the fade currently running on
+    // fadeOut, so the ramp is fadeOut/fadeOutLen. It used to be derived per
+    // block from the *remaining* fadeOut, which made any fade longer than
+    // kFadeSamples jump back up to full level at every block boundary.
+    int    fadeOutLen   = 0;
+    // Steal fades wait this many output samples before starting, so a
+    // sample-accurate retrigger doesn't leave a gap before the new voice.
+    int    fadeDelay    = 0;
+    // Loop has wrapped at least once — the attack only applies to the
+    // first pass, not to every loop cycle.
+    bool   wrapped      = false;
+    // > 0 once this voice has become a tail: the pitch rate it had at that
+    // moment. Stops a retrigger's new note/slice pitch from bending the
+    // voice that is fading out.
+    float  frozenRate   = 0.0f;
+    float  lastRate     = 0.0f;   // pitch rate used in the last processed block
+
+    // ── Per-voice filter / FX state ──────────────────────────────────────
+    // These used to live on the slot and were shared by every voice (and
+    // zeroed on every trigger while the previous voice was still fading
+    // out), which produced a hard pop on retrigger whenever a filter,
+    // lo-fi, ring mod, comb or LPG was active.
+    static constexpr int kCombMaxDelay = 2048;
+    float  svfIc1L = 0.0f, svfIc2L = 0.0f, svfIc1R = 0.0f, svfIc2R = 0.0f;
+    float  fmtIc1L[3] = {}, fmtIc2L[3] = {}, fmtIc1R[3] = {}, fmtIc2R[3] = {};
+    float  lofiPhase = 0.0f, lofiHeldL = 0.0f, lofiHeldR = 0.0f;
+    float  ringModPhase = 0.0f;
+    float  lpgVactrol = 0.0f, lpgEnv = 0.0f, lpgEnvInc = 0.0f;
+    float  lpgZL = 0.0f, lpgZR = 0.0f;
+    int    lpgBlockCount = 0;
+    int    combWriteIdx = 0;
+    float  combBufL[kCombMaxDelay] = {};
+    float  combBufR[kCombMaxDelay] = {};
+
     void reset() {
         readPosition = 0.0; sourcePos = 0.0;
         grainPos[0] = grainPos[1] = 0.0; grainCounter = 0;
@@ -43,6 +79,21 @@ struct Voice {
         regionStart = -1; regionEnd = -1;
         tapeLpL = tapeLpR = 0.0f;
         tapeBumpLpL = tapeBumpLpR = 0.0f;
+        fadeOutLen = 0; fadeDelay = 0; wrapped = false; frozenRate = 0.0f; lastRate = 0.0f;
+        svfIc1L = svfIc2L = svfIc1R = svfIc2R = 0.0f;
+        for (int b = 0; b < 3; ++b) fmtIc1L[b] = fmtIc2L[b] = fmtIc1R[b] = fmtIc2R[b] = 0.0f;
+        lofiPhase = lofiHeldL = lofiHeldR = 0.0f;
+        ringModPhase = 0.0f;
+        lpgVactrol = lpgEnv = lpgEnvInc = lpgZL = lpgZR = 0.0f;
+        lpgBlockCount = 0;
+        combWriteIdx = 0;
+        std::memset(combBufL, 0, sizeof(combBufL));
+        std::memset(combBufR, 0, sizeof(combBufR));
+    }
+
+    // Current fade-out gain in [0,1] (1 when not stopping).
+    float stopLevel() const {
+        return (stopping && fadeOutLen > 0) ? (float)fadeOut / (float)fadeOutLen : 1.0f;
     }
 };
 
@@ -71,8 +122,14 @@ public:
     // applied. Voice stealing follows the normal trigger path.
     void triggerSlice(int sliceIdx);
     void triggerSlice(int sliceIdx, float velocity);
+    // Same as triggerSlice but sample-accurate (CV gate path).
+    void triggerSliceWithOffset(int sliceIdx, float velocity, int sampleOffset);
+    // Quick, smooth stop (~3 ms) — choke groups, mute, stop-all.
     void stop();
     void stopAll();
+    // Musical stop: fades over the pad's Release (fade-out) time.
+    // Used for Gate-mode note-off / pad release and loop toggle-off.
+    void release();
 
     bool isPlaying() const;
     bool isStopping() const;
@@ -619,8 +676,23 @@ private:
     PadMode mode_ = PadMode::OneShot;
 
     // Anti-click envelope
-    static constexpr int kFadeSamples = 64;   // ~1.3ms at 48kHz crossfade
-    static constexpr int kLoopXfadeSamples = 128; // ~2.7ms loop boundary crossfade
+    static constexpr int kFadeSamples = 64;   // ~1.3ms at 48kHz attack de-click
+    static constexpr int kLoopXfadeSamples = 128; // minimum loop boundary crossfade
+    static constexpr int kLoopXfadeMaxSamples = 480; // ~10ms when the loop is long enough
+    static constexpr float kStopFadeMs  = 3.0f;   // stop()/choke/mute fade
+    static constexpr float kStealFadeMaxMs = 50.0f; // longest retrigger crossfade
+    int msToOutSamples(float ms) const { return std::max(1, (int)(ms * 0.001 * outputSampleRate_)); }
+    // Smoothstep: no slope discontinuity at either end of a fade, so a fade
+    // doesn't itself produce a "tick" the way a linear ramp's corners do.
+    static inline float smooth01(float t) {
+        t = t < 0.0f ? 0.0f : (t > 1.0f ? 1.0f : t);
+        return t * t * (3.0f - 2.0f * t);
+    }
+    // Move voice 0 into a tail voice with a crossfade of `fadeLen` samples.
+    void stealVoice0(int fadeLen, int fadeDelay);
+    // Start a fade-out of `len` samples from the voice's current level.
+    static void beginFadeOut(Voice& v, int len);
+    bool triggerInternal(float vel, int sampleOffset);
     static constexpr int kRetriggerGuard = 64;  // ~1.3ms at 48kHz
     int samplesSinceLastTrigger_ = 99999;
 
@@ -678,18 +750,9 @@ private:
     float filterCutoff_ = 20000.0f;   // Hz
     float filterReso_   = 0.0f;       // 0.0 - 1.0
 
-    // SVF state (stereo) — used by LPF, HPF, BPF, Notch, MS20
-    float svfIc1L_ = 0.0f, svfIc2L_ = 0.0f;
-    float svfIc1R_ = 0.0f, svfIc2R_ = 0.0f;
-
-    // Formant state: 3 parallel BPF bands × stereo
-    float fmtIc1L_[3] = {}, fmtIc2L_[3] = {};
-    float fmtIc1R_[3] = {}, fmtIc2R_[3] = {};
 
     // Lo-fi sampler emulation
     LofiMode lofiMode_ = LofiMode::Off;
-    float lofiPhaseL_ = 0.0f, lofiPhaseR_ = 0.0f;
-    float lofiHeldL_ = 0.0f, lofiHeldR_ = 0.0f;
 
     // Step modulation (MOD tab) — 3 independent mod slots per pad
     static constexpr int kModSlots = 3;
@@ -703,27 +766,14 @@ public:
     float advanceMod(int slot) { return mods_[juce::jlimit(0, kModSlots - 1, slot)].advance(modRng_); }
 private:
 
-    // LPG (Buchla-style Low Pass Gate) — vactrol envelope + one-pole filter + VCA
-    float lpgVactrol_    = 0.0f;  // vactrol excitation [0..1]
-    float lpgEnv_        = 0.0f;  // interpolated envelope (per-sample)
-    float lpgEnvInc_     = 0.0f;  // per-sample increment (block-rate update)
+    // LPG (Buchla-style Low Pass Gate). Vactrol/envelope/filter state is
+    // per voice (see Voice); only the illumination memory is slot-level.
     float lpgMemory_     = 0.0f;  // illumination history (successive strikes lengthen decay)
-    float lpgFilterZ_L_  = 0.0f;  // one-pole filter state L
-    float lpgFilterZ_R_  = 0.0f;  // one-pole filter state R
-    int   lpgBlockCount_ = 0;
     static constexpr int kLPGBlockSize = 16;
-
-    // Ring modulator state
-    float ringModPhase_ = 0.0f;
-
-    // Comb filter state
-    static constexpr int kCombMaxDelay = 2048;
-    float combBufL_[kCombMaxDelay] = {};
-    float combBufR_[kCombMaxDelay] = {};
-    int   combWriteIdx_ = 0;
+    static constexpr int kCombMaxDelay = Voice::kCombMaxDelay;
 
     // LPG helpers
-    float lpgStepEnvelope();
+    float lpgStepEnvelope(Voice& v, bool decayMemory);
     static inline float lpgFastPow2(float x) {
         x = juce::jlimit(-126.0f, 126.0f, x);
         union { float f; int32_t i; } u;

@@ -2819,7 +2819,7 @@ void PluginEditor::onButton(int n, bool val)
             rollPad_ = -1;
         }
         if (slot.getMode() == PadMode::Gate && slot.isPlaying() && !slot.isStopping()) {
-            slot.stop();
+            slot.release();  // fade over the pad's Release time
         }
         return;
     }
@@ -3016,7 +3016,7 @@ void PluginEditor::onButton(int n, bool val)
     // Normal mode: loop toggle or retrigger
     bool isLoop = (slot.getMode() == PadMode::Loop || slot.getMode() == PadMode::ClockedLoop);
     if (isLoop && slot.isPlaying() && !slot.isStopping()) {
-        slot.stop();
+        slot.release();  // loops stop with the pad's Release time
     } else {
         // Wall-clock debounce: drop stale queued button events
         double nowMs = juce::Time::getMillisecondCounterHiRes();
@@ -4768,6 +4768,10 @@ void PluginEditor::buildConfigRows()
         configRows_.add(row);
     }
 
+    // Slice mode: do incoming notes pick the slice (C2 = slice 1)?
+    { ConfigRow r; r.type = ConfigRowType::Enum; r.label = "Note Selects Slice";
+      r.padIndex = selectedPad_; r.paramIndex = 20; configRows_.add(r); }
+
     // Reset MIDI Settings — restores this pad's channel + CC map to factory
     // defaults without touching sample / params / slices / mod.
     { ConfigRow r; r.type = ConfigRowType::PushAction; r.label = "Reset MIDI Settings";
@@ -5034,6 +5038,9 @@ juce::String configGetValueText(const PluginProcessor& proc, const ConfigRow& ro
         if (row.paramIndex == 17) {
             const char* names[] = { "Tape", "Decoupled" };
             return names[proc.getEngine().getSlot(row.padIndex).getPitchMode()];
+        }
+        if (row.paramIndex == 20) {  // per-pad Note Selects Slice
+            return proc.getPadCCMap(row.padIndex).noteToSlice ? "ON (C2 = 1)" : "OFF";
         }
         if (row.paramIndex == 19) {  // per-pad MIDI Channel
             int ch = proc.getEngine().getSlot(row.padIndex).getMidiChannel();
@@ -5491,6 +5498,13 @@ void PluginEditor::configAdjustValue(int selIdx, int delta)
         return;
     }
 
+    // Per-pad Note Selects Slice (paramIndex 20)
+    if (row.type == ConfigRowType::Enum && row.padIndex >= 0 && row.paramIndex == 20) {
+        processor_.getPadCCMap(row.padIndex).noteToSlice = (delta > 0);
+        processor_.markStateDirty();
+        return;
+    }
+
     // Per-pad MIDI Channel (paramIndex 19): 0=OFF, 1-16=channel, 17=OMNI
     if (row.type == ConfigRowType::Enum && row.padIndex >= 0 && row.paramIndex == 19) {
         auto& slot = processor_.getEngine().getSlot(row.padIndex);
@@ -5704,6 +5718,7 @@ void PluginEditor::configPushValue(int selIdx)
             ccMap.ccPan     = 10;
             ccMap.ccStretch = 18;
             ccMap.ccFilter  = 74;
+            ccMap.noteToSlice = true;
             for (int s = 0; s < SampleSlot::kMaxSlices; ++s)
                 slot.setSliceCC(s, -1);
             processor_.showTickerPublic("Pad " + juce::String(pad + 1) + " MIDI settings reset");

@@ -118,6 +118,26 @@ void GridEngine::triggerWithChokeAndVelocityAndOffset(int slot, float vel, int s
     slots_[slot].triggerWithVelocityAndOffset(vel, sampleOffset);
 }
 
+void GridEngine::triggerSliceWithChoke(int slot, int sliceIdx, float vel, int sampleOffset)
+{
+    if (slot < 0 || slot >= kNumPads) return;
+
+    ChokeGroup grp = slots_[slot].getChokeGroup();
+    if (grp != ChokeGroup::None) {
+        for (int i = 0; i < kNumPads; ++i) {
+            if (i != slot && slots_[i].getChokeGroup() == grp && slots_[i].isPlaying())
+                slots_[i].stop();
+        }
+    }
+    slots_[slot].triggerSliceWithOffset(sliceIdx, vel, sampleOffset);
+}
+
+void GridEngine::release(int slot)
+{
+    if (slot >= 0 && slot < kNumPads)
+        slots_[slot].release();
+}
+
 void GridEngine::stop(int slot)
 {
     if (slot >= 0 && slot < kNumPads)

@@ -16,7 +16,12 @@ public:
     void triggerWithChokeAndVelocity(int slot, float vel);
     void triggerWithChokeAndOffset(int slot, int sampleOffset);
     void triggerWithChokeAndVelocityAndOffset(int slot, float vel, int sampleOffset);
+    // Slice trigger that also honours choke groups (the MIDI/CV slice
+    // paths used to call SampleSlot::triggerSlice directly and skip choke).
+    void triggerSliceWithChoke(int slot, int sliceIdx, float vel, int sampleOffset);
     void stop(int slot);
+    // Fade out over the pad's Release time (Gate note-off, loop stop).
+    void release(int slot);
     void stopAll();
 
     // Mute (with fade support)

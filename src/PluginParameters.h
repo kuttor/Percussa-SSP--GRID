@@ -227,6 +227,14 @@ struct PadCCMap {
     int ccStretch = 18;   // was 11, moved off effect controller 1
     int ccFilter  = 74;   // standard MIDI brightness/filter cutoff
 
+    // Slice mode: incoming MIDI notes pick the slice (C2 = 36 = slice 1,
+    // C#2 = slice 2, ...). OFF = every note plays the currently selected
+    // slice (selected via CC Slice, Slice CV or the editor). Since 2.1.0
+    // the note mapping was only active when CC Slice was set to 0, so with
+    // the default CC 16 notes never selected slices.
+    bool noteToSlice = true;
+    static constexpr int kSliceBaseNote = 36;
+
     static constexpr int kNumCCs = 6;
 
     int& byIndex(int i) {

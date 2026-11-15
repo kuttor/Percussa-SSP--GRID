@@ -106,15 +106,16 @@ void PluginProcessor::processBlock(juce::AudioBuffer<float>& buffer,
                     }
                 }
 
-                float slStart, slEnd;
-                slot.getSliceRegion(sliceIdx, slStart, slEnd);
-                slot.setStartPos(slStart);
-                slot.setEndPos(slEnd);
-                slot.setSelectedSlice(sliceIdx);
-                // Apply per-slice pitch offset (adds to base pad pitch)
-                slot.setSlicePitchOffset(slot.getSlicePitch(sliceIdx));
+                // Play the slice as a per-voice region (same as the MIDI
+                // path). This used to rewrite the pad's start/end to the
+                // slice, which yanked the still-fading previous voice to the
+                // new region mid-fade (a pop on every CV-sequenced slice)
+                // and permanently overwrote the user's trim. triggerSlice
+                // also applies the per-slice pitch and selects the slice.
+                engine_.triggerSliceWithChoke(pad, sliceIdx, 1.0f, triggerOffset);
+            } else {
+                engine_.triggerWithChokeAndOffset(pad, triggerOffset);
             }
-            engine_.triggerWithChokeAndOffset(pad, triggerOffset);
 
             // Apply step modulation (all 3 mod slots)
             for (int ms = 0; ms < 3; ++ms) {
@@ -189,11 +190,12 @@ void PluginProcessor::processBlock(juce::AudioBuffer<float>& buffer,
                                 // slice" bug the old setStartPos/setEndPos
                                 // pattern caused.
                                 int sliceIdx = slot.getSelectedSlice();
-                                if (padCCMaps_[pad].ccStart == 0) {
+                                if (padCCMaps_[pad].noteToSlice) {
                                     sliceIdx = juce::jlimit(0, std::max(0, slot.getSliceCount() - 1),
-                                                             note - 36);
+                                                             note - PadCCMap::kSliceBaseNote);
                                 }
-                                slot.triggerSlice(sliceIdx, msg.getFloatVelocity());
+                                engine_.triggerSliceWithChoke(pad, sliceIdx,
+                                                              msg.getFloatVelocity(), samplePos);
                                 // triggerSlice does its own voice setup,
                                 // so skip the generic triggerWithChoke call
                                 // below for sliced pads.
@@ -259,7 +261,7 @@ void PluginProcessor::processBlock(juce::AudioBuffer<float>& buffer,
                             continue;
                         }
                         if (slot.getMode() == PadMode::Gate && slot.isPlaying()) {
-                            engine_.stop(pad);
+                            engine_.release(pad);  // fade over the pad's Release time
                         }
                     }
                 }
@@ -310,7 +312,7 @@ void PluginProcessor::processBlock(juce::AudioBuffer<float>& buffer,
                     {
                         for (int sIdx = 0; sIdx < slot.getSliceCount(); ++sIdx) {
                             if (slot.getSliceCC(sIdx) == cc) {
-                                slot.triggerSlice(sIdx, val);
+                                engine_.triggerSliceWithChoke(pad, sIdx, val, samplePos);
                                 perSliceFired = true;
                             }
                         }
@@ -1905,6 +1907,7 @@ void PluginProcessor::getStateInformation(juce::MemoryBlock& destData)
         pad->setAttribute("ccPan",     ccMap.ccPan);
         pad->setAttribute("ccStretch", ccMap.ccStretch);
         pad->setAttribute("ccFilter", ccMap.ccFilter);
+        pad->setAttribute("noteSlice", ccMap.noteToSlice ? 1 : 0);
         // Per-slice CC (only write non-OFF entries to keep XML compact)
         for (int s = 0; s < SampleSlot::kMaxSlices; ++s) {
             int cc = slot.getSliceCC(s);
@@ -2141,6 +2144,7 @@ void PluginProcessor::setStateInformation(const void* data, int sizeInBytes)
         ccMap.ccPan     = pad->getIntAttribute("ccPan",     10);
         ccMap.ccStretch = pad->getIntAttribute("ccStretch", 18);
         ccMap.ccFilter  = pad->getIntAttribute("ccFilter", 74);
+        ccMap.noteToSlice = pad->getIntAttribute("noteSlice", 1) != 0;
         // Per-slice CC array (sliceCC0..sliceCCN). Missing = OFF (-1).
         for (int s = 0; s < SampleSlot::kMaxSlices; ++s) {
             int cc = pad->getIntAttribute("sliceCC" + juce::String(s), -1);

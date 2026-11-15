@@ -4768,8 +4768,8 @@ void PluginEditor::buildConfigRows()
         configRows_.add(row);
     }
 
-    // Slice mode: do incoming notes pick the slice (C2 = slice 1)?
-    { ConfigRow r; r.type = ConfigRowType::Enum; r.label = "Note Selects Slice";
+    // Slice mode: what a MIDI note does (select slice / pitch / trigger)
+    { ConfigRow r; r.type = ConfigRowType::Enum; r.label = "Slice Note Mode";
       r.padIndex = selectedPad_; r.paramIndex = 20; configRows_.add(r); }
 
     // Reset MIDI Settings — restores this pad's channel + CC map to factory
@@ -5039,8 +5039,8 @@ juce::String configGetValueText(const PluginProcessor& proc, const ConfigRow& ro
             const char* names[] = { "Tape", "Decoupled" };
             return names[proc.getEngine().getSlot(row.padIndex).getPitchMode()];
         }
-        if (row.paramIndex == 20) {  // per-pad Note Selects Slice
-            return proc.getPadCCMap(row.padIndex).noteToSlice ? "ON (C2 = 1)" : "OFF";
+        if (row.paramIndex == 20) {  // per-pad Slice Note Mode
+            return PadCCMap::noteSliceModeName(proc.getPadCCMap(row.padIndex).noteSliceMode);
         }
         if (row.paramIndex == 19) {  // per-pad MIDI Channel
             int ch = proc.getEngine().getSlot(row.padIndex).getMidiChannel();
@@ -5498,9 +5498,10 @@ void PluginEditor::configAdjustValue(int selIdx, int delta)
         return;
     }
 
-    // Per-pad Note Selects Slice (paramIndex 20)
+    // Per-pad Slice Note Mode (paramIndex 20): Select Slice / Pitch / Trigger
     if (row.type == ConfigRowType::Enum && row.padIndex >= 0 && row.paramIndex == 20) {
-        processor_.getPadCCMap(row.padIndex).noteToSlice = (delta > 0);
+        auto& m = processor_.getPadCCMap(row.padIndex).noteSliceMode;
+        m = juce::jlimit(0, 2, m + (delta > 0 ? 1 : -1));
         processor_.markStateDirty();
         return;
     }
@@ -5718,7 +5719,7 @@ void PluginEditor::configPushValue(int selIdx)
             ccMap.ccPan     = 10;
             ccMap.ccStretch = 18;
             ccMap.ccFilter  = 74;
-            ccMap.noteToSlice = true;
+            ccMap.noteSliceMode = PadCCMap::SelectSlice;
             for (int s = 0; s < SampleSlot::kMaxSlices; ++s)
                 slot.setSliceCC(s, -1);
             processor_.showTickerPublic("Pad " + juce::String(pad + 1) + " MIDI settings reset");

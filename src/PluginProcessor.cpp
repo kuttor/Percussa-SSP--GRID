@@ -190,9 +190,14 @@ void PluginProcessor::processBlock(juce::AudioBuffer<float>& buffer,
                                 // slice" bug the old setStartPos/setEndPos
                                 // pattern caused.
                                 int sliceIdx = slot.getSelectedSlice();
-                                if (padCCMaps_[pad].noteToSlice) {
+                                const int nsMode = padCCMaps_[pad].noteSliceMode;
+                                if (nsMode == PadCCMap::SelectSlice) {
                                     sliceIdx = juce::jlimit(0, std::max(0, slot.getSliceCount() - 1),
                                                              note - PadCCMap::kSliceBaseNote);
+                                } else if (nsMode == PadCCMap::Pitch) {
+                                    // Same as the unsliced path: the note sets the pad
+                                    // pitch; the per-slice pitch offset still adds on top.
+                                    slot.setPitchSemitones((float)(note - PadCCMap::kPitchRootNote));
                                 }
                                 engine_.triggerSliceWithChoke(pad, sliceIdx,
                                                               msg.getFloatVelocity(), samplePos);
@@ -1907,7 +1912,7 @@ void PluginProcessor::getStateInformation(juce::MemoryBlock& destData)
         pad->setAttribute("ccPan",     ccMap.ccPan);
         pad->setAttribute("ccStretch", ccMap.ccStretch);
         pad->setAttribute("ccFilter", ccMap.ccFilter);
-        pad->setAttribute("noteSlice", ccMap.noteToSlice ? 1 : 0);
+        pad->setAttribute("noteSliceMode", ccMap.noteSliceMode);
         // Per-slice CC (only write non-OFF entries to keep XML compact)
         for (int s = 0; s < SampleSlot::kMaxSlices; ++s) {
             int cc = slot.getSliceCC(s);
@@ -2144,7 +2149,14 @@ void PluginProcessor::setStateInformation(const void* data, int sizeInBytes)
         ccMap.ccPan     = pad->getIntAttribute("ccPan",     10);
         ccMap.ccStretch = pad->getIntAttribute("ccStretch", 18);
         ccMap.ccFilter  = pad->getIntAttribute("ccFilter", 74);
-        ccMap.noteToSlice = pad->getIntAttribute("noteSlice", 1) != 0;
+        // noteSlice (bool) came from the first test build of this option
+        if (pad->hasAttribute("noteSliceMode"))
+            ccMap.noteSliceMode = juce::jlimit(0, 2, pad->getIntAttribute("noteSliceMode", 0));
+        else if (pad->hasAttribute("noteSlice"))
+            ccMap.noteSliceMode = pad->getIntAttribute("noteSlice", 1) != 0 ? PadCCMap::SelectSlice
+                                                                             : PadCCMap::Trigger;
+        else
+            ccMap.noteSliceMode = PadCCMap::SelectSlice;
         // Per-slice CC array (sliceCC0..sliceCCN). Missing = OFF (-1).
         for (int s = 0; s < SampleSlot::kMaxSlices; ++s) {
             int cc = pad->getIntAttribute("sliceCC" + juce::String(s), -1);

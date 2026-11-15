@@ -471,7 +471,8 @@ struct KitData {
                 sTok.addTokens(startsStr, ",", "");
                 eTok.addTokens(endsStr, ",", "");
                 int cnt = std::min(sTok.size(), eTok.size());
-                for (int s = 0; s < cnt && s < 64; ++s) {
+                // Was capped at 64 — kits with >64 slices lost the second half.
+                for (int s = 0; s < cnt && s < (int)std::size(k.pads[i].sliceStarts); ++s) {
                     k.pads[i].sliceStarts[s] = sTok[s].getFloatValue();
                     k.pads[i].sliceEnds[s] = eTok[s].getFloatValue();
                     k.pads[i].sliceCount++;
@@ -481,7 +482,7 @@ struct KitData {
             if (pitchStr.isNotEmpty()) {
                 juce::StringArray ptok;
                 ptok.addTokens(pitchStr, ",", "");
-                for (int s = 0; s < ptok.size() && s < 64; ++s)
+                for (int s = 0; s < ptok.size() && s < (int)std::size(k.pads[i].slicePitches); ++s)
                     k.pads[i].slicePitches[s] = ptok[s].getFloatValue();
             }
             k.pads[i].bundleOffset = pad->getIntAttribute("bundleOffset", -1);

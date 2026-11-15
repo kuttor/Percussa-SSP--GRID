@@ -2190,14 +2190,17 @@ void PluginProcessor::setStateInformation(const void* data, int sizeInBytes)
             sTok.addTokens(startsStr, ",", "");
             eTok.addTokens(endsStr, ",", "");
             int count = std::min(sTok.size(), eTok.size());
-            for (int s = 0; s < count && s < 64; ++s)
+            // Was capped at 64 (left over from before kMaxSlices went to
+            // 128): a 128-slice pad came back from autosave/project load with
+            // only slices 1-64, i.e. all of them in the first half.
+            for (int s = 0; s < count && s < SampleSlot::kMaxSlices; ++s)
                 slot.addSlicePair(sTok[s].getFloatValue(), eTok[s].getFloatValue());
         }
         auto pitchStr = pad->getStringAttribute("slicePitches", "");
         if (pitchStr.isNotEmpty()) {
             juce::StringArray ptokens;
             ptokens.addTokens(pitchStr, ",", "");
-            for (int s = 0; s < ptokens.size() && s < 64; ++s)
+            for (int s = 0; s < ptokens.size() && s < SampleSlot::kMaxSlices; ++s)
                 slot.setSlicePitch(s, ptokens[s].getFloatValue());
         }
 
@@ -2311,7 +2314,7 @@ void PluginProcessor::setStateInformation(const void* data, int sizeInBytes)
             juce::String filePath = el->getStringAttribute("file");
             if (filePath.isEmpty()) continue;
             SliceCache cache;
-            cache.count = el->getIntAttribute("count", 0);
+            cache.count = juce::jlimit(0, (int)std::size(cache.starts), el->getIntAttribute("count", 0));
             auto starts = juce::StringArray::fromTokens(el->getStringAttribute("starts"), ",", "");
             auto ends = juce::StringArray::fromTokens(el->getStringAttribute("ends"), ",", "");
             auto pitches = juce::StringArray::fromTokens(el->getStringAttribute("pitches"), ",", "");

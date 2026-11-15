@@ -227,6 +227,25 @@ struct PadCCMap {
     int ccStretch = 18;   // was 11, moved off effect controller 1
     int ccFilter  = 74;   // standard MIDI brightness/filter cutoff
 
+    // What an incoming MIDI note does on a pad in slice mode:
+    //   SelectSlice — the note picks the slice (C2 = 36 = slice 1, C#2 =
+    //                 slice 2, ...). Since 2.1.0 this only worked when CC
+    //                 Slice was set to 0, so with the default CC 16 notes
+    //                 never selected slices.
+    //   Pitch       — play the currently selected slice (picked via CC
+    //                 Slice, Slice CV or the editor) transposed by the
+    //                 note, exactly like an unsliced pad: note 60 = original
+    //                 pitch. Previously sliced pads ignored note pitch.
+    //   Trigger     — play the selected slice, note value ignored.
+    enum NoteSliceMode { SelectSlice = 0, Pitch = 1, Trigger = 2 };
+    int noteSliceMode = SelectSlice;
+    static constexpr int kSliceBaseNote = 36;
+    static constexpr int kPitchRootNote = 60;
+    static const char* noteSliceModeName(int m) {
+        static const char* names[] = { "Select Slice (C2=1)", "Pitch (60=orig)", "Trigger Only" };
+        return names[(m >= 0 && m <= 2) ? m : 0];
+    }
+
     static constexpr int kNumCCs = 6;
 
     int& byIndex(int i) {
@@ -452,7 +471,8 @@ struct KitData {
                 sTok.addTokens(startsStr, ",", "");
                 eTok.addTokens(endsStr, ",", "");
                 int cnt = std::min(sTok.size(), eTok.size());
-                for (int s = 0; s < cnt && s < 64; ++s) {
+                // Was capped at 64 — kits with >64 slices lost the second half.
+                for (int s = 0; s < cnt && s < (int)std::size(k.pads[i].sliceStarts); ++s) {
                     k.pads[i].sliceStarts[s] = sTok[s].getFloatValue();
                     k.pads[i].sliceEnds[s] = eTok[s].getFloatValue();
                     k.pads[i].sliceCount++;
@@ -462,7 +482,7 @@ struct KitData {
             if (pitchStr.isNotEmpty()) {
                 juce::StringArray ptok;
                 ptok.addTokens(pitchStr, ",", "");
-                for (int s = 0; s < ptok.size() && s < 64; ++s)
+                for (int s = 0; s < ptok.size() && s < (int)std::size(k.pads[i].slicePitches); ++s)
                     k.pads[i].slicePitches[s] = ptok[s].getFloatValue();
             }
             k.pads[i].bundleOffset = pad->getIntAttribute("bundleOffset", -1);

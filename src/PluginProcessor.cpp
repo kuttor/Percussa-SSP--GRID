@@ -106,15 +106,16 @@ void PluginProcessor::processBlock(juce::AudioBuffer<float>& buffer,
                     }
                 }
 
-                float slStart, slEnd;
-                slot.getSliceRegion(sliceIdx, slStart, slEnd);
-                slot.setStartPos(slStart);
-                slot.setEndPos(slEnd);
-                slot.setSelectedSlice(sliceIdx);
-                // Apply per-slice pitch offset (adds to base pad pitch)
-                slot.setSlicePitchOffset(slot.getSlicePitch(sliceIdx));
+                // Play the slice as a per-voice region (same as the MIDI
+                // path). This used to rewrite the pad's start/end to the
+                // slice, which yanked the still-fading previous voice to the
+                // new region mid-fade (a pop on every CV-sequenced slice)
+                // and permanently overwrote the user's trim. triggerSlice
+                // also applies the per-slice pitch and selects the slice.
+                engine_.triggerSliceWithChoke(pad, sliceIdx, 1.0f, triggerOffset);
+            } else {
+                engine_.triggerWithChokeAndOffset(pad, triggerOffset);
             }
-            engine_.triggerWithChokeAndOffset(pad, triggerOffset);
 
             // Apply step modulation (all 3 mod slots)
             for (int ms = 0; ms < 3; ++ms) {
@@ -189,11 +190,17 @@ void PluginProcessor::processBlock(juce::AudioBuffer<float>& buffer,
                                 // slice" bug the old setStartPos/setEndPos
                                 // pattern caused.
                                 int sliceIdx = slot.getSelectedSlice();
-                                if (padCCMaps_[pad].ccStart == 0) {
+                                const int nsMode = padCCMaps_[pad].noteSliceMode;
+                                if (nsMode == PadCCMap::SelectSlice) {
                                     sliceIdx = juce::jlimit(0, std::max(0, slot.getSliceCount() - 1),
-                                                             note - 36);
+                                                             note - PadCCMap::kSliceBaseNote);
+                                } else if (nsMode == PadCCMap::Pitch) {
+                                    // Same as the unsliced path: the note sets the pad
+                                    // pitch; the per-slice pitch offset still adds on top.
+                                    slot.setPitchSemitones((float)(note - PadCCMap::kPitchRootNote));
                                 }
-                                slot.triggerSlice(sliceIdx, msg.getFloatVelocity());
+                                engine_.triggerSliceWithChoke(pad, sliceIdx,
+                                                              msg.getFloatVelocity(), samplePos);
                                 // triggerSlice does its own voice setup,
                                 // so skip the generic triggerWithChoke call
                                 // below for sliced pads.
@@ -259,7 +266,7 @@ void PluginProcessor::processBlock(juce::AudioBuffer<float>& buffer,
                             continue;
                         }
                         if (slot.getMode() == PadMode::Gate && slot.isPlaying()) {
-                            engine_.stop(pad);
+                            engine_.release(pad);  // fade over the pad's Release time
                         }
                     }
                 }
@@ -310,7 +317,7 @@ void PluginProcessor::processBlock(juce::AudioBuffer<float>& buffer,
                     {
                         for (int sIdx = 0; sIdx < slot.getSliceCount(); ++sIdx) {
                             if (slot.getSliceCC(sIdx) == cc) {
-                                slot.triggerSlice(sIdx, val);
+                                engine_.triggerSliceWithChoke(pad, sIdx, val, samplePos);
                                 perSliceFired = true;
                             }
                         }
@@ -1905,6 +1912,7 @@ void PluginProcessor::getStateInformation(juce::MemoryBlock& destData)
         pad->setAttribute("ccPan",     ccMap.ccPan);
         pad->setAttribute("ccStretch", ccMap.ccStretch);
         pad->setAttribute("ccFilter", ccMap.ccFilter);
+        pad->setAttribute("noteSliceMode", ccMap.noteSliceMode);
         // Per-slice CC (only write non-OFF entries to keep XML compact)
         for (int s = 0; s < SampleSlot::kMaxSlices; ++s) {
             int cc = slot.getSliceCC(s);
@@ -2141,6 +2149,14 @@ void PluginProcessor::setStateInformation(const void* data, int sizeInBytes)
         ccMap.ccPan     = pad->getIntAttribute("ccPan",     10);
         ccMap.ccStretch = pad->getIntAttribute("ccStretch", 18);
         ccMap.ccFilter  = pad->getIntAttribute("ccFilter", 74);
+        // noteSlice (bool) came from the first test build of this option
+        if (pad->hasAttribute("noteSliceMode"))
+            ccMap.noteSliceMode = juce::jlimit(0, 2, pad->getIntAttribute("noteSliceMode", 0));
+        else if (pad->hasAttribute("noteSlice"))
+            ccMap.noteSliceMode = pad->getIntAttribute("noteSlice", 1) != 0 ? PadCCMap::SelectSlice
+                                                                             : PadCCMap::Trigger;
+        else
+            ccMap.noteSliceMode = PadCCMap::SelectSlice;
         // Per-slice CC array (sliceCC0..sliceCCN). Missing = OFF (-1).
         for (int s = 0; s < SampleSlot::kMaxSlices; ++s) {
             int cc = pad->getIntAttribute("sliceCC" + juce::String(s), -1);
@@ -2174,14 +2190,17 @@ void PluginProcessor::setStateInformation(const void* data, int sizeInBytes)
             sTok.addTokens(startsStr, ",", "");
             eTok.addTokens(endsStr, ",", "");
             int count = std::min(sTok.size(), eTok.size());
-            for (int s = 0; s < count && s < 64; ++s)
+            // Was capped at 64 (left over from before kMaxSlices went to
+            // 128): a 128-slice pad came back from autosave/project load with
+            // only slices 1-64, i.e. all of them in the first half.
+            for (int s = 0; s < count && s < SampleSlot::kMaxSlices; ++s)
                 slot.addSlicePair(sTok[s].getFloatValue(), eTok[s].getFloatValue());
         }
         auto pitchStr = pad->getStringAttribute("slicePitches", "");
         if (pitchStr.isNotEmpty()) {
             juce::StringArray ptokens;
             ptokens.addTokens(pitchStr, ",", "");
-            for (int s = 0; s < ptokens.size() && s < 64; ++s)
+            for (int s = 0; s < ptokens.size() && s < SampleSlot::kMaxSlices; ++s)
                 slot.setSlicePitch(s, ptokens[s].getFloatValue());
         }
 
@@ -2295,7 +2314,7 @@ void PluginProcessor::setStateInformation(const void* data, int sizeInBytes)
             juce::String filePath = el->getStringAttribute("file");
             if (filePath.isEmpty()) continue;
             SliceCache cache;
-            cache.count = el->getIntAttribute("count", 0);
+            cache.count = juce::jlimit(0, (int)std::size(cache.starts), el->getIntAttribute("count", 0));
             auto starts = juce::StringArray::fromTokens(el->getStringAttribute("starts"), ",", "");
             auto ends = juce::StringArray::fromTokens(el->getStringAttribute("ends"), ",", "");
             auto pitches = juce::StringArray::fromTokens(el->getStringAttribute("pitches"), ",", "");

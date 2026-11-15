@@ -180,91 +180,135 @@ void SampleSlot::startVoice(Voice& v, float vel)
 
 void SampleSlot::trigger()
 {
-    triggerWithVelocity(1.0f);  // no MIDI velocity scaling — volume_ applied at output
+    triggerInternal(1.0f, 0);  // no MIDI velocity scaling — volume_ applied at output
 }
 
 void SampleSlot::triggerWithOffset(int sampleOffset)
 {
-    triggerWithVelocity(1.0f);
-    voices_[0].startOffset = sampleOffset;
+    triggerInternal(1.0f, sampleOffset);
 }
 
 void SampleSlot::triggerWithVelocityAndOffset(float vel, int sampleOffset)
 {
-    triggerWithVelocity(vel);
-    voices_[0].startOffset = sampleOffset;
+    triggerInternal(vel, sampleOffset);
 }
 
 void SampleSlot::triggerWithVelocity(float vel)
 {
-    int ns = numSamples_.load();
-    if (ns == 0) return;
+    triggerInternal(vel, 0);
+}
 
-    // Retrigger guard
-    if (samplesSinceLastTrigger_ < kRetriggerGuard) return;
+void SampleSlot::beginFadeOut(Voice& v, int len)
+{
+    if (!v.playing) return;
+    len = std::max(1, len);
+    // Continue from the voice's current fade level instead of restarting at
+    // full gain (restarting caused an upward jump = click when a voice that
+    // was already fading got stolen or stopped again).
+    const float level = v.stopLevel();
+    const int newRemaining = std::max(1, (int)std::lround(level * (float)len));
+    if (v.stopping && v.fadeOut <= newRemaining && v.fadeOutLen > 0)
+        return;  // an equal-or-faster fade is already running — keep it
+    v.stopping   = true;
+    v.fadeOutLen = len;
+    v.fadeOut    = newRemaining;
+}
+
+void SampleSlot::stealVoice0(int fadeLen, int fadeDelay)
+{
+    // Find a free tail slot (voices 1-3); if all are busy, reuse the one
+    // that is closest to silent rather than always the last one.
+    int tail = -1;
+    for (int i = kMaxVoices - 1; i >= 1; --i)
+        if (!voices_[i].playing) { tail = i; break; }
+    if (tail < 0) {
+        float best = 2.0f;
+        for (int i = 1; i < kMaxVoices; ++i) {
+            float lvl = voices_[i].stopLevel();
+            if (lvl < best) { best = lvl; tail = i; }
+        }
+    }
+
+    Voice& t = voices_[tail];
+    t = voices_[0];
+
+    // Freeze what the old voice was playing so that changes made right
+    // after this trigger (slice region, step-mod Start/End, note pitch,
+    // per-slice pitch) can't make the fading voice jump.
+    const int ns = numSamples_.load();
+    if (t.regionStart < 0) {
+        t.regionStart = juce::jlimit(0, std::max(0, ns - 1), (int)(startPos_ * (float)ns));
+        t.regionEnd   = juce::jlimit(t.regionStart + 1, std::max(1, ns), (int)(endPos_ * (float)ns));
+    }
+    if (t.frozenRate <= 0.0f)
+        t.frozenRate = (t.lastRate > 0.0f) ? t.lastRate
+                                           : pitchRate_ * std::pow(2.0f, slicePitchOffset_ / 12.0f);
+
+    beginFadeOut(t, fadeLen);
+    t.fadeDelay = std::max(0, fadeDelay);
+}
+
+bool SampleSlot::triggerInternal(float vel, int sampleOffset)
+{
+    int ns = numSamples_.load();
+    if (ns == 0) return false;
+
+    // Retrigger guard. (Previously the offset was applied to voice 0 even
+    // when the trigger was dropped here, silencing the *playing* voice for
+    // a few samples — a dropout click.)
+    if (samplesSinceLastTrigger_ < kRetriggerGuard) return false;
     samplesSinceLastTrigger_ = 0;
 
-    // Voice stealing: if voice 0 is playing, move it to a tail voice
-    // for a short crossfade (eliminates clicks at slice boundaries)
+    // Voice stealing: crossfade the old voice out. With a short attack the
+    // new onset masks a ~3 ms fade; with a long attack the old voice would
+    // otherwise drop out audibly while the new one is still near silence,
+    // so the crossfade follows the attack time (capped).
     if (voices_[0].playing) {
-        // Find a free tail slot (voices 1-3)
-        int tail = -1;
-        for (int i = kMaxVoices - 1; i >= 1; --i) {
-            if (!voices_[i].playing) { tail = i; break; }
-        }
-        if (tail < 0) tail = kMaxVoices - 1;  // steal oldest tail
-        voices_[tail] = voices_[0];
-        voices_[tail].stopping = true;
-        voices_[tail].fadeOut = kFadeSamples;
+        const int len = juce::jlimit(msToOutSamples(kStopFadeMs),
+                                     msToOutSamples(kStealFadeMaxMs),
+                                     msToOutSamples(fadeInMs_));
+        stealVoice0(len, sampleOffset);
     }
 
-    // Start fresh voice on slot 0
+    // Start fresh voice on slot 0 (reset() also clears its filter/FX state;
+    // the tail keeps its own, so the fading voice is not disturbed).
     voices_[0].reset();
     startVoice(voices_[0], vel);
-    // Reset filter state for clean start
-    svfIc1L_ = svfIc2L_ = svfIc1R_ = svfIc2R_ = 0.0f;
-    for (int b = 0; b < 3; ++b) {
-        fmtIc1L_[b] = fmtIc2L_[b] = fmtIc1R_[b] = fmtIc2R_[b] = 0.0f;
-    }
-    ringModPhase_ = 0.0f;
-    if (filterType_ == FilterType::CombFilter) {
-        std::memset(combBufL_, 0, sizeof(combBufL_));
-        std::memset(combBufR_, 0, sizeof(combBufR_));
-        combWriteIdx_ = 0;
-    }
-    lofiPhaseL_ = lofiPhaseR_ = lofiHeldL_ = lofiHeldR_ = 0.0f;
+    voices_[0].startOffset = std::max(0, sampleOffset);
 
     // LPG: strike the vactrol on trigger
     if (filterType_ == FilterType::LPG) {
         float strike = filterCutoff_ / 20000.0f;  // cutoff knob → strike amount [0..1]
-        lpgVactrol_ = std::min(1.0f, vel * strike);
+        voices_[0].lpgVactrol = std::min(1.0f, vel * strike);
+        voices_[0].lpgBlockCount = kLPGBlockSize - 1;  // update envelope on first sample
         lpgMemory_ = std::min(1.0f, lpgMemory_ + 0.15f * vel);  // accumulate heat
-        lpgBlockCount_ = 0;
     }
+    return true;
 }
 
 void SampleSlot::triggerSlice(int sliceIdx)
 {
-    triggerSlice(sliceIdx, 1.0f);
+    triggerSliceWithOffset(sliceIdx, 1.0f, 0);
 }
 
 void SampleSlot::triggerSlice(int sliceIdx, float velocity)
+{
+    triggerSliceWithOffset(sliceIdx, velocity, 0);
+}
+
+void SampleSlot::triggerSliceWithOffset(int sliceIdx, float velocity, int sampleOffset)
 {
     int ns = numSamples_.load();
     if (ns == 0) return;
     if (sliceIdx < 0 || sliceIdx >= sliceCount_) return;
 
-    // Use the normal trigger path so voice stealing + filter resets happen.
-    // It will allocate voice 0 with read position at startPos_ * ns. We then
-    // overwrite voice 0's region + read position to the slice region. The
-    // slot's startPos_/endPos_ stay untouched, so the visual trim and grid
-    // mini-waveform don't darken out.
-    triggerWithVelocity(juce::jlimit(0.0f, 1.0f, velocity));
-
-    // triggerWithVelocity is guarded by samplesSinceLastTrigger_, so if a
-    // rapid retrigger was dropped voice 0 may still be the previous voice —
-    // only override if voice 0 is actually playing (it almost always is).
-    if (!voices_[0].playing) return;
+    // Use the normal trigger path so voice stealing happens. It allocates
+    // voice 0 at startPos_ * ns; we then point voice 0 at the slice region.
+    // The slot's startPos_/endPos_ stay untouched, so the visual trim and
+    // grid mini-waveform don't darken out.
+    // If the retrigger guard dropped the trigger, voice 0 is still the
+    // previous voice — don't touch it (moving it would jump = click).
+    if (!triggerInternal(juce::jlimit(0.0f, 1.0f, velocity), sampleOffset)) return;
 
     float s = sliceStarts_[sliceIdx];
     float e = sliceEnds_[sliceIdx];
@@ -286,20 +330,19 @@ void SampleSlot::triggerSlice(int sliceIdx, float velocity)
 
 void SampleSlot::stop()
 {
-    if (voices_[0].playing && !voices_[0].stopping) {
-        voices_[0].stopping = true;
-        voices_[0].fadeOut = kFadeSamples;
-    }
+    beginFadeOut(voices_[0], msToOutSamples(kStopFadeMs));
 }
 
 void SampleSlot::stopAll()
 {
-    for (auto& v : voices_) {
-        if (v.playing && !v.stopping) {
-            v.stopping = true;
-            v.fadeOut = kFadeSamples;
-        }
-    }
+    const int len = msToOutSamples(kStopFadeMs);
+    for (auto& v : voices_) beginFadeOut(v, len);
+}
+
+void SampleSlot::release()
+{
+    const int len = std::max(msToOutSamples(kStopFadeMs), msToOutSamples(fadeOutMs_));
+    beginFadeOut(voices_[0], len);
 }
 
 bool SampleSlot::isPlaying() const
@@ -379,8 +422,6 @@ void SampleSlot::process(float* outL, float* outR, int numSamples)
 
     const int startSample = static_cast<int>(startPos_ * (float)ns);
     const int endSample = static_cast<int>(endPos_ * (float)ns);
-    const int regionLen = endSample - startSample;
-    if (regionLen <= 0) return;
 
     const float* srcL = buf.getReadPointer(0);
     const float* srcR = (numChannels_ > 1) ? buf.getReadPointer(1) : srcL;
@@ -412,10 +453,11 @@ void SampleSlot::process(float* outL, float* outR, int numSamples)
         tapeRateMod_ = tapeRate_ * wowMul * flutterMul;
     }
 
-    int fadeInSamples = static_cast<int>(fadeInMs_ * 0.001f * (float)fileSampleRate_);
-    int fadeOutSamples = static_cast<int>(fadeOutMs_ * 0.001f * (float)fileSampleRate_);
-    fadeInSamples = std::min(fadeInSamples, regionLen);
-    fadeOutSamples = std::min(fadeOutSamples, regionLen);
+    // Fade lengths in source samples. Clamped per voice in processVoice()
+    // against the region that voice actually plays (a slice can be much
+    // shorter than the pad's trim).
+    const int fadeInSamples = static_cast<int>(fadeInMs_ * 0.001f * (float)fileSampleRate_);
+    const int fadeOutSamples = static_cast<int>(fadeOutMs_ * 0.001f * (float)fileSampleRate_);
 
     for (int vi = 0; vi < kMaxVoices; ++vi) {
         Voice& v = voices_[vi];
@@ -444,17 +486,27 @@ void SampleSlot::processVoice(Voice& v, float* outL, float* outR, int numSamples
                                int fadeInSamples, int fadeOutSamples)
 {
     const bool useGranular = (effStretch < 0.99f || effStretch > 1.01f) || (pitchMode_ == 1);
-    // Slot-level pitch + per-slice pitch offset + modulated tape rate (varispeed + wow/flutter)
-    const float combinedPitchRate = pitchRate_ * tapeRateMod_ * std::pow(2.0f, slicePitchOffset_ / 12.0f);
+    const bool isLoop = (mode_ == PadMode::Loop || mode_ == PadMode::ClockedLoop);
+    // Slot-level pitch + per-slice pitch offset (or the frozen rate of a
+    // fading tail voice) × modulated tape rate (varispeed + wow/flutter)
+    const float baseRate = (v.frozenRate > 0.0f)
+        ? v.frozenRate
+        : pitchRate_ * std::pow(2.0f, slicePitchOffset_ / 12.0f);
+    v.lastRate = baseRate;
+    const float combinedPitchRate = baseRate * tapeRateMod_;
     const double rateStep = static_cast<double>(combinedPitchRate) * sampleRateRatio;
     const double rateStepStretched = (effStretch > 0.001f)
         ? rateStep / static_cast<double>(effStretch) : rateStep;
+
+    fadeInSamples  = std::min(fadeInSamples,  regionLen);
+    fadeOutSamples = std::min(fadeOutSamples, regionLen);
     const float invFadeIn = (fadeInSamples > 0) ? 1.0f / (float)fadeInSamples : 0.0f;
     const float invFadeOut = (fadeOutSamples > 0) ? 1.0f / (float)fadeOutSamples : 0.0f;
-
-    // Determine the fade-out length for this voice
-    // Tail voices get a longer fade, normal voices get kFadeSamples
-    const int voiceFadeSamples = (v.fadeOut > kFadeSamples) ? v.fadeOut : kFadeSamples;
+    // Loop seam crossfade: ~10 ms when the loop is long enough (at most a
+    // quarter of the loop), never shorter than the old 128 samples.
+    const int loopXfadeLen = std::max(kLoopXfadeSamples,
+                                      std::min(kLoopXfadeMaxSamples, regionLen / 4));
+    const bool loopXfade = isLoop && regionLen > loopXfadeLen * 2;
 
     // ── Lo-fi pre-computation (once per block) ─────────────────────────
     const bool lofiActive = (lofiMode_ != LofiMode::Off);
@@ -537,12 +589,16 @@ void SampleSlot::processVoice(Voice& v, float* outL, float* outR, int numSamples
         // ── Anti-click envelope ──────────────────────────────────────────
         float env = 1.0f;
         if (v.fadeIn < kFadeSamples) {
-            env = static_cast<float>(v.fadeIn) / static_cast<float>(kFadeSamples);
+            env = smooth01(static_cast<float>(v.fadeIn) / static_cast<float>(kFadeSamples));
             v.fadeIn++;
         }
         if (v.stopping) {
-            if (v.fadeOut > 0) {
-                env *= static_cast<float>(v.fadeOut) / static_cast<float>(voiceFadeSamples);
+            if (v.fadeDelay > 0) {
+                // Steal fade waits for the new voice's sample-accurate start
+                env *= smooth01(v.stopLevel());
+                v.fadeDelay--;
+            } else if (v.fadeOut > 0) {
+                env *= smooth01(v.stopLevel());
                 v.fadeOut--;
             } else {
                 v.playing = false;
@@ -555,13 +611,18 @@ void SampleSlot::processVoice(Voice& v, float* outL, float* outR, int numSamples
 
         if (!useGranular)
         {
-            int idx = static_cast<int>(v.readPosition);
-            bool isLoop = (mode_ == PadMode::Loop || mode_ == PadMode::ClockedLoop);
-
-            if (idx >= endSample || idx >= ns) {
+            if (v.readPosition >= (double)endSample || v.readPosition >= (double)ns) {
                 if (isLoop) {
-                    v.readPosition = static_cast<double>(startSample);
-                    idx = startSample;
+                    // The crossfade below has already blended into
+                    // [start, start + X) by the time we reach the end, so
+                    // continue from start + X. (Jumping back to `start` —
+                    // as before — replayed those X samples and produced a
+                    // step at every loop pass.)
+                    double over = std::max(0.0, v.readPosition - (double)endSample);
+                    v.readPosition = (double)startSample
+                                   + (loopXfade ? (double)loopXfadeLen : 0.0) + over;
+                    if (v.readPosition >= (double)endSample) v.readPosition = (double)startSample;
+                    v.wrapped = true;
                 } else {
                     v.playing = false;
                     return;
@@ -570,22 +631,24 @@ void SampleSlot::processVoice(Voice& v, float* outL, float* outR, int numSamples
             sL = readInterpolated(srcL, v.readPosition, ns);
             sR = readInterpolated(srcR, v.readPosition, ns);
 
-            // End-of-sample fade: prevent click on one-shots by fading last 64 samples
+            // End-of-sample fade for one-shots, measured in *output* samples
+            // so it stays ~1.3 ms even when the sample is pitched way up.
             if (!isLoop) {
-                int distToEnd = endSample - idx;
-                if (distToEnd > 0 && distToEnd < 64) {
-                    float endFade = (float)distToEnd / 64.0f;
+                double distOut = ((double)endSample - v.readPosition) / std::max(rateStep, 1e-6);
+                if (distOut < (double)kFadeSamples) {
+                    float endFade = smooth01((float)(distOut / (double)kFadeSamples));
                     sL *= endFade;
                     sR *= endFade;
                 }
             }
 
-            // Loop crossfade: blend with start of loop when approaching end
-            if (isLoop && regionLen > kLoopXfadeSamples * 2) {
-                int distToEnd = endSample - idx;
-                if (distToEnd > 0 && distToEnd < kLoopXfadeSamples) {
-                    float xfade = (float)distToEnd / (float)kLoopXfadeSamples;
-                    double loopPos = (double)startSample + (double)(kLoopXfadeSamples - distToEnd);
+            // Loop crossfade: blend towards the loop start while approaching
+            // the end; at the end we are fully on [start + X] (see wrap above).
+            if (loopXfade) {
+                double distToEnd = (double)endSample - v.readPosition;
+                if (distToEnd > 0.0 && distToEnd < (double)loopXfadeLen) {
+                    float xfade = smooth01((float)(distToEnd / (double)loopXfadeLen));
+                    double loopPos = (double)startSample + ((double)loopXfadeLen - distToEnd);
                     float xL = readInterpolated(srcL, loopPos, ns);
                     float xR = readInterpolated(srcR, loopPos, ns);
                     sL = sL * xfade + xL * (1.0f - xfade);
@@ -645,11 +708,16 @@ void SampleSlot::processVoice(Voice& v, float* outL, float* outR, int numSamples
             }
 
             if (v.sourcePos >= static_cast<double>(endSample)) {
-                if (mode_ == PadMode::Loop || mode_ == PadMode::ClockedLoop) {
-                    v.sourcePos = static_cast<double>(startSample);
-                    v.grainPos[0] = v.sourcePos;
-                    v.grainPos[1] = v.sourcePos;
-                    v.grainCounter = 0;
+                if (isLoop) {
+                    // Wrap only the source position. The two running grains
+                    // finish their windows and the next grains spawn at the
+                    // loop start, so the seam is crossfaded by the grain
+                    // windows. (Resetting both grains + the window phase
+                    // here made the output jump at every loop pass.)
+                    v.sourcePos -= static_cast<double>(regionLen);
+                    if (v.sourcePos < static_cast<double>(startSample))
+                        v.sourcePos = static_cast<double>(startSample);
+                    v.wrapped = true;
                 } else {
                     v.playing = false;
                     return;
@@ -659,10 +727,11 @@ void SampleSlot::processVoice(Voice& v, float* outL, float* outR, int numSamples
             // End-of-sample fade for granular one-shots (matches non-granular path).
             // Without this, granular playback hitting endSample causes the same
             // click that the non-granular path's distToEnd<64 check avoids.
-            if (mode_ != PadMode::Loop && mode_ != PadMode::ClockedLoop) {
-                double distToEnd = static_cast<double>(endSample) - v.sourcePos;
-                if (distToEnd > 0.0 && distToEnd < 64.0) {
-                    float endFade = (float)(distToEnd / 64.0);
+            if (!isLoop) {
+                double distOut = (static_cast<double>(endSample) - v.sourcePos)
+                               / std::max(rateStepStretched, 1e-6);
+                if (distOut < (double)kFadeSamples) {
+                    float endFade = smooth01((float)(distOut / (double)kFadeSamples));
                     sL *= endFade;
                     sR *= endFade;
                 }
@@ -681,11 +750,16 @@ void SampleSlot::processVoice(Voice& v, float* outL, float* outR, int numSamples
         double posInRegion = v.sourcePos - static_cast<double>(startSample);
         double distFromEnd = static_cast<double>(endSample) - v.sourcePos;
 
-        if (fadeInSamples > 0 && posInRegion < fadeInSamples) {
+        // Loop modes: the attack only shapes the first pass, and the
+        // release is applied when the loop is stopped (release()). Applying
+        // them on every loop pass faded the loop out to silence at its end
+        // and jumped back to full level at its start (or vice versa) — a pop
+        // on every cycle unless attack and release were both set.
+        if (fadeInSamples > 0 && !v.wrapped && posInRegion < fadeInSamples) {
             float t = juce::jlimit(0.0f, 1.0f, (float)posInRegion * invFadeIn);
             fadeEnv *= (fadeInCurve_ == 0) ? t : t * t;
         }
-        if (fadeOutSamples > 0 && distFromEnd < fadeOutSamples) {
+        if (fadeOutSamples > 0 && !isLoop && distFromEnd < fadeOutSamples) {
             float t = juce::jlimit(0.0f, 1.0f, (float)distFromEnd * invFadeOut);
             fadeEnv *= (fadeOutCurve_ == 0) ? t : t * t;
         }
@@ -694,14 +768,14 @@ void SampleSlot::processVoice(Voice& v, float* outL, float* outR, int numSamples
         if (lofiActive) {
             // Sample rate reduction via ZOH (zero-order hold)
             if (lofiRateRatio < 0.999f) {
-                lofiPhaseL_ += lofiRateRatio;
-                if (lofiPhaseL_ >= 1.0f) {
-                    lofiPhaseL_ -= 1.0f;
-                    lofiHeldL_ = sL;
-                    lofiHeldR_ = sR;
+                v.lofiPhase += lofiRateRatio;
+                if (v.lofiPhase >= 1.0f) {
+                    v.lofiPhase -= 1.0f;
+                    v.lofiHeldL = sL;
+                    v.lofiHeldR = sR;
                 }
-                sL = lofiHeldL_;
-                sR = lofiHeldR_;
+                sL = v.lofiHeldL;
+                sR = v.lofiHeldR;
             }
             // Bit crush (with optional µ-law companding for MPC-60)
             if (lofiCompand) {
@@ -717,13 +791,13 @@ void SampleSlot::processVoice(Voice& v, float* outL, float* outR, int numSamples
         if (filterActive) {
             if (filterType_ == FilterType::LPG) {
                 // Block-rate vactrol envelope update
-                if (++lpgBlockCount_ >= kLPGBlockSize) {
-                    lpgBlockCount_ = 0;
-                    float newEnv = lpgStepEnvelope();
-                    lpgEnvInc_ = (newEnv - lpgEnv_) * (1.0f / (float)kLPGBlockSize);
+                if (++v.lpgBlockCount >= kLPGBlockSize) {
+                    v.lpgBlockCount = 0;
+                    float newEnv = lpgStepEnvelope(v, &v == &voices_[0]);
+                    v.lpgEnvInc = (newEnv - v.lpgEnv) * (1.0f / (float)kLPGBlockSize);
                 }
-                lpgEnv_ += lpgEnvInc_;
-                float e = juce::jlimit(0.0f, 1.0f, lpgEnv_);
+                v.lpgEnv += v.lpgEnvInc;
+                float e = juce::jlimit(0.0f, 1.0f, v.lpgEnv);
 
                 // Map envelope to cutoff: 20Hz (closed) → 20kHz (open)
                 float fc = 20.0f * lpgFastPow2(9.9658f * e);  // 20 * 1000^e
@@ -731,38 +805,38 @@ void SampleSlot::processVoice(Voice& v, float* outL, float* outR, int numSamples
                 float g = 1.0f - std::exp(-twoPiOverSr * std::min(fc, 20000.0f));
 
                 // One-pole lowpass (6dB/oct — authentic Buchla 292 slope)
-                lpgFilterZ_L_ += g * (sL - lpgFilterZ_L_);
-                lpgFilterZ_R_ += g * (sR - lpgFilterZ_R_);
+                v.lpgZL += g * (sL - v.lpgZL);
+                v.lpgZR += g * (sR - v.lpgZR);
 
                 // VCA: squared envelope for natural amplitude curve
                 float vca = e * e;
-                sL = lpgFilterZ_L_ * vca;
-                sR = lpgFilterZ_R_ * vca;
+                sL = v.lpgZL * vca;
+                sR = v.lpgZR * vca;
             } else if (filterType_ == FilterType::Formant) {
                 // Input drive for vocal presence
                 float fmtDrive = 1.0f + filterReso_ * 0.4f;
                 float dL = sL * fmtDrive, dR = sR * fmtDrive;
                 float sumL = 0.0f, sumR = 0.0f;
                 for (int b = 0; b < 3; ++b) {
-                    sumL += filterBPF(dL, fmtIc1L_[b], fmtIc2L_[b],
+                    sumL += filterBPF(dL, v.fmtIc1L[b], v.fmtIc2L[b],
                                        fmtG[b], fmtA1[b], fmtA2[b], fmtA3[b]) * fmtAmp[b];
-                    sumR += filterBPF(dR, fmtIc1R_[b], fmtIc2R_[b],
+                    sumR += filterBPF(dR, v.fmtIc1R[b], v.fmtIc2R[b],
                                        fmtG[b], fmtA1[b], fmtA2[b], fmtA3[b]) * fmtAmp[b];
                 }
                 // Formant gain: 3 BPFs sum to ~0.3-0.5 of input level. Boost to match.
                 sL = sumL * 2.2f;
                 sR = sumR * 2.2f;
             } else if (filterType_ == FilterType::MS20) {
-                sL = filterMS20(sL, svfIc1L_, svfIc2L_, fG, fK, fA1, fA2, fA3);
-                sR = filterMS20(sR, svfIc1R_, svfIc2R_, fG, fK, fA1, fA2, fA3);
+                sL = filterMS20(sL, v.svfIc1L, v.svfIc2L, fG, fK, fA1, fA2, fA3);
+                sR = filterMS20(sR, v.svfIc1R, v.svfIc2R, fG, fK, fA1, fA2, fA3);
             } else if (filterType_ == FilterType::RingMod) {
                 // Ring modulator: multiply signal by sine oscillator
                 // Cutoff repurposed as frequency (20-2000Hz), reso as dry/wet mix
                 float freq = 20.0f + (filterCutoff_ / 20000.0f) * 1980.0f;
                 float phaseInc = freq / (float)outputSampleRate_;
-                ringModPhase_ += phaseInc;
-                if (ringModPhase_ >= 1.0f) ringModPhase_ -= 1.0f;
-                float mod = std::sin(ringModPhase_ * 6.283185307f);
+                v.ringModPhase += phaseInc;
+                if (v.ringModPhase >= 1.0f) v.ringModPhase -= 1.0f;
+                float mod = std::sin(v.ringModPhase * 6.283185307f);
                 float mix = filterReso_;
                 sL = sL * (1.0f - mix) + sL * mod * mix;
                 sR = sR * (1.0f - mix) + sR * mod * mix;
@@ -790,21 +864,21 @@ void SampleSlot::processVoice(Voice& v, float* outL, float* outR, int numSamples
                     (int)((float)outputSampleRate_ / freq));
                 float fb = filterReso_ * 0.95f;  // cap at 0.95 to prevent runaway
                 // Read from delay
-                int readIdx = (combWriteIdx_ - delaySamples + kCombMaxDelay) % kCombMaxDelay;
-                float delL = combBufL_[readIdx];
-                float delR = combBufR_[readIdx];
+                int readIdx = (v.combWriteIdx - delaySamples + kCombMaxDelay) % kCombMaxDelay;
+                float delL = v.combBufL[readIdx];
+                float delR = v.combBufR[readIdx];
                 // Write: input + feedback * delayed
                 float writeL = sL + fb * delL;
                 float writeR = sR + fb * delR;
-                combBufL_[combWriteIdx_] = writeL;
-                combBufR_[combWriteIdx_] = writeR;
-                combWriteIdx_ = (combWriteIdx_ + 1) % kCombMaxDelay;
+                v.combBufL[v.combWriteIdx] = writeL;
+                v.combBufR[v.combWriteIdx] = writeR;
+                v.combWriteIdx = (v.combWriteIdx + 1) % kCombMaxDelay;
                 // Output: mix of direct + delayed (classic comb sound)
                 sL = sL + delL;
                 sR = sR + delR;
             } else {
-                sL = filterSVF(sL, svfIc1L_, svfIc2L_, fG, fK, fA1, fA2, fA3);
-                sR = filterSVF(sR, svfIc1R_, svfIc2R_, fG, fK, fA1, fA2, fA3);
+                sL = filterSVF(sL, v.svfIc1L, v.svfIc2L, fG, fK, fA1, fA2, fA3);
+                sR = filterSVF(sR, v.svfIc1R, v.svfIc2R, fG, fK, fA1, fA2, fA3);
             }
             // Soft clip: tame resonance peaks without hard clipping
             sL = fastTanh(sL);
@@ -902,7 +976,7 @@ int SampleSlot::wsolaFindBestOffset(const float* src, int ns, double expectedPos
     return bestOffset;
 }
 
-float SampleSlot::lpgStepEnvelope()
+float SampleSlot::lpgStepEnvelope(Voice& v, bool decayMemory)
 {
     float decay = filterReso_;  // resonance knob → decay [0..1]
 
@@ -919,22 +993,22 @@ float SampleSlot::lpgStepEnvelope()
     float sdSec = 0.200f + decay * 2.8f;
     float decaySlow = std::exp(-1.0f / (sdSec * (float)outputSampleRate_));
 
-    if (lpgVactrol_ > 0.001f) {
+    if (v.lpgVactrol > 0.001f) {
         // State-dependent dual-rate decay
-        float mix = lpgVactrol_;
+        float mix = v.lpgVactrol;
         float coeff = decaySlow + mix * (decayFast - decaySlow);
         // Memory effect: repeated strikes slow decay
         float memFactor = 1.0f + lpgMemory_ * 0.5f;
         coeff = 1.0f - (1.0f - coeff) / memFactor;
-        lpgVactrol_ = coeff * lpgVactrol_;
+        v.lpgVactrol = coeff * v.lpgVactrol;
     } else {
-        lpgVactrol_ = 0.0f;
+        v.lpgVactrol = 0.0f;
     }
 
-    // Decay illumination memory
-    lpgMemory_ *= 0.99995f;
+    // Decay illumination memory (once per step, not once per active voice)
+    if (decayMemory) lpgMemory_ *= 0.99995f;
 
-    return lpgVactrol_;
+    return v.lpgVactrol;
 }
 
 void SampleSlot::computeOverview()
